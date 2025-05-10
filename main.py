@@ -106,15 +106,22 @@ async def webhook(req: Request):
         for idx, order in enumerate(additional_orders):
             logging.info(f"Additional order {idx + 1} JSON: {order}")
 
-        # Ensure all required fields are present in the primary order
-        required_primary_fields = ["symbol", "action", "orderQty", "orderType", "stopPrice", "timeInForce"]
-        for field in required_primary_fields:
+        # Log the payload being sent to Tradovate
+        logging.info("Sending primary order payload to Tradovate API...")
+        logging.info(f"Primary order payload: {primary_order}")
+
+        # Log additional orders payloads
+        for idx, order in enumerate(additional_orders):
+            logging.info(f"Sending additional order {idx + 1} payload: {order}")
+
+        # Ensure all required fields are present in the payloads
+        required_fields = ["accountId", "action", "symbol", "orderQty", "orderType", "timeInForce"]
+        for field in required_fields:
             if field not in primary_order or primary_order[field] is None:
                 raise HTTPException(status_code=400, detail=f"Missing or invalid field in primary order: {field}")
 
-        # Ensure all required fields are present in each additional order
         for idx, order in enumerate(additional_orders):
-            for field in required_primary_fields:
+            for field in required_fields:
                 if field not in order or order[field] is None:
                     raise HTTPException(status_code=400, detail=f"Missing or invalid field in additional order {idx + 1}: {field}")
 
