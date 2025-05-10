@@ -46,7 +46,7 @@ class TradovateClient:
             logging.error(f"Unexpected error during authentication: {e}")
             raise HTTPException(status_code=500, detail="Internal server error during authentication")
 
-    async def place_order(self, symbol: str, action: str, quantity: int = 1):
+    async def place_order(self, symbol: str, action: str, quantity: int = 1, order_data: dict = None):
         if not self.access_token:
             await self.authenticate()
 
@@ -55,7 +55,8 @@ class TradovateClient:
             "Content-Type": "application/json"
         }
 
-        order_payload = {
+        # Use the provided order_data if available, otherwise construct a default payload
+        order_payload = order_data or {
             "accountId": self.account_id,
             "action": action.upper(),  # BUY or SELL
             "symbol": symbol,
@@ -67,4 +68,3 @@ class TradovateClient:
         async with httpx.AsyncClient() as client:
             r = await client.post(f"{BASE_URL}/order/placeorder", json=order_payload, headers=headers)
             r.raise_for_status()
-            return r.json()
