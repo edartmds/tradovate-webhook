@@ -69,6 +69,7 @@ async def webhook(req: Request):
 
         # Construct the primary order payload
         primary_order = {
+            "id": 0,  # Placeholder for order ID, update dynamically if needed
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
             "action": data["action"].upper(),
@@ -77,7 +78,9 @@ async def webhook(req: Request):
             "orderType": "Stop",
             "stopPrice": float(data["TriggerPrice"]),
             "timeInForce": "GTC",
-            "isAutomated": True
+            "isAutomated": True,
+            "clOrdId": "string",  # Placeholder for client order ID
+            "customTag50": "WebhookOrder"  # Custom tag for identification
         }
 
         # Construct bracket orders (T1, T2, T3, Stop)
@@ -85,18 +88,26 @@ async def webhook(req: Request):
         for target in ["T1", "T2", "T3"]:
             if target in data and data[target]:
                 brackets.append({
+                    "id": 0,  # Placeholder for command ID
+                    "orderId": 0,  # Placeholder for parent order ID
                     "action": "SELL" if data["action"].upper() == "BUY" else "BUY",
                     "orderType": "Limit",
                     "price": float(data[target]),
-                    "timeInForce": "GTC"
+                    "timeInForce": "GTC",
+                    "commandType": "New",  # Command type for new orders
+                    "commandStatus": "PendingExecution"  # Initial status
                 })
 
         if "Stop" in data and data["Stop"]:
             brackets.append({
+                "id": 0,  # Placeholder for command ID
+                "orderId": 0,  # Placeholder for parent order ID
                 "action": "SELL" if data["action"].upper() == "BUY" else "BUY",
                 "orderType": "Stop",
                 "stopPrice": float(data["Stop"]),
-                "timeInForce": "GTC"
+                "timeInForce": "GTC",
+                "commandType": "New",  # Command type for new orders
+                "commandStatus": "PendingExecution"  # Initial status
             })
 
         # Add brackets to the primary order payload
