@@ -67,95 +67,51 @@ async def webhook(req: Request):
             if field not in data or not data[field]:
                 raise HTTPException(status_code=400, detail=f"Missing or invalid field: {field}")
 
-        # Parse alert information into Tradovate's JSON format for primary order
+        # Construct the primary order payload
         primary_order = {
-            "symbol": data["symbol"],
+            "accountSpec": client.account_spec,
+            "accountId": client.account_id,
             "action": data["action"].upper(),
+            "symbol": data["symbol"],
             "orderQty": int(data["qty"]),
             "orderType": "Stop",
             "stopPrice": float(data["TriggerPrice"]),
-            "timeInForce": "GTC"
+            "timeInForce": "GTC",
+            "isAutomated": True
         }
 
-        # Create additional stop orders for targets (T1, T2, T3) and stop loss
-        additional_orders = []
+        # Construct bracket orders (T1, T2, T3, Stop)
+        brackets = []
         for target in ["T1", "T2", "T3"]:
             if target in data and data[target]:
-                additional_orders.append({
-                    "symbol": data["symbol"],
-                    "action": data["action"].upper(),
-                    "orderQty": int(data["qty"]),
-                    "orderType": "Stop",
-                    "stopPrice": float(data[target]),
+                brackets.append({
+                    "action": "SELL" if data["action"].upper() == "BUY" else "BUY",
+                    "orderType": "Limit",
+                    "price": float(data[target]),
                     "timeInForce": "GTC"
                 })
 
         if "Stop" in data and data["Stop"]:
-            additional_orders.append({
-                "symbol": data["symbol"],
+            brackets.append({
                 "action": "SELL" if data["action"].upper() == "BUY" else "BUY",
-                "orderQty": int(data["qty"]),
                 "orderType": "Stop",
                 "stopPrice": float(data["Stop"]),
                 "timeInForce": "GTC"
             })
 
-        # Add accountId to primary and additional orders
-        primary_order["accountId"] = client.account_id
-        for order in additional_orders:
-            order["accountId"] = client.account_id
-
-        # Log the updated payloads with accountId
-        logging.info(f"Updated primary order with accountId: {primary_order}")
-        for idx, order in enumerate(additional_orders):
-            logging.info(f"Updated additional order {idx + 1} with accountId: {order}")
-
-        # Validate the JSON format before sending to Tradovate
-        logging.info("Validating JSON format for primary and additional orders...")
-        logging.info(f"Primary order JSON: {primary_order}")
-        for idx, order in enumerate(additional_orders):
-            logging.info(f"Additional order {idx + 1} JSON: {order}")
+        # Add brackets to the primary order payload
+        primary_order["bracket1"] = brackets[0] if len(brackets) > 0 else None
+        primary_order["bracket2"] = brackets[1] if len(brackets) > 1 else None
 
         # Log the payload being sent to Tradovate
-        logging.info("Sending primary order payload to Tradovate API...")
         logging.info(f"Primary order payload: {primary_order}")
 
-        # Log additional orders payloads
-        for idx, order in enumerate(additional_orders):
-            logging.info(f"Sending additional order {idx + 1} payload: {order}")
+        # Execute the OSO order on Tradovate
+        result = await client.place_oso_order(primary_order)
 
-        # Ensure all required fields are present in the payloads
-        required_fields = ["accountId", "action", "symbol", "orderQty", "orderType", "timeInForce"]
-        for field in required_fields:
-            if field not in primary_order or primary_order[field] is None:
-                raise HTTPException(status_code=400, detail=f"Missing or invalid field in primary order: {field}")
+        logging.info(f"Executed OSO order | Response: {result}")
 
-        for idx, order in enumerate(additional_orders):
-            for field in required_fields:
-                if field not in order or order[field] is None:
-                    raise HTTPException(status_code=400, detail=f"Missing or invalid field in additional order {idx + 1}: {field}")
-
-        # Debugging logs to confirm parsed orders
-        logging.info(f"Primary order: {primary_order}")
-        logging.info(f"Additional orders: {additional_orders}")
-
-        symbol = data["symbol"]
-        action = data["action"]
-        qty = int(data["qty"])
-
-        # Execute the order on Tradovate
-        result = await client.place_order(symbol, action, qty, primary_order)
-
-        logging.info(f"Executed {action.upper()} {qty}x {symbol} | Response: {result}")
-
-        # Execute additional stop orders
-        for order in additional_orders:
-            additional_result = await client.place_order(
-                order["symbol"], order["action"], order["orderQty"], order
-            )
-            logging.info(f"Executed additional order: {additional_result}")
-
-        return {"status": "success", "order_response": result, "additional_orders": additional_orders}
+        return {"status": "success", "order_response": result}
 
     except ValueError as ve:
         logging.error(f"Validation error: {ve}")
