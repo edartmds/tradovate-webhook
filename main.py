@@ -86,7 +86,10 @@ async def webhook(req: Request):
     try:
         symbol = data["symbol"]
         action = data["action"]
-        qty = data["orderQty"]
+        qty = data.get("orderQty")
+
+        if qty is None:
+            raise ValueError("Missing 'orderQty' in the payload")
 
         # Execute the order on Tradovate
         result = await client.place_order(symbol, action, qty, data)
@@ -102,6 +105,9 @@ async def webhook(req: Request):
 
         return {"status": "success", "order_response": result, "additional_orders": additional_orders}
 
+    except ValueError as ve:
+        logging.error(f"Validation error: {ve}")
+        return {"status": "error", "message": str(ve)}
     except Exception as e:
         logging.error(f"Order failed for {data}: {e}")
         return {"status": "error", "message": str(e)}
