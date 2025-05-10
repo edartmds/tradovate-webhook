@@ -1,6 +1,7 @@
 import httpx
 import os
 import logging
+import json  # Added for pretty-printing JSON responses
 from dotenv import load_dotenv
 from fastapi import HTTPException
 
@@ -27,22 +28,26 @@ class TradovateClient:
         }
         try:
             async with httpx.AsyncClient() as client:
+                logging.debug(f"Sending authentication payload: {json.dumps(auth_payload, indent=2)}")
                 r = await client.post(url, json=auth_payload)
                 r.raise_for_status()
                 data = r.json()
+                logging.info(f"Authentication response: {json.dumps(data, indent=2)}")
                 self.access_token = data["accessToken"]
 
                 # Fetch account ID
                 headers = {"Authorization": f"Bearer {self.access_token}"}
                 acc_res = await client.get(f"{BASE_URL}/account/list", headers=headers)
                 acc_res.raise_for_status()
-                self.account_id = acc_res.json()[0]["id"]
+                account_data = acc_res.json()
+                logging.info(f"Account list response: {json.dumps(account_data, indent=2)}")
+                self.account_id = account_data[0]["id"]
 
                 # Log the retrieved account ID for debugging
                 logging.info(f"Retrieved account ID: {self.account_id}")
 
                 # Ensure the account ID matches the expected demo account name
-                account_name = acc_res.json()[0].get("name", "")
+                account_name = account_data[0].get("name", "")
                 if account_name != "DEMO482959":
                     logging.error(f"Account name mismatch. Expected 'DEMO482959', got '{account_name}'")
                     raise HTTPException(status_code=400, detail="Account name mismatch")
@@ -74,7 +79,17 @@ class TradovateClient:
             "timeInForce": "GTC"
         }
 
-        async with httpx.AsyncClient() as client:
-            r = await client.post(f"{BASE_URL}/order/placeorder", json=order_payload, headers=headers)
-            r.raise_for_status()
-            return r.json()
+        try:
+            async with httpx.AsyncClient() as client:
+                logging.debug(f"Sending order payload: {json.dumps(order_payload, indent=2)}")
+                r = await client.post(f"{BASE_URL}/order/placeorder", json=order_payload, headers=headers)
+                r.raise_for_status()
+                response_data = r.json()
+                logging.info(f"Order placement response: {json.dumps(response_data, indent=2)}")
+                return response_data
+        except httpx.HTTPStatusError as e:
+            logging.error(f"Order placement failed: {e.response.text}")
+            raise HTTPException(status_code=e.response.status_code, detail="Order placement failed")
+        except Exception as e:
+            logging.error(f"Unexpected error during order placement: {e}")
+            raise HTTPException(status_code=500, detail="Internal server error during order placement")
