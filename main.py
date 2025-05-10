@@ -5,8 +5,15 @@ from fastapi import FastAPI, Request, HTTPException
 from tradovate_api import TradovateClient
 import uvicorn
 import httpx
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
+
+# Log the loaded WEBHOOK_SECRET for debugging
+logging.info(f"Loaded WEBHOOK_SECRET: {WEBHOOK_SECRET}")
 
 # Create log directory if it doesn't exist
 LOG_DIR = "logs"
