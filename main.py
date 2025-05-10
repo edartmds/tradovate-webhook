@@ -100,6 +100,16 @@ async def webhook(req: Request):
                 "timeInForce": "GTC"
             })
 
+        # Add accountId to primary and additional orders
+        primary_order["accountId"] = client.account_id
+        for order in additional_orders:
+            order["accountId"] = client.account_id
+
+        # Log the updated payloads with accountId
+        logging.info(f"Updated primary order with accountId: {primary_order}")
+        for idx, order in enumerate(additional_orders):
+            logging.info(f"Updated additional order {idx + 1} with accountId: {order}")
+
         # Validate the JSON format before sending to Tradovate
         logging.info("Validating JSON format for primary and additional orders...")
         logging.info(f"Primary order JSON: {primary_order}")
