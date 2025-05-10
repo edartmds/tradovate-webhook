@@ -23,6 +23,33 @@ logging.basicConfig(
 app = FastAPI()
 client = TradovateClient()
 
+async def fetch_access_token() -> str:
+    """Fetches an access token from the Tradovate API."""
+    url = "https://demo-api.tradovate.com/v1/auth/accesstokenrequest"
+    payload = {
+        "name": os.getenv("TRADOVATE_USERNAME"),
+        "password": os.getenv("TRADOVATE_PASSWORD"),
+        "appId": os.getenv("TRADOVATE_APP_ID"),
+        "appVersion": os.getenv("TRADOVATE_APP_VERSION"),
+        "cid": os.getenv("TRADOVATE_CLIENT_ID"),
+        "sec": os.getenv("TRADOVATE_CLIENT_SECRET"),
+    }
+    async with httpx.AsyncClient() as client:
+        response = await client.post(url, json=payload)
+        response.raise_for_status()
+        data = response.json()
+        return data["accessToken"]
+
+async def fetch_account_id(access_token: str) -> int:
+    """Fetches the account ID using the access token."""
+    url = "https://demo-api.tradovate.com/v1/users/me"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+        return data["accounts"][0]["id"]  # Assuming the first account is used
+
 async def get_latest_price(symbol: str):
     # Fetch the latest price for the symbol using Tradovate's REST API
     url = f"https://demo-api.tradovate.com/v1/marketdata/quote/{symbol}"
@@ -33,6 +60,44 @@ async def get_latest_price(symbol: str):
         data = response.json()
         return data["last"]  # Return the last traded price
 
+def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
+    """
+    Converts a plain text alert into a Tradovate JSON payload.
+
+    Args:
+        alert_text (str): The plain text alert (e.g., "symbol=MESM5,action=Buy,TriggerPrice=4500,qty=1").
+        account_id (int): The Tradovate account ID.
+
+    Returns:
+        dict: The JSON payload formatted for Tradovate's API.
+    """
+    try:
+        # Parse the plain text alert into a dictionary
+        parsed_data = dict(item.split("=") for item in alert_text.split(","))
+
+        # Validate required fields
+        required_fields = ["symbol", "action", "TriggerPrice", "qty"]
+        for field in required_fields:
+            if field not in parsed_data or not parsed_data[field]:
+                raise ValueError(f"Missing or invalid field: {field}")
+
+        # Construct the Tradovate JSON payload
+        tradovate_payload = {
+            "accountId": account_id,
+            "action": parsed_data["action"].capitalize(),  # Ensure proper casing
+            "symbol": parsed_data["symbol"],
+            "orderQty": int(parsed_data["qty"]),
+            "orderType": "Stop",  # Assuming Stop order; adjust as needed
+            "stopPrice": float(parsed_data["TriggerPrice"]),
+            "timeInForce": "GTC",  # Good 'Til Canceled; adjust as needed
+            "isAutomated": True
+        }
+
+        return tradovate_payload
+
+    except Exception as e:
+        raise ValueError(f"Error parsing alert: {e}")
+
 @app.post("/webhook")
 async def webhook(req: Request):
     content_type = req.headers.get("content-type")
@@ -41,17 +106,11 @@ async def webhook(req: Request):
     elif content_type == "text/plain":
         text_data = await req.body()
         text_data = text_data.decode("utf-8")
-        parsed_data = dict(item.split("=") for item in text_data.split(","))
-        data = {
-            "symbol": parsed_data["symbol"],
-            "action": parsed_data["action"].upper(),
-            "TriggerPrice": parsed_data["TriggerPrice"],
-            "qty": parsed_data.get("qty", 1),
-            "T1": parsed_data.get("T1"),
-            "T2": parsed_data.get("T2"),
-            "T3": parsed_data.get("T3"),
-            "Stop": parsed_data.get("Stop")
-        }
+        try:
+            # Use the new parser function to convert plain text alerts
+            data = parse_alert_to_tradovate_json(text_data, 0)  # Temporary account ID placeholder
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
     else:
         raise HTTPException(status_code=400, detail="Unsupported content type")
 
@@ -61,6 +120,13 @@ async def webhook(req: Request):
         raise HTTPException(status_code=403, detail="Invalid token")
 
     try:
+        # Fetch access token and account ID dynamically
+        access_token = await fetch_access_token()
+        account_id = await fetch_account_id(access_token)
+
+        # Update the data with the correct account ID
+        data["accountId"] = account_id
+
         # Validate required fields for JSON payload
         required_fields = ["symbol", "action", "TriggerPrice", "qty"]
         for field in required_fields:
@@ -71,7 +137,7 @@ async def webhook(req: Request):
         primary_order = {
             "id": 0,  # Placeholder for order ID, update dynamically if needed
             "accountSpec": client.account_spec,
-            "accountId": client.account_id,
+            "accountId": account_id,
             "action": data["action"].upper(),
             "symbol": data["symbol"],
             "orderQty": int(data["qty"]),
