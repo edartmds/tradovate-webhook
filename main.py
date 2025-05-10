@@ -4,6 +4,7 @@ from datetime import datetime
 from fastapi import FastAPI, Request, HTTPException
 from tradovate_api import TradovateClient
 import uvicorn
+import httpx
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 
@@ -22,9 +23,37 @@ logging.basicConfig(
 app = FastAPI()
 client = TradovateClient()
 
+async def get_latest_price(symbol: str):
+    # Fetch the latest price for the symbol using Tradovate's REST API
+    url = f"https://demo-api.tradovate.com/v1/marketdata/quote/{symbol}"
+    headers = {"Authorization": f"Bearer {client.access_token}"}
+    async with httpx.AsyncClient() as http_client:
+        response = await http_client.get(url, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+        return data["last"]  # Return the last traded price
+
 @app.post("/webhook")
 async def webhook(req: Request):
-    data = await req.json()
+    content_type = req.headers.get("content-type")
+    if content_type == "application/json":
+        data = await req.json()
+    elif content_type == "text/plain":
+        text_data = await req.body()
+        text_data = text_data.decode("utf-8")
+        parsed_data = dict(item.split("=") for item in text_data.split(","))
+        # Fetch real-time price and integrate into Tradovate's JSON format
+        latest_price = await get_latest_price(parsed_data["symbol"])
+        data = {
+            "symbol": parsed_data["symbol"],
+            "action": parsed_data["action"].upper(),
+            "orderQty": int(parsed_data.get("qty", 1)),
+            "orderType": "Stop",  # Example: Stop order
+            "stopPrice": latest_price,  # Use the fetched price as stop price
+            "timeInForce": "GTC"
+        }
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported content type")
 
     # 🔒 Validate secret token
     if data.get("token") != WEBHOOK_SECRET:
@@ -34,7 +63,7 @@ async def webhook(req: Request):
     try:
         symbol = data["symbol"]
         action = data["action"]
-        qty = int(data.get("qty", 1))
+        qty = data["orderQty"]
 
         result = await client.place_order(symbol, action, qty)
 
