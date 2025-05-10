@@ -76,11 +76,12 @@ class TradovateClient:
         # Use the provided order_data if available, otherwise construct a default payload
         order_payload = order_data or {
             "accountId": self.account_id,
-            "action": action.upper(),  # BUY or SELL
+            "action": action.capitalize(),  # Ensure "Buy" or "Sell"
             "symbol": symbol,
             "orderQty": quantity,
             "orderType": "Market",
-            "timeInForce": "GTC"
+            "timeInForce": "GTC",
+            "isAutomated": True  # Optional field for automation
         }
 
         if not order_payload.get("accountId"):
@@ -97,7 +98,7 @@ class TradovateClient:
                 return response_data
         except httpx.HTTPStatusError as e:
             logging.error(f"Order placement failed: {e.response.text}")
-            raise HTTPException(status_code=e.response.status_code, detail="Order placement failed")
+            raise HTTPException(status_code=e.response.status_code, detail=f"Order placement failed: {e.response.text}")
         except Exception as e:
             logging.error(f"Unexpected error during order placement: {e}")
             raise HTTPException(status_code=500, detail="Internal server error during order placement")
