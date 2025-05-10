@@ -42,16 +42,39 @@ async def webhook(req: Request):
         text_data = await req.body()
         text_data = text_data.decode("utf-8")
         parsed_data = dict(item.split("=") for item in text_data.split(","))
-        # Fetch real-time price and integrate into Tradovate's JSON format
-        latest_price = await get_latest_price(parsed_data["symbol"])
+        # Parse alert information into Tradovate's JSON format for stop orders
         data = {
             "symbol": parsed_data["symbol"],
             "action": parsed_data["action"].upper(),
             "orderQty": int(parsed_data.get("qty", 1)),
-            "orderType": "Stop",  # Example: Stop order
-            "stopPrice": latest_price,  # Use the fetched price as stop price
+            "orderType": "Stop",  # Default to Stop order
+            "stopPrice": float(parsed_data["TriggerPrice"]),
             "timeInForce": "GTC"
         }
+
+        # Create additional stop orders for targets and stop loss
+        additional_orders = []
+        for target in ["T1", "T2", "T3"]:
+            if target in parsed_data:
+                additional_orders.append({
+                    "symbol": parsed_data["symbol"],
+                    "action": parsed_data["action"].upper(),
+                    "orderQty": int(parsed_data.get("qty", 1)),
+                    "orderType": "Stop",
+                    "stopPrice": float(parsed_data[target]),
+                    "timeInForce": "GTC"
+                })
+
+        # Add stop loss as a separate stop order
+        if "Stop" in parsed_data:
+            additional_orders.append({
+                "symbol": parsed_data["symbol"],
+                "action": "SELL" if parsed_data["action"].upper() == "BUY" else "BUY",  # Reverse action for stop loss
+                "orderQty": int(parsed_data.get("qty", 1)),
+                "orderType": "Stop",
+                "stopPrice": float(parsed_data["Stop"]),
+                "timeInForce": "GTC"
+            })
     else:
         raise HTTPException(status_code=400, detail="Unsupported content type")
 
@@ -65,10 +88,19 @@ async def webhook(req: Request):
         action = data["action"]
         qty = data["orderQty"]
 
-        result = await client.place_order(symbol, action, qty)
+        # Execute the order on Tradovate
+        result = await client.place_order(symbol, action, qty, data)
 
         logging.info(f"Executed {action.upper()} {qty}x {symbol} | Response: {result}")
-        return {"status": "success", "order_response": result}
+
+        # Execute additional stop orders
+        for order in additional_orders:
+            additional_result = await client.place_order(
+                order["symbol"], order["action"], order["orderQty"], order
+            )
+            logging.info(f"Executed additional order: {additional_result}")
+
+        return {"status": "success", "order_response": result, "additional_orders": additional_orders}
 
     except Exception as e:
         logging.error(f"Order failed for {data}: {e}")
