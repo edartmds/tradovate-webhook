@@ -46,6 +46,10 @@ class TradovateClient:
                 # Log the retrieved account ID for debugging
                 logging.info(f"Retrieved account ID: {self.account_id}")
 
+                if not self.account_id:
+                    logging.error("Failed to retrieve account ID. Account ID is None.")
+                    raise HTTPException(status_code=400, detail="Failed to retrieve account ID")
+
                 # Ensure the account ID matches the expected demo account name
                 account_name = account_data[0].get("name", "")
                 if account_name != "DEMO482959":
@@ -78,6 +82,10 @@ class TradovateClient:
             "orderType": "Market",
             "timeInForce": "GTC"
         }
+
+        if not order_payload.get("accountId"):
+            logging.error("Missing accountId in order payload.")
+            raise HTTPException(status_code=400, detail="Missing accountId in order payload")
 
         try:
             async with httpx.AsyncClient() as client:
