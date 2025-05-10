@@ -42,11 +42,18 @@ async def webhook(req: Request):
         text_data = await req.body()
         text_data = text_data.decode("utf-8")
         parsed_data = dict(item.split("=") for item in text_data.split(","))
+
+        # Validate required fields
+        required_fields = ["symbol", "action", "TriggerPrice", "qty"]
+        for field in required_fields:
+            if field not in parsed_data:
+                raise HTTPException(status_code=400, detail=f"Missing required field: {field}")
+
         # Parse alert information into Tradovate's JSON format for stop orders
         data = {
             "symbol": parsed_data["symbol"],
             "action": parsed_data["action"].upper(),
-            "orderQty": int(parsed_data.get("qty", 1)),
+            "orderQty": int(parsed_data["qty"]),
             "orderType": "Stop",  # Default to Stop order
             "stopPrice": float(parsed_data["TriggerPrice"]),
             "timeInForce": "GTC"
@@ -59,7 +66,7 @@ async def webhook(req: Request):
                 additional_orders.append({
                     "symbol": parsed_data["symbol"],
                     "action": parsed_data["action"].upper(),
-                    "orderQty": int(parsed_data.get("qty", 1)),
+                    "orderQty": int(parsed_data["qty"]),
                     "orderType": "Stop",
                     "stopPrice": float(parsed_data[target]),
                     "timeInForce": "GTC"
@@ -70,7 +77,7 @@ async def webhook(req: Request):
             additional_orders.append({
                 "symbol": parsed_data["symbol"],
                 "action": "SELL" if parsed_data["action"].upper() == "BUY" else "BUY",  # Reverse action for stop loss
-                "orderQty": int(parsed_data.get("qty", 1)),
+                "orderQty": int(parsed_data["qty"]),
                 "orderType": "Stop",
                 "stopPrice": float(parsed_data["Stop"]),
                 "timeInForce": "GTC"
