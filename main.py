@@ -3,6 +3,7 @@ import logging
 from datetime import datetime
 from fastapi import FastAPI, Request, HTTPException
 from tradovate_api import TradovateClient
+import uvicorn
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 
@@ -43,3 +44,7 @@ async def webhook(req: Request):
     except Exception as e:
         logging.error(f"Order failed for {data}: {e}")
         return {"status": "error", "message": str(e)}
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 10000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
