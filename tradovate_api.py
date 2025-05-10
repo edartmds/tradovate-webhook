@@ -38,6 +38,15 @@ class TradovateClient:
                 acc_res.raise_for_status()
                 self.account_id = acc_res.json()[0]["id"]
 
+                # Log the retrieved account ID for debugging
+                logging.info(f"Retrieved account ID: {self.account_id}")
+
+                # Ensure the account ID matches the expected demo account name
+                account_name = acc_res.json()[0].get("name", "")
+                if account_name != "DEMO482959":
+                    logging.error(f"Account name mismatch. Expected 'DEMO482959', got '{account_name}'")
+                    raise HTTPException(status_code=400, detail="Account name mismatch")
+
                 logging.info("Authentication successful. Access token and account ID retrieved.")
         except httpx.HTTPStatusError as e:
             logging.error(f"Authentication failed: {e.response.text}")
@@ -68,3 +77,4 @@ class TradovateClient:
         async with httpx.AsyncClient() as client:
             r = await client.post(f"{BASE_URL}/order/placeorder", json=order_payload, headers=headers)
             r.raise_for_status()
+            return r.json()
