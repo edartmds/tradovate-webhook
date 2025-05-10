@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: tradovate-webhook
+    runtime: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn main:app --host 0.0.0.0 --port 10000"
+    envVars:
+      - key: TRADOVATE_CLIENT_ID
+        value: your_client_id
+      - key: TRADOVATE_CLIENT_SECRET
+        value: your_client_secret
+      - key: TRADOVATE_USERNAME
+        value: your_username
+      - key: TRADOVATE_PASSWORD
+        value: your_password
+      - key: TRADOVATE_DEMO
+        value: true
