@@ -5,15 +5,8 @@ from fastapi import FastAPI, Request, HTTPException
 from tradovate_api import TradovateClient
 import uvicorn
 import httpx
-from dotenv import load_dotenv
-
-# Load environment variables from .env file
-load_dotenv()
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
-
-# Log the loaded WEBHOOK_SECRET for debugging
-logging.info(f"Loaded WEBHOOK_SECRET: {WEBHOOK_SECRET}")
 
 # Create log directory if it doesn't exist
 LOG_DIR = "logs"
@@ -29,33 +22,6 @@ logging.basicConfig(
 
 app = FastAPI()
 client = TradovateClient()
-
-async def fetch_access_token() -> str:
-    """Fetches an access token from the Tradovate API."""
-    url = "https://demo-api.tradovate.com/v1/auth/accesstokenrequest"
-    payload = {
-        "name": os.getenv("TRADOVATE_USERNAME"),
-        "password": os.getenv("TRADOVATE_PASSWORD"),
-        "appId": os.getenv("TRADOVATE_APP_ID"),
-        "appVersion": os.getenv("TRADOVATE_APP_VERSION"),
-        "cid": os.getenv("TRADOVATE_CLIENT_ID"),
-        "sec": os.getenv("TRADOVATE_CLIENT_SECRET"),
-    }
-    async with httpx.AsyncClient() as client:
-        response = await client.post(url, json=payload)
-        response.raise_for_status()
-        data = response.json()
-        return data["accessToken"]
-
-async def fetch_account_id(access_token: str) -> int:
-    """Fetches the account ID using the access token."""
-    url = "https://demo-api.tradovate.com/v1/users/me"
-    headers = {"Authorization": f"Bearer {access_token}"}
-    async with httpx.AsyncClient() as client:
-        response = await client.get(url, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-        return data["accounts"][0]["id"]  # Assuming the first account is used
 
 async def get_latest_price(symbol: str):
     # Fetch the latest price for the symbol using Tradovate's REST API
@@ -115,29 +81,18 @@ async def webhook(req: Request):
         text_data = text_data.decode("utf-8")
         try:
             # Use the new parser function to convert plain text alerts
-            data = parse_alert_to_tradovate_json(text_data, 0)  # Temporary account ID placeholder
+            data = parse_alert_to_tradovate_json(text_data, client.account_id)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
     else:
         raise HTTPException(status_code=400, detail="Unsupported content type")
 
     # 🔒 Validate secret token
-    # Log the received token for debugging
-    logging.info(f"Received token: {data.get('token')}")
-    logging.info(f"Expected token: {WEBHOOK_SECRET}")
-
     if data.get("token") != WEBHOOK_SECRET:
         logging.warning(f"Unauthorized attempt: {data}")
         raise HTTPException(status_code=403, detail="Invalid token")
 
     try:
-        # Fetch access token and account ID dynamically
-        access_token = await fetch_access_token()
-        account_id = await fetch_account_id(access_token)
-
-        # Update the data with the correct account ID
-        data["accountId"] = account_id
-
         # Validate required fields for JSON payload
         required_fields = ["symbol", "action", "TriggerPrice", "qty"]
         for field in required_fields:
@@ -148,7 +103,7 @@ async def webhook(req: Request):
         primary_order = {
             "id": 0,  # Placeholder for order ID, update dynamically if needed
             "accountSpec": client.account_spec,
-            "accountId": account_id,
+            "accountId": client.account_id,
             "action": data["action"].upper(),
             "symbol": data["symbol"],
             "orderQty": int(data["qty"]),
