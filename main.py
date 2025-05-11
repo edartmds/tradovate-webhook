@@ -103,6 +103,7 @@ async def webhook(req: Request):
         primary_order = {
             "id": 0,  # Placeholder for order ID, update dynamically if needed
             "accountId": client.account_id,
+            "accountSpec": client.account_spec,  # Include accountSpec in the payload
             "action": data["action"].upper(),
             "symbol": data["symbol"],
             "orderQty": int(data["qty"]),
