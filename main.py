@@ -23,6 +23,11 @@ logging.basicConfig(
 app = FastAPI()
 client = TradovateClient()
 
+@app.on_event("startup")
+async def startup_event():
+    # Authenticate the Tradovate client on startup
+    await client.authenticate()
+
 async def get_latest_price(symbol: str):
     # Fetch the latest price for the symbol using Tradovate's REST API
     url = f"https://demo-api.tradovate.com/v1/marketdata/quote/{symbol}"
@@ -73,6 +78,10 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
 
 @app.post("/webhook")
 async def webhook(req: Request):
+    # Ensure the client is authenticated before processing the webhook
+    if not client.account_spec:
+        await client.authenticate()
+
     content_type = req.headers.get("content-type")
     if content_type == "application/json":
         data = await req.json()
