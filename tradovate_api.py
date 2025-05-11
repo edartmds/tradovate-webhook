@@ -14,6 +14,7 @@ class TradovateClient:
     def __init__(self):
         self.access_token = None
         self.account_id = None
+        self.account_spec = None
 
     async def authenticate(self):
         url = f"{BASE_URL}/auth/accesstokenrequest"
@@ -42,6 +43,16 @@ class TradovateClient:
                 account_data = acc_res.json()
                 logging.info(f"Account list response: {json.dumps(account_data, indent=2)}")
                 self.account_id = account_data[0]["id"]
+
+                # Fetch accountSpec (username) for payloads
+                self.account_spec = account_data[0].get("name")
+
+                if not self.account_spec:
+                    logging.error("Failed to retrieve accountSpec. accountSpec is None.")
+                    raise HTTPException(status_code=400, detail="Failed to retrieve accountSpec")
+
+                # Log the retrieved accountSpec for debugging
+                logging.info(f"Retrieved accountSpec: {self.account_spec}")
 
                 # Log the retrieved account ID for debugging
                 logging.info(f"Retrieved account ID: {self.account_id}")
@@ -127,11 +138,3 @@ class TradovateClient:
                 response = await client.post(f"{BASE_URL}/order/oso", json=order_payload, headers=headers)
                 response.raise_for_status()
                 response_data = response.json()
-                logging.info(f"OSO order response: {json.dumps(response_data, indent=2)}")
-                return response_data
-        except httpx.HTTPStatusError as e:
-            logging.error(f"OSO order placement failed: {e.response.text}")
-            raise HTTPException(status_code=e.response.status_code, detail=f"OSO order placement failed: {e.response.text}")
-        except Exception as e:
-            logging.error(f"Unexpected error during OSO order placement: {e}")
-            raise HTTPException(status_code=500, detail="Internal server error during OSO order placement")
