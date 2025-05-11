@@ -102,7 +102,6 @@ async def webhook(req: Request):
         # Construct the primary order payload
         primary_order = {
             "id": 0,  # Placeholder for order ID, update dynamically if needed
-            "accountSpec": client.account_spec,
             "accountId": client.account_id,
             "action": data["action"].upper(),
             "symbol": data["symbol"],
