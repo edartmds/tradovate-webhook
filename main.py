@@ -75,7 +75,6 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
         # Map TradingView symbols to Tradovate-compatible symbols
         symbol_mapping = {
             "CME_MINI:NQ1!": "NQM5",
-            "CME_MINI:ES1!": "ESM5"
         }
         if "symbol" in parsed_data and parsed_data["symbol"] in symbol_mapping:
             parsed_data["symbol"] = symbol_mapping[parsed_data["symbol"]]
