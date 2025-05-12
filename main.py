@@ -43,17 +43,20 @@ async def get_latest_price(symbol: str):
         data = response.json()
         return data["last"]  # Return the last traded price
 
-def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
+def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price: float = None) -> dict:
     """
     Converts a plain text alert into a Tradovate JSON payload.
 
     Args:
         alert_text (str): The plain text alert (e.g., "symbol=CME_MINI:NQ1!,action=Buy,TriggerPrice=20461.75,T1=20470.893,T2=20479.79,T3=20488.81,Stop=20441").
         account_id (int): The Tradovate account ID.
+        latest_price (float, optional): The latest price to use if TriggerPrice is missing.
 
     Returns:
         dict: The JSON payload formatted for Tradovate's API.
     """
+    logging.info(f"Raw alert text: {alert_text}")  # Log raw alert text for debugging
+
     try:
         # Split the alert text into lines and parse key-value pairs
         parsed_data = {}
@@ -91,10 +94,15 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
         logging.info(f"Parsed alert data: {parsed_data}")
 
         # Validate required fields
-        required_fields = ["symbol", "action", "TriggerPrice"]  # Updated to check for TriggerPrice
+        required_fields = ["symbol", "action", "TriggerPrice"]
         for field in required_fields:
             if field not in parsed_data or not parsed_data[field]:
-                raise ValueError(f"Missing or invalid field: {field}")
+                if field == "TriggerPrice" and latest_price is not None:
+                    logging.warning("TriggerPrice is missing. Using provided latest price.")
+                    parsed_data["TriggerPrice"] = latest_price
+                else:
+                    logging.error(f"Missing or invalid field: {field}")
+                    raise ValueError(f"Missing or invalid field: {field}")
 
         # Construct the Tradovate JSON payload
         tradovate_payload = {
@@ -103,7 +111,7 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
             "symbol": parsed_data["symbol"],
             "orderQty": 1,  # Default quantity; adjust as needed
             "orderType": "Stop",  # Assuming Stop order; adjust as needed
-            "stopPrice": float(parsed_data["TriggerPrice"]),  # Updated to use TriggerPrice
+            "stopPrice": float(parsed_data["TriggerPrice"]),
             "timeInForce": "GTC",  # Good 'Til Canceled; adjust as needed
             "isAutomated": True
         }
@@ -139,8 +147,13 @@ async def webhook(req: Request):
             text_data = text_data.decode("utf-8")
             logging.info(f"Received plain text data: {text_data}")
             try:
+                # Fetch the latest price if TriggerPrice is missing
+                latest_price = None
+                if "symbol=" in text_data:
+                    latest_price = await get_latest_price(text_data.split("symbol=")[1].split(",")[0])
+
                 # Parse the plain text alert into JSON
-                data = parse_alert_to_tradovate_json(text_data, client.account_id)
+                data = parse_alert_to_tradovate_json(text_data, client.account_id, latest_price)
             except ValueError as e:
                 logging.error(f"Error parsing alert: {e}")
                 raise HTTPException(status_code=400, detail=str(e))
@@ -166,7 +179,7 @@ async def webhook(req: Request):
             "symbol": data["symbol"],
             "orderQty": 1,
             "orderType": "Limit",
-            "price": float(data["TriggerPrice"]),  # Updated to use TriggerPrice
+            "price": float(data["TriggerPrice"]),
             "isAutomated": True,
             "bracket1": {
                 "action": "Sell",
