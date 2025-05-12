@@ -87,8 +87,11 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
             elif line.strip().upper() in ["BUY", "SELL"]:
                 parsed_data["action"] = line.strip().capitalize()
 
+        # Log parsed data for debugging
+        logging.info(f"Parsed alert data: {parsed_data}")
+
         # Validate required fields
-        required_fields = ["symbol", "action", "PRICE"]
+        required_fields = ["symbol", "action", "TriggerPrice"]  # Updated to check for TriggerPrice
         for field in required_fields:
             if field not in parsed_data or not parsed_data[field]:
                 raise ValueError(f"Missing or invalid field: {field}")
@@ -100,7 +103,7 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
             "symbol": parsed_data["symbol"],
             "orderQty": 1,  # Default quantity; adjust as needed
             "orderType": "Stop",  # Assuming Stop order; adjust as needed
-            "stopPrice": float(parsed_data["PRICE"]),
+            "stopPrice": float(parsed_data["TriggerPrice"]),  # Updated to use TriggerPrice
             "timeInForce": "GTC",  # Good 'Til Canceled; adjust as needed
             "isAutomated": True
         }
@@ -113,6 +116,7 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
         return tradovate_payload
 
     except Exception as e:
+        logging.error(f"Error parsing alert: {e}")
         raise ValueError(f"Error parsing alert: {e}")
 
 @app.post("/webhook")
@@ -162,7 +166,7 @@ async def webhook(req: Request):
             "symbol": data["symbol"],
             "orderQty": 1,
             "orderType": "Limit",
-            "price": float(data["PRICE"]),
+            "price": float(data["TriggerPrice"]),  # Updated to use TriggerPrice
             "isAutomated": True,
             "bracket1": {
                 "action": "Sell",
