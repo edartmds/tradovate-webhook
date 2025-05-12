@@ -87,11 +87,19 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
             elif line.strip().upper() in ["BUY", "SELL"]:
                 parsed_data["action"] = line.strip().capitalize()
 
+        # Log parsed data for debugging
+        logging.info(f"Parsed alert data: {parsed_data}")
+
         # Validate required fields
         required_fields = ["symbol", "action", "PRICE"]
         for field in required_fields:
             if field not in parsed_data or not parsed_data[field]:
-                raise ValueError(f"Missing or invalid field: {field}")
+                if field == "PRICE":
+                    # Attempt to fetch the latest price if PRICE is missing
+                    logging.warning("PRICE field is missing. Attempting to fetch the latest price.")
+                    parsed_data["PRICE"] = get_latest_price(parsed_data["symbol"])
+                else:
+                    raise ValueError(f"Missing or invalid field: {field}")
 
         # Construct the Tradovate JSON payload
         tradovate_payload = {
@@ -113,6 +121,7 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
         return tradovate_payload
 
     except Exception as e:
+        logging.error(f"Error parsing alert: {e}")
         raise ValueError(f"Error parsing alert: {e}")
 
 @app.post("/webhook")
@@ -143,6 +152,16 @@ async def webhook(req: Request):
         else:
             logging.error(f"Unsupported content type: {content_type}")
             raise HTTPException(status_code=400, detail=f"Unsupported content type: {content_type}")
+
+        # Ensure the PRICE field is present
+        if "PRICE" not in data or not data["PRICE"]:
+            try:
+                logging.info(f"PRICE field missing. Fetching latest price for symbol: {data['symbol']}")
+                data["PRICE"] = await get_latest_price(data["symbol"])
+                logging.info(f"Fetched latest price: {data['PRICE']}")
+            except Exception as e:
+                logging.error(f"Failed to fetch latest price for symbol {data['symbol']}: {e}")
+                raise HTTPException(status_code=400, detail="PRICE field is missing and could not be resolved.")
 
         # Hardcode the WEBHOOK_SECRET for validation
         if WEBHOOK_SECRET is None:
