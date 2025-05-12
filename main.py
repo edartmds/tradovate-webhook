@@ -91,7 +91,7 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price
                 parsed_data["action"] = line.strip().capitalize()
 
         # Log parsed data for debugging
-        logging.info(f"Parsed alert data: {parsed_data}")
+        logging.info(f"Parsed alert data before validation: {parsed_data}")
 
         # Validate required fields
         required_fields = ["symbol", "action", "TriggerPrice"]
@@ -103,6 +103,9 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price
                 else:
                     logging.error(f"Missing or invalid field: {field}")
                     raise ValueError(f"Missing or invalid field: {field}")
+
+        # Log parsed data after validation
+        logging.info(f"Parsed alert data after validation: {parsed_data}")
 
         # Construct the Tradovate JSON payload
         tradovate_payload = {
