@@ -44,17 +44,6 @@ async def get_latest_price(symbol: str):
         return data["last"]  # Return the last traded price
 
 def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price: float = None) -> dict:
-    """
-    Converts a plain text alert into a Tradovate JSON payload.
-
-    Args:
-        alert_text (str): The plain text alert (e.g., "symbol=CME_MINI:NQ1!,action=Buy,TriggerPrice=20461.75,T1=20470.893,T2=20479.79,T3=20488.81,Stop=20441").
-        account_id (int): The Tradovate account ID.
-        latest_price (float, optional): The latest price to use if TriggerPrice is missing.
-
-    Returns:
-        dict: The JSON payload formatted for Tradovate's API.
-    """
     logging.info(f"Raw alert text: {alert_text}")  # Log raw alert text for debugging
 
     try:
@@ -71,22 +60,16 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price
             except (json.JSONDecodeError, ValueError) as e:
                 raise ValueError(f"Error parsing JSON-like structure: {e}")
 
-        # Handle special cases like settlement-as-close
-        if "settlement-as-close" in alert_text:
-            parsed_data["settlementAsClose"] = True
-
-        # Map TradingView symbols to Tradovate-compatible symbols
-        symbol_mapping = {
-            "CME_MINI:NQ1!": "NQM5",
-        }
-        if "symbol" in parsed_data and parsed_data["symbol"] in symbol_mapping:
-            parsed_data["symbol"] = symbol_mapping[parsed_data["symbol"]]
-
         # Adjust parsing for the remaining text
         for line in alert_text.split("\n"):
             if "=" in line:
                 key, value = line.split("=", 1)
-                parsed_data[key.strip()] = value.strip()
+                key = key.strip()
+                value = value.strip()
+                # Map PRICE to TriggerPrice for consistency
+                if key == "PRICE":
+                    key = "TriggerPrice"
+                parsed_data[key] = value
             elif line.strip().upper() in ["BUY", "SELL"]:
                 parsed_data["action"] = line.strip().capitalize()
 
@@ -101,7 +84,7 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price
                     logging.warning("TriggerPrice is missing. Using provided latest price.")
                     parsed_data["TriggerPrice"] = latest_price
                 else:
-                    logging.error(f"Missing or invalid field: {field}")
+                    logging.error(f"Missing or invalid field: {field}. Parsed data: {parsed_data}")
                     raise ValueError(f"Missing or invalid field: {field}")
 
         # Log parsed data after validation
@@ -127,7 +110,7 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price
         return tradovate_payload
 
     except Exception as e:
-        logging.error(f"Error parsing alert: {e}")
+        logging.error(f"Error parsing alert: {e}. Raw alert text: {alert_text}")
         raise ValueError(f"Error parsing alert: {e}")
 
 @app.post("/webhook")
