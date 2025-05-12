@@ -138,6 +138,9 @@ async def webhook(req: Request):
             "customTag50": "WebhookOrder"  # Custom tag for identification
         }
 
+        # Ensure accountSpec is included in the payload
+        primary_order["accountSpec"] = client.account_spec
+
         # Log the payload being sent to Tradovate
         logging.info(f"Primary order payload: {primary_order}")
 
@@ -151,7 +154,3 @@ async def webhook(req: Request):
     except Exception as e:
         logging.error(f"Unexpected error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
-
-if __name__ == "__main__":
-    port = int(os.getenv("PORT", 10000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
