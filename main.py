@@ -154,20 +154,36 @@ async def webhook(req: Request):
 
         logging.info(f"Validated payload: {data}")
 
-        # Construct the OSO order payload specific to Tradovate API
+        # Use the parsed prices from the alert in the OSO order payload
         oso_order = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
-            "action": "Buy",
-            "symbol": "NQM5",
+            "action": data["action"],
+            "symbol": data["symbol"],
             "orderQty": 1,
-            "orderType": "Limit",
-            "price": 4150.00,
+            "orderType": "Stop",
+            "stopPrice": float(data["PRICE"]),
+            "timeInForce": "GTC",
             "isAutomated": True,
             "bracket1": {
                 "action": "Sell",
                 "orderType": "Limit",
-                "price": 4200.00
+                "price": float(data.get("T1", 0))
+            },
+            "bracket2": {
+                "action": "Sell",
+                "orderType": "Limit",
+                "price": float(data.get("T2", 0))
+            },
+            "bracket3": {
+                "action": "Sell",
+                "orderType": "Limit",
+                "price": float(data.get("T3", 0))
+            },
+            "stopLoss": {
+                "action": "Sell",
+                "orderType": "Stop",
+                "price": float(data.get("STOP", 0))
             }
         }
 
