@@ -118,8 +118,8 @@ async def webhook(req: Request):
                 logging.error(f"Error parsing alert: {e}")
                 raise HTTPException(status_code=400, detail=str(e))
         else:
-            logging.error("Unsupported content type")
-            raise HTTPException(status_code=400, detail="Unsupported content type")
+            logging.error(f"Unsupported content type: {content_type}")
+            raise HTTPException(status_code=400, detail=f"Unsupported content type: {content_type}")
 
         # 🔒 Validate secret token
         if data.get("token") != WEBHOOK_SECRET:
@@ -144,6 +144,8 @@ async def webhook(req: Request):
                 "price": 4200.00
             }
         }
+
+        logging.info(f"OSO order payload: {oso_order}")
 
         # Place the OSO order
         result = await client.place_oso_order(oso_order)
