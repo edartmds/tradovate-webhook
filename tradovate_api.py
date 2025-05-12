@@ -142,3 +142,36 @@ class TradovateClient:
         except Exception as e:
             logging.error(f"Unexpected error during OSO order placement: {e}")
             raise HTTPException(status_code=500, detail="Internal server error during OSO order placement")
+
+    async def place_oso_order(self, initial_order: dict):
+        """
+        Places an Order Sends Order (OSO) order on Tradovate.
+
+        Args:
+            initial_order (dict): The JSON payload for the initial order with brackets.
+
+        Returns:
+            dict: The response from the Tradovate API.
+        """
+        if not self.access_token:
+            await self.authenticate()
+
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json"
+        }
+
+        try:
+            async with httpx.AsyncClient() as client:
+                logging.debug(f"Sending OSO order payload: {json.dumps(initial_order, indent=2)}")
+                response = await client.post(f"{BASE_URL}/order/placeoso", json=initial_order, headers=headers)
+                response.raise_for_status()
+                response_data = response.json()
+                logging.info(f"OSO order response: {json.dumps(response_data, indent=2)}")
+                return response_data
+        except httpx.HTTPStatusError as e:
+            logging.error(f"OSO order placement failed: {e.response.text}")
+            raise HTTPException(status_code=e.response.status_code, detail=f"OSO order placement failed: {e.response.text}")
+        except Exception as e:
+            logging.error(f"Unexpected error during OSO order placement: {e}")
+            raise HTTPException(status_code=500, detail="Internal server error during OSO order placement")
