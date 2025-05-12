@@ -5,6 +5,7 @@ from fastapi import FastAPI, Request, HTTPException
 from tradovate_api import TradovateClient
 import uvicorn
 import httpx
+import json
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 
@@ -56,11 +57,21 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
         # Split the alert text into lines and parse key-value pairs
         parsed_data = {}
 
+        # Handle JSON-like structure at the start of the alert text
+        if alert_text.startswith("="):
+            try:
+                json_part, remaining_text = alert_text[1:].split("\n", 1)
+                json_data = json.loads(json_part)
+                parsed_data.update(json_data)
+                alert_text = remaining_text
+            except (json.JSONDecodeError, ValueError) as e:
+                raise ValueError(f"Error parsing JSON-like structure: {e}")
+
         # Handle special cases like settlement-as-close
         if "settlement-as-close" in alert_text:
             parsed_data["settlementAsClose"] = True
 
-        # Adjust parsing for the provided format
+        # Adjust parsing for the remaining text
         for line in alert_text.split("\n"):
             if "=" in line:
                 key, value = line.split("=", 1)
