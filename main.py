@@ -15,7 +15,10 @@ os.makedirs(LOG_DIR, exist_ok=True)
 # Set up logging
 log_file = os.path.join(LOG_DIR, "webhook_trades.log")
 logging.basicConfig(
-    filename=log_file,
+    handlers=[
+        logging.FileHandler(log_file),
+        logging.StreamHandler()
+    ],
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
@@ -125,30 +128,25 @@ async def webhook(req: Request):
 
         logging.info(f"Validated payload: {data}")
 
-        # Construct the primary order payload specific to Tradovate API
-        primary_order = {
-            "id": 0,  # Placeholder for order ID, update dynamically if needed
+        # Construct the OSO order payload specific to Tradovate API
+        oso_order = {
+            "accountSpec": client.account_spec,
             "accountId": client.account_id,
-            "accountSpec": client.account_spec,  # Include accountSpec in the payload
-            "action": data["action"].upper(),
-            "symbol": data["symbol"],
-            "orderQty": int(data.get("qty", 1)),
-            "orderType": "Stop",
-            "stopPrice": float(data["TriggerPrice"]),
-            "timeInForce": "GTC",
+            "action": "Buy",
+            "symbol": "MESM1",
+            "orderQty": 1,
+            "orderType": "Limit",
+            "price": 4150.00,
             "isAutomated": True,
-            "clOrdId": "string",  # Placeholder for client order ID
-            "customTag50": "WebhookOrder"  # Custom tag for identification
+            "bracket1": {
+                "action": "Sell",
+                "orderType": "Limit",
+                "price": 4200.00
+            }
         }
 
-        # Ensure accountSpec is included in the payload
-        primary_order["accountSpec"] = client.account_spec
-
-        # Log the payload being sent to Tradovate
-        logging.info(f"Primary order payload: {primary_order}")
-
-        # Execute the OSO order on Tradovate
-        result = await client.place_oso_order(primary_order)
+        # Place the OSO order
+        result = await client.place_oso_order(oso_order)
 
         logging.info(f"Executed OSO order | Response: {result}")
 
