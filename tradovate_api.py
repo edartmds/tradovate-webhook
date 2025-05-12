@@ -49,6 +49,8 @@ class TradovateClient:
                 self.account_id = int(os.getenv("TRADOVATE_ACCOUNT_ID", self.account_id))
                 self.account_spec = os.getenv("TRADOVATE_ACCOUNT_SPEC", self.account_spec)
 
+                logging.info(f"Using account_id: {self.account_id} and account_spec: {self.account_spec} from environment variables.")
+
                 if not self.account_spec:
                     logging.error("Failed to retrieve accountSpec. accountSpec is None.")
                     raise HTTPException(status_code=400, detail="Failed to retrieve accountSpec")
