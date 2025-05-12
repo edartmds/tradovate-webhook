@@ -93,95 +93,107 @@ async def webhook(req: Request):
     if not client.account_spec:
         await client.authenticate()
 
-    content_type = req.headers.get("content-type")
-    if content_type == "application/json":
-        data = await req.json()
-    elif content_type == "text/plain":
-        text_data = await req.body()
-        text_data = text_data.decode("utf-8")
-        try:
-            # Use the new parser function to convert plain text alerts
-            data = parse_alert_to_tradovate_json(text_data, client.account_id)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-    else:
-        raise HTTPException(status_code=400, detail="Unsupported content type")
-
-    # 🔒 Validate secret token
-    if data.get("token") != WEBHOOK_SECRET:
-        logging.warning(f"Unauthorized attempt: {data}")
-        raise HTTPException(status_code=403, detail="Invalid token")
-
     try:
-        # Validate required fields for JSON payload
-        required_fields = ["symbol", "action", "TriggerPrice", "qty"]
-        for field in required_fields:
-            if field not in data or not data[field]:
-                raise HTTPException(status_code=400, detail=f"Missing or invalid field: {field}")
+        content_type = req.headers.get("content-type")
+        logging.info(f"Received webhook request with content type: {content_type}")
 
-        # Construct the primary order payload
-        primary_order = {
-            "id": 0,  # Placeholder for order ID, update dynamically if needed
-            "accountId": client.account_id,
-            "accountSpec": client.account_spec,  # Include accountSpec in the payload
-            "action": data["action"].upper(),
-            "symbol": data["symbol"],
-            "orderQty": int(data["qty"]),
-            "orderType": "Stop",
-            "stopPrice": float(data["TriggerPrice"]),
-            "timeInForce": "GTC",
-            "isAutomated": True,
-            "clOrdId": "string",  # Placeholder for client order ID
-            "customTag50": "WebhookOrder"  # Custom tag for identification
-        }
+        if content_type == "application/json":
+            data = await req.json()
+        elif content_type == "text/plain":
+            text_data = await req.body()
+            text_data = text_data.decode("utf-8")
+            logging.info(f"Received plain text data: {text_data}")
+            try:
+                # Use the new parser function to convert plain text alerts
+                data = parse_alert_to_tradovate_json(text_data, client.account_id)
+            except ValueError as e:
+                logging.error(f"Error parsing alert: {e}")
+                raise HTTPException(status_code=400, detail=str(e))
+        else:
+            logging.error("Unsupported content type")
+            raise HTTPException(status_code=400, detail="Unsupported content type")
 
-        # Construct bracket orders (T1, T2, T3, Stop)
-        brackets = []
-        for target in ["T1", "T2", "T3"]:
-            if target in data and data[target]:
+        # 🔒 Validate secret token
+        if data.get("token") != WEBHOOK_SECRET:
+            logging.warning(f"Unauthorized attempt: {data}")
+            raise HTTPException(status_code=403, detail="Invalid token")
+
+        logging.info(f"Validated payload: {data}")
+
+        try:
+            # Validate required fields for JSON payload
+            required_fields = ["symbol", "action", "TriggerPrice", "qty"]
+            for field in required_fields:
+                if field not in data or not data[field]:
+                    raise HTTPException(status_code=400, detail=f"Missing or invalid field: {field}")
+
+            # Construct the primary order payload
+            primary_order = {
+                "id": 0,  # Placeholder for order ID, update dynamically if needed
+                "accountId": client.account_id,
+                "accountSpec": client.account_spec,  # Include accountSpec in the payload
+                "action": data["action"].upper(),
+                "symbol": data["symbol"],
+                "orderQty": int(data["qty"]),
+                "orderType": "Stop",
+                "stopPrice": float(data["TriggerPrice"]),
+                "timeInForce": "GTC",
+                "isAutomated": True,
+                "clOrdId": "string",  # Placeholder for client order ID
+                "customTag50": "WebhookOrder"  # Custom tag for identification
+            }
+
+            # Construct bracket orders (T1, T2, T3, Stop)
+            brackets = []
+            for target in ["T1", "T2", "T3"]:
+                if target in data and data[target]:
+                    brackets.append({
+                        "id": 0,  # Placeholder for command ID
+                        "orderId": 0,  # Placeholder for parent order ID
+                        "action": "SELL" if data["action"].upper() == "BUY" else "BUY",
+                        "orderType": "Limit",
+                        "price": float(data[target]),
+                        "timeInForce": "GTC",
+                        "commandType": "New",  # Command type for new orders
+                        "commandStatus": "PendingExecution"  # Initial status
+                    })
+
+            if "Stop" in data and data["Stop"]:
                 brackets.append({
                     "id": 0,  # Placeholder for command ID
                     "orderId": 0,  # Placeholder for parent order ID
                     "action": "SELL" if data["action"].upper() == "BUY" else "BUY",
-                    "orderType": "Limit",
-                    "price": float(data[target]),
+                    "orderType": "Stop",
+                    "stopPrice": float(data["Stop"]),
                     "timeInForce": "GTC",
                     "commandType": "New",  # Command type for new orders
                     "commandStatus": "PendingExecution"  # Initial status
                 })
 
-        if "Stop" in data and data["Stop"]:
-            brackets.append({
-                "id": 0,  # Placeholder for command ID
-                "orderId": 0,  # Placeholder for parent order ID
-                "action": "SELL" if data["action"].upper() == "BUY" else "BUY",
-                "orderType": "Stop",
-                "stopPrice": float(data["Stop"]),
-                "timeInForce": "GTC",
-                "commandType": "New",  # Command type for new orders
-                "commandStatus": "PendingExecution"  # Initial status
-            })
+            # Add brackets to the primary order payload
+            primary_order["bracket1"] = brackets[0] if len(brackets) > 0 else None
+            primary_order["bracket2"] = brackets[1] if len(brackets) > 1 else None
 
-        # Add brackets to the primary order payload
-        primary_order["bracket1"] = brackets[0] if len(brackets) > 0 else None
-        primary_order["bracket2"] = brackets[1] if len(brackets) > 1 else None
+            # Log the payload being sent to Tradovate
+            logging.info(f"Primary order payload: {primary_order}")
 
-        # Log the payload being sent to Tradovate
-        logging.info(f"Primary order payload: {primary_order}")
+            # Execute the OSO order on Tradovate
+            result = await client.place_oso_order(primary_order)
 
-        # Execute the OSO order on Tradovate
-        result = await client.place_oso_order(primary_order)
+            logging.info(f"Executed OSO order | Response: {result}")
 
-        logging.info(f"Executed OSO order | Response: {result}")
+            return {"status": "success", "order_response": result}
 
-        return {"status": "success", "order_response": result}
+        except ValueError as ve:
+            logging.error(f"Validation error: {ve}")
+            return {"status": "error", "message": str(ve)}
+        except Exception as e:
+            logging.error(f"Order failed for {data}: {e}")
+            return {"status": "error", "message": str(e)}
 
-    except ValueError as ve:
-        logging.error(f"Validation error: {ve}")
-        return {"status": "error", "message": str(ve)}
     except Exception as e:
-        logging.error(f"Order failed for {data}: {e}")
-        return {"status": "error", "message": str(e)}
+        logging.error(f"Unexpected error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
