@@ -144,8 +144,8 @@ async def webhook(req: Request):
             logging.error(f"Unsupported content type: {content_type}")
             raise HTTPException(status_code=400, detail=f"Unsupported content type: {content_type}")
 
-        # 🔒 Validate secret token
-        if data.get("token") != WEBHOOK_SECRET:
+        # Ensure the token field matches the WEBHOOK_SECRET
+        if "token" not in data or data["token"] != WEBHOOK_SECRET:
             logging.warning(f"Unauthorized attempt: {data}")
             raise HTTPException(status_code=403, detail="Invalid token")
 
