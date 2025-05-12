@@ -55,15 +55,21 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
     try:
         # Split the alert text into lines and parse key-value pairs
         parsed_data = {}
+
+        # Handle special cases like settlement-as-close
+        if "settlement-as-close" in alert_text:
+            parsed_data["settlementAsClose"] = True
+
+        # Adjust parsing for the provided format
         for line in alert_text.split("\n"):
             if "=" in line:
                 key, value = line.split("=", 1)
                 parsed_data[key.strip()] = value.strip()
             elif line.strip().upper() in ["BUY", "SELL"]:
-                parsed_data["action"] = line.strip().upper()
+                parsed_data["action"] = line.strip().capitalize()
 
         # Validate required fields
-        required_fields = ["symbol", "action", "TriggerPrice"]
+        required_fields = ["symbol", "action", "PRICE"]
         for field in required_fields:
             if field not in parsed_data or not parsed_data[field]:
                 raise ValueError(f"Missing or invalid field: {field}")
@@ -75,15 +81,15 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
             "symbol": parsed_data["symbol"],
             "orderQty": 1,  # Default quantity; adjust as needed
             "orderType": "Stop",  # Assuming Stop order; adjust as needed
-            "stopPrice": float(parsed_data["TriggerPrice"]),
+            "stopPrice": float(parsed_data["PRICE"]),
             "timeInForce": "GTC",  # Good 'Til Canceled; adjust as needed
             "isAutomated": True
         }
 
-        # Add optional fields like T1, T2, T3, and Stop
-        for target in ["T1", "T2", "T3", "Stop"]:
+        # Add optional fields like T1, T2, T3, and STOP
+        for target in ["T1", "T2", "T3", "STOP"]:
             if target in parsed_data:
-                tradovate_payload[target] = float(parsed_data[target])
+                tradovate_payload[target.lower()] = float(parsed_data[target])
 
         return tradovate_payload
 
@@ -105,15 +111,13 @@ async def webhook(req: Request):
 
         if content_type == "application/json":
             data = await req.json()
-        elif content_type == "text/plain":
+        elif content_type.startswith("text/plain"):
             text_data = await req.body()
             text_data = text_data.decode("utf-8")
             logging.info(f"Received plain text data: {text_data}")
             try:
-                # Use the new parser function to convert plain text alerts
+                # Parse the plain text alert into JSON
                 data = parse_alert_to_tradovate_json(text_data, client.account_id)
-                # Override the symbol to NQM5
-                data["symbol"] = "NQM5"
             except ValueError as e:
                 logging.error(f"Error parsing alert: {e}")
                 raise HTTPException(status_code=400, detail=str(e))
