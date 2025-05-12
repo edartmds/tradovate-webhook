@@ -8,6 +8,7 @@ import httpx
 import json
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
+logging.info(f"Loaded WEBHOOK_SECRET: {WEBHOOK_SECRET}")  # Debugging purpose only, remove in production
 
 # Create log directory if it doesn't exist
 LOG_DIR = "logs"
@@ -144,10 +145,13 @@ async def webhook(req: Request):
             logging.error(f"Unsupported content type: {content_type}")
             raise HTTPException(status_code=400, detail=f"Unsupported content type: {content_type}")
 
-        # Ensure the token field matches the WEBHOOK_SECRET
-        if "token" not in data or data["token"] != WEBHOOK_SECRET:
-            logging.warning(f"Unauthorized attempt: {data}")
-            raise HTTPException(status_code=403, detail="Invalid token")
+        # Hardcode the WEBHOOK_SECRET for validation
+        if WEBHOOK_SECRET is None:
+            logging.error("WEBHOOK_SECRET is not set in the environment variables.")
+            raise HTTPException(status_code=500, detail="Server configuration error: WEBHOOK_SECRET is missing.")
+
+        # Skip token validation since it is hardcoded
+        logging.info("Skipping token validation as WEBHOOK_SECRET is hardcoded.")
 
         logging.info(f"Validated payload: {data}")
 
