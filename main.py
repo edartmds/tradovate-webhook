@@ -77,15 +77,11 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price
         logging.info(f"Parsed alert data before validation: {parsed_data}")
 
         # Validate required fields
-        required_fields = ["symbol", "action", "TriggerPrice"]
+        required_fields = ["symbol", "action"]  # Removed TriggerPrice from required fields
         for field in required_fields:
             if field not in parsed_data or not parsed_data[field]:
-                if field == "TriggerPrice" and latest_price is not None:
-                    logging.warning("TriggerPrice is missing. Using provided latest price.")
-                    parsed_data["TriggerPrice"] = latest_price
-                else:
-                    logging.error(f"Missing or invalid field: {field}. Parsed data: {parsed_data}")
-                    raise ValueError(f"Missing or invalid field: {field}")
+                logging.error(f"Missing or invalid field: {field}. Parsed data: {parsed_data}")
+                raise ValueError(f"Missing or invalid field: {field}")
 
         # Log parsed data after validation
         logging.info(f"Parsed alert data after validation: {parsed_data}")
@@ -97,7 +93,6 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price
             "symbol": parsed_data["symbol"],
             "orderQty": 1,  # Default quantity; adjust as needed
             "orderType": "Stop",  # Assuming Stop order; adjust as needed
-            "stopPrice": float(parsed_data["TriggerPrice"]),
             "timeInForce": "GTC",  # Good 'Til Canceled; adjust as needed
             "isAutomated": True
         }
