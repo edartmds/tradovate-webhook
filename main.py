@@ -89,8 +89,9 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
 
 @app.post("/webhook")
 async def webhook(req: Request):
-    # Ensure the client is authenticated before processing the webhook
+    # Ensure the client is authenticated and account_spec is set
     if not client.account_spec:
+        logging.info("Authenticating client as account_spec is not set.")
         await client.authenticate()
 
     try:
