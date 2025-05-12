@@ -43,9 +43,11 @@ class TradovateClient:
                 account_data = acc_res.json()
                 logging.info(f"Account list response: {json.dumps(account_data, indent=2)}")
                 self.account_id = account_data[0]["id"]
-
-                # Fetch accountSpec (username) for payloads
                 self.account_spec = account_data[0].get("name")
+
+                # Use hardcoded values from .env if available
+                self.account_id = int(os.getenv("TRADOVATE_ACCOUNT_ID", self.account_id))
+                self.account_spec = os.getenv("TRADOVATE_ACCOUNT_SPEC", self.account_spec)
 
                 if not self.account_spec:
                     logging.error("Failed to retrieve accountSpec. accountSpec is None.")
