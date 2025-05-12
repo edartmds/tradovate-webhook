@@ -159,7 +159,7 @@ async def webhook(req: Request):
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
             "action": "Buy",
-            "symbol": "MESM1",
+            "symbol": "NQM5",
             "orderQty": 1,
             "orderType": "Limit",
             "price": 4150.00,
