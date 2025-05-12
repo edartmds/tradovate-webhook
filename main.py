@@ -43,18 +43,24 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
     Converts a plain text alert into a Tradovate JSON payload.
 
     Args:
-        alert_text (str): The plain text alert (e.g., "symbol=MESM5,action=Buy,TriggerPrice=4500,qty=1").
+        alert_text (str): The plain text alert (e.g., "symbol=CME_MINI:NQ1!,action=Buy,TriggerPrice=20461.75,T1=20470.893,T2=20479.79,T3=20488.81,Stop=20441").
         account_id (int): The Tradovate account ID.
 
     Returns:
         dict: The JSON payload formatted for Tradovate's API.
     """
     try:
-        # Parse the plain text alert into a dictionary
-        parsed_data = dict(item.split("=") for item in alert_text.split(","))
+        # Split the alert text into lines and parse key-value pairs
+        parsed_data = {}
+        for line in alert_text.split("\n"):
+            if "=" in line:
+                key, value = line.split("=", 1)
+                parsed_data[key.strip()] = value.strip()
+            elif line.strip().upper() in ["BUY", "SELL"]:
+                parsed_data["action"] = line.strip().upper()
 
         # Validate required fields
-        required_fields = ["symbol", "action", "TriggerPrice", "qty"]
+        required_fields = ["symbol", "action", "TriggerPrice"]
         for field in required_fields:
             if field not in parsed_data or not parsed_data[field]:
                 raise ValueError(f"Missing or invalid field: {field}")
@@ -62,14 +68,19 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
         # Construct the Tradovate JSON payload
         tradovate_payload = {
             "accountId": account_id,
-            "action": parsed_data["action"].capitalize(),  # Ensure proper casing
+            "action": parsed_data["action"],
             "symbol": parsed_data["symbol"],
-            "orderQty": int(parsed_data["qty"]),
+            "orderQty": 1,  # Default quantity; adjust as needed
             "orderType": "Stop",  # Assuming Stop order; adjust as needed
             "stopPrice": float(parsed_data["TriggerPrice"]),
             "timeInForce": "GTC",  # Good 'Til Canceled; adjust as needed
             "isAutomated": True
         }
+
+        # Add optional fields like T1, T2, T3, and Stop
+        for target in ["T1", "T2", "T3", "Stop"]:
+            if target in parsed_data:
+                tradovate_payload[target] = float(parsed_data[target])
 
         return tradovate_payload
 
