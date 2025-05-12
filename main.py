@@ -160,7 +160,6 @@ async def webhook(req: Request):
             "symbol": data["symbol"],
             "orderQty": 1,
             "orderType": "Limit",
-            "price": float(data["TriggerPrice"]),
             "isAutomated": True,
             "bracket1": {
                 "action": "Sell",
