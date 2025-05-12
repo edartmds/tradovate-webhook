@@ -21,11 +21,11 @@ class TradovateClient:
         auth_payload = {
             "name": os.getenv("TRADOVATE_USERNAME"),
             "password": os.getenv("TRADOVATE_PASSWORD"),
-            "appId": os.getenv("TRADOVATE_CLIENT_ID"),
-            "appVersion": "0.0.1",
+            "appId": os.getenv("TRADOVATE_APP_ID"),
+            "appVersion": os.getenv("TRADOVATE_APP_VERSION"),
             "cid": os.getenv("TRADOVATE_CLIENT_ID"),
             "sec": os.getenv("TRADOVATE_CLIENT_SECRET"),
-            "deviceId": "webhook-bot"
+            "deviceId": os.getenv("TRADOVATE_DEVICE_ID")
         }
         try:
             async with httpx.AsyncClient() as client:
@@ -51,23 +51,15 @@ class TradovateClient:
                     logging.error("Failed to retrieve accountSpec. accountSpec is None.")
                     raise HTTPException(status_code=400, detail="Failed to retrieve accountSpec")
 
-                # Log the retrieved accountSpec for debugging
+                # Log the retrieved accountSpec and accountId for debugging
                 logging.info(f"Retrieved accountSpec: {self.account_spec}")
-
-                # Log the retrieved account ID for debugging
-                logging.info(f"Retrieved account ID: {self.account_id}")
+                logging.info(f"Retrieved accountId: {self.account_id}")
 
                 if not self.account_id:
                     logging.error("Failed to retrieve account ID. Account ID is None.")
                     raise HTTPException(status_code=400, detail="Failed to retrieve account ID")
 
-                # Ensure the account ID matches the expected demo account name
-                account_name = account_data[0].get("name", "")
-                if account_name != "DEMO482959":
-                    logging.error(f"Account name mismatch. Expected 'DEMO482959', got '{account_name}'")
-                    raise HTTPException(status_code=400, detail="Account name mismatch")
-
-                logging.info("Authentication successful. Access token and account ID retrieved.")
+                logging.info("Authentication successful. Access token, accountSpec, and account ID retrieved.")
         except httpx.HTTPStatusError as e:
             logging.error(f"Authentication failed: {e.response.text}")
             raise HTTPException(status_code=e.response.status_code, detail="Authentication failed")
