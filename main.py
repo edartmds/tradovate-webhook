@@ -1,160 +1,140 @@
+import httpx
 import os
 import logging
-from datetime import datetime
-from fastapi import FastAPI, Request, HTTPException
-from tradovate_api import TradovateClient
-import uvicorn
-import httpx
+import json  # Added for pretty-printing JSON responses
+from dotenv import load_dotenv
+from fastapi import HTTPException
 
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
+load_dotenv()
 
-# Create log directory if it doesn't exist
-LOG_DIR = "logs"
-os.makedirs(LOG_DIR, exist_ok=True)
+TRADOVATE_DEMO = os.getenv("TRADOVATE_DEMO", "true") == "true"
+BASE_URL = "https://demo-api.tradovate.com/v1" if TRADOVATE_DEMO else "https://live-api.tradovate.com/v1"
 
-# Set up logging
-log_file = os.path.join(LOG_DIR, "webhook_trades.log")
-logging.basicConfig(
-    filename=log_file,
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
+class TradovateClient:
+    def __init__(self):
+        self.access_token = None
+        self.account_id = None
+        self.account_spec = None
 
-app = FastAPI()
-client = TradovateClient()
+    async def authenticate(self):
+        url = f"{BASE_URL}/auth/accesstokenrequest"
+        auth_payload = {
+            "name": os.getenv("TRADOVATE_USERNAME"),
+            "password": os.getenv("TRADOVATE_PASSWORD"),
+            "appId": os.getenv("TRADOVATE_APP_ID"),
+            "appVersion": os.getenv("TRADOVATE_APP_VERSION"),
+            "cid": os.getenv("TRADOVATE_CLIENT_ID"),
+            "sec": os.getenv("TRADOVATE_CLIENT_SECRET"),
+            "deviceId": os.getenv("TRADOVATE_DEVICE_ID")
+        }
+        try:
+            async with httpx.AsyncClient() as client:
+                logging.debug(f"Sending authentication payload: {json.dumps(auth_payload, indent=2)}")
+                r = await client.post(url, json=auth_payload)
+                r.raise_for_status()
+                data = r.json()
+                logging.info(f"Authentication response: {json.dumps(data, indent=2)}")
+                self.access_token = data["accessToken"]
 
-@app.on_event("startup")
-async def startup_event():
-    # Authenticate the Tradovate client on startup
-    await client.authenticate()
+                # Fetch account ID
+                headers = {"Authorization": f"Bearer {self.access_token}"}
+                acc_res = await client.get(f"{BASE_URL}/account/list", headers=headers)
+                acc_res.raise_for_status()
+                account_data = acc_res.json()
+                logging.info(f"Account list response: {json.dumps(account_data, indent=2)}")
+                self.account_id = account_data[0]["id"]
 
-async def get_latest_price(symbol: str):
-    # Fetch the latest price for the symbol using Tradovate's REST API
-    url = f"https://demo-api.tradovate.com/v1/marketdata/quote/{symbol}"
-    headers = {"Authorization": f"Bearer {client.access_token}"}
-    async with httpx.AsyncClient() as http_client:
-        response = await http_client.get(url, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-        return data["last"]  # Return the last traded price
+                # Fetch accountSpec (username) for payloads
+                self.account_spec = account_data[0].get("name")
 
-def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
-    """
-    Converts a plain text alert into a Tradovate JSON payload.
+                if not self.account_spec:
+                    logging.error("Failed to retrieve accountSpec. accountSpec is None.")
+                    raise HTTPException(status_code=400, detail="Failed to retrieve accountSpec")
 
-    Args:
-        alert_text (str): The plain text alert (e.g., "symbol=CME_MINI:NQ1!,action=Buy,TriggerPrice=20461.75,T1=20470.893,T2=20479.79,T3=20488.81,Stop=20441").
-        account_id (int): The Tradovate account ID.
+                # Log the retrieved accountSpec and accountId for debugging
+                logging.info(f"Retrieved accountSpec: {self.account_spec}")
+                logging.info(f"Retrieved accountId: {self.account_id}")
 
-    Returns:
-        dict: The JSON payload formatted for Tradovate's API.
-    """
-    try:
-        # Split the alert text into lines and parse key-value pairs
-        parsed_data = {}
-        for line in alert_text.split("\n"):
-            if "=" in line:
-                key, value = line.split("=", 1)
-                parsed_data[key.strip()] = value.strip()
-            elif line.strip().upper() in ["BUY", "SELL"]:
-                parsed_data["action"] = line.strip().upper()
+                if not self.account_id:
+                    logging.error("Failed to retrieve account ID. Account ID is None.")
+                    raise HTTPException(status_code=400, detail="Failed to retrieve account ID")
 
-        # Validate required fields
-        required_fields = ["symbol", "action", "TriggerPrice"]
-        for field in required_fields:
-            if field not in parsed_data or not parsed_data[field]:
-                raise ValueError(f"Missing or invalid field: {field}")
+                logging.info("Authentication successful. Access token, accountSpec, and account ID retrieved.")
+        except httpx.HTTPStatusError as e:
+            logging.error(f"Authentication failed: {e.response.text}")
+            raise HTTPException(status_code=e.response.status_code, detail="Authentication failed")
+        except Exception as e:
+            logging.error(f"Unexpected error during authentication: {e}")
+            raise HTTPException(status_code=500, detail="Internal server error during authentication")
 
-        # Construct the Tradovate JSON payload
-        tradovate_payload = {
-            "accountId": account_id,
-            "action": parsed_data["action"],
-            "symbol": parsed_data["symbol"],
-            "orderQty": 1,  # Default quantity; adjust as needed
-            "orderType": "Stop",  # Assuming Stop order; adjust as needed
-            "stopPrice": float(parsed_data["TriggerPrice"]),
-            "timeInForce": "GTC",  # Good 'Til Canceled; adjust as needed
-            "isAutomated": True
+    async def place_order(self, symbol: str, action: str, quantity: int = 1, order_data: dict = None):
+        if not self.access_token:
+            await self.authenticate()
+
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json"
         }
 
-        # Add optional fields like T1, T2, T3, and Stop
-        for target in ["T1", "T2", "T3", "Stop"]:
-            if target in parsed_data:
-                tradovate_payload[target] = float(parsed_data[target])
-
-        return tradovate_payload
-
-    except Exception as e:
-        raise ValueError(f"Error parsing alert: {e}")
-
-@app.post("/webhook")
-async def webhook(req: Request):
-    # Ensure the client is authenticated before processing the webhook
-    if not client.account_spec:
-        await client.authenticate()
-
-    try:
-        content_type = req.headers.get("content-type")
-        logging.info(f"Received webhook request with content type: {content_type}")
-
-        if content_type == "application/json":
-            data = await req.json()
-        elif content_type == "text/plain":
-            text_data = await req.body()
-            text_data = text_data.decode("utf-8")
-            logging.info(f"Received plain text data: {text_data}")
-            try:
-                # Use the new parser function to convert plain text alerts
-                data = parse_alert_to_tradovate_json(text_data, client.account_id)
-                # Override the symbol to NQM5
-                data["symbol"] = "NQM5"
-            except ValueError as e:
-                logging.error(f"Error parsing alert: {e}")
-                raise HTTPException(status_code=400, detail=str(e))
-        else:
-            logging.error("Unsupported content type")
-            raise HTTPException(status_code=400, detail="Unsupported content type")
-
-        # 🔒 Validate secret token
-        if data.get("token") != WEBHOOK_SECRET:
-            logging.warning(f"Unauthorized attempt: {data}")
-            raise HTTPException(status_code=403, detail="Invalid token")
-
-        logging.info(f"Validated payload: {data}")
-
-        # Construct the primary order payload specific to Tradovate API
-        primary_order = {
-            "id": 0,  # Placeholder for order ID, update dynamically if needed
-            "accountId": client.account_id,
-            "accountSpec": client.account_spec,  # Include accountSpec in the payload
-            "action": data["action"].upper(),
-            "symbol": data["symbol"],
-            "orderQty": int(data.get("qty", 1)),
-            "orderType": "Stop",
-            "stopPrice": float(data["TriggerPrice"]),
+        # Use the provided order_data if available, otherwise construct a default payload
+        order_payload = order_data or {
+            "accountId": self.account_id,
+            "action": action.capitalize(),  # Ensure "Buy" or "Sell"
+            "symbol": symbol,
+            "orderQty": quantity,
+            "orderType": "Market",
             "timeInForce": "GTC",
-            "isAutomated": True,
-            "clOrdId": "string",  # Placeholder for client order ID
-            "customTag50": "WebhookOrder"  # Custom tag for identification
+            "isAutomated": True  # Optional field for automation
         }
 
-        # Ensure accountSpec is included in the payload
-        primary_order["accountSpec"] = client.account_spec
+        if not order_payload.get("accountId"):
+            logging.error("Missing accountId in order payload.")
+            raise HTTPException(status_code=400, detail="Missing accountId in order payload")
 
-        # Log the payload being sent to Tradovate
-        logging.info(f"Primary order payload: {primary_order}")
+        try:
+            async with httpx.AsyncClient() as client:
+                logging.debug(f"Sending order payload: {json.dumps(order_payload, indent=2)}")
+                r = await client.post(f"{BASE_URL}/order/placeorder", json=order_payload, headers=headers)
+                r.raise_for_status()
+                response_data = r.json()
+                logging.info(f"Order placement response: {json.dumps(response_data, indent=2)}")
+                return response_data
+        except httpx.HTTPStatusError as e:
+            logging.error(f"Order placement failed: {e.response.text}")
+            raise HTTPException(status_code=e.response.status_code, detail=f"Order placement failed: {e.response.text}")
+        except Exception as e:
+            logging.error(f"Unexpected error during order placement: {e}")
+            raise HTTPException(status_code=500, detail="Internal server error during order placement")
 
-        # Execute the OSO order on Tradovate
-        result = await client.place_oso_order(primary_order)
+    async def place_oso_order(self, order_payload: dict):
+        """
+        Places an OSO (Order Sends Order) order on Tradovate.
 
-        logging.info(f"Executed OSO order | Response: {result}")
+        Args:
+            order_payload (dict): The JSON payload for the OSO order.
 
-        return {"status": "success", "order_response": result}
+        Returns:
+            dict: The response from the Tradovate API.
+        """
+        if not self.access_token:
+            await self.authenticate()
 
-    except Exception as e:
-        logging.error(f"Unexpected error: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json"
+        }
 
-if __name__ == "__main__":
-    port = int(os.getenv("PORT", 10000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
+        try:
+            async with httpx.AsyncClient() as client:
+                logging.debug(f"Sending OSO order payload: {json.dumps(order_payload, indent=2)}")
+                response = await client.post(f"{BASE_URL}/order/oso", json=order_payload, headers=headers)
+                response.raise_for_status()
+                response_data = response.json()
+                logging.info(f"OSO order response: {json.dumps(response_data, indent=2)}")
+                return response_data
+        except httpx.HTTPStatusError as e:
+            logging.error(f"OSO order placement failed: {e.response.text}")
+            raise HTTPException(status_code=e.response.status_code, detail=f"OSO order placement failed: {e.response.text}")
+        except Exception as e:
+            logging.error(f"Unexpected error during OSO order placement: {e}")
+            raise HTTPException(status_code=500, detail="Internal server error during OSO order placement")
