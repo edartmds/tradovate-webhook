@@ -86,7 +86,7 @@ class TradovateClient:
             "action": action.capitalize(),  # Ensure "Buy" or "Sell"
             "symbol": symbol,
             "orderQty": quantity,
-            "orderType": "Market",
+            "orderType": "limit",
             "timeInForce": "GTC",
             "isAutomated": True  # Optional field for automation
         }
