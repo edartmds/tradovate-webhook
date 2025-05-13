@@ -69,6 +69,10 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price
                 # Map PRICE to TriggerPrice for consistency
                 if key == "PRICE":
                     key = "TriggerPrice"
+                elif key == "STOP":
+                    key = "stopPrice"  # Map STOP to stopPrice for Tradovate
+                elif key == "LIMIT":
+                    key = "limitPrice"  # Map LIMIT to limitPrice for Tradovate
                 parsed_data[key] = value
             elif line.strip().upper() in ["BUY", "SELL"]:
                 parsed_data["action"] = line.strip().capitalize()
@@ -77,7 +81,7 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price
         logging.info(f"Parsed alert data before validation: {parsed_data}")
 
         # Validate required fields
-        required_fields = ["symbol", "action"]  # Removed TriggerPrice from required fields
+        required_fields = ["symbol", "action", "stopPrice"]  # Ensure stopPrice is included
         for field in required_fields:
             if field not in parsed_data or not parsed_data[field]:
                 logging.error(f"Missing or invalid field: {field}. Parsed data: {parsed_data}")
@@ -159,8 +163,9 @@ async def webhook(req: Request):
             "action": data["action"],
             "symbol": data["symbol"],
             "orderQty": 1,
-            "orderType": "Limit",
-            "price": float(data.get("TriggerPrice", 0)),  # Use TriggerPrice (mapped from PRICE) or default to 0
+            "orderType": "StopLimit",  # Use StopLimit for better control
+            "stopPrice": float(data.get("stopPrice")),  # Use stopPrice from alert
+            "limitPrice": float(data.get("limitPrice", 0)),  # Use limitPrice if provided
             "isAutomated": True,
             "bracket1": {
                 "action": "Sell",
