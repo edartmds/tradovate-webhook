@@ -176,6 +176,16 @@ async def webhook(req: Request):
                     logging.error(f"Field {key} has an invalid value: {data[key]}. Defaulting to 0.0.")
                     data[key] = 0.0
 
+        # Fetch the latest price if any price-related field is missing or invalid
+        if latest_price is None:
+            latest_price = await get_latest_price(data["symbol"])
+
+        # Update price fields with meaningful defaults based on the latest price
+        for key in ["stopPrice", "limitPrice", "T1", "T2", "T3", "STOP"]:
+            if key not in data or data[key] is None or data[key] == 0.0:
+                logging.warning(f"Field {key} is missing, None, or 0.0. Defaulting to latest price: {latest_price}.")
+                data[key] = latest_price
+
         # Construct the OSO order payload specific to Tradovate API
         oso_order = {
             "accountSpec": client.account_spec,
