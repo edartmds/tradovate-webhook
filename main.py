@@ -184,7 +184,10 @@ async def webhook(req: Request):
                     logging.error(f"Field {key} has an invalid value: {data[key]}. Defaulting to 0.0.")
                     data[key] = 0.0
 
-        # Fetch the latest price if any price-related field is missing or invalid
+        # Ensure the symbol is mapped to Tradovate-compatible format before fetching the latest price
+        if "symbol" in data:
+            data["symbol"] = map_symbol_to_tradovate_format(data["symbol"])
+
         if latest_price is None:
             latest_price = await get_latest_price(data["symbol"])
 
