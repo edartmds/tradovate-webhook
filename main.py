@@ -203,6 +203,19 @@ async def webhook(req: Request):
                 logging.warning(f"Field {key} is missing, None, or 0.0. Defaulting to latest price: {latest_price}.")
                 data[key] = latest_price
 
+        # Ensure fallback price is applied to all required fields in the OSO order payload
+        for key in ["stopPrice", "limitPrice", "T1", "T2", "T3", "STOP"]:
+            if data[key] is None or data[key] == 0.0:
+                logging.warning(f"Field {key} is invalid. Applying fallback price: {latest_price}.")
+                data[key] = latest_price
+
+        # Validate the OSO order payload before sending it to Tradovate
+        required_oso_fields = ["stopPrice", "limitPrice"]
+        for field in required_oso_fields:
+            if data[field] is None or data[field] <= 0:
+                logging.error(f"Field {field} is missing or invalid in the OSO order payload: {data[field]}.")
+                raise HTTPException(status_code=400, detail=f"Invalid OSO order payload: {field} is required and must be greater than 0.")
+
         # Update the symbol in the data using the mapping function
         data["symbol"] = map_symbol_to_tradovate_format(data["symbol"])
 
