@@ -164,6 +164,18 @@ async def webhook(req: Request):
 
         logging.info(f"Validated payload: {data}")
 
+        # Ensure all numeric fields are validated and defaulted to a valid value
+        for key in ["stopPrice", "limitPrice", "T1", "T2", "T3", "STOP"]:
+            if key not in data or data[key] is None:
+                logging.warning(f"Field {key} is missing or None. Defaulting to 0.0.")
+                data[key] = 0.0
+            else:
+                try:
+                    data[key] = float(data[key])
+                except ValueError:
+                    logging.error(f"Field {key} has an invalid value: {data[key]}. Defaulting to 0.0.")
+                    data[key] = 0.0
+
         # Construct the OSO order payload specific to Tradovate API
         oso_order = {
             "accountSpec": client.account_spec,
