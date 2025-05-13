@@ -87,6 +87,14 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price
                 logging.error(f"Missing or invalid field: {field}. Parsed data: {parsed_data}")
                 raise ValueError(f"Missing or invalid field: {field}")
 
+        # Ensure numeric fields have default values
+        parsed_data["stopPrice"] = float(parsed_data.get("stopPrice", 0))
+        parsed_data["limitPrice"] = float(parsed_data.get("limitPrice", 0))
+        parsed_data["T1"] = float(parsed_data.get("T1", 0))
+        parsed_data["T2"] = float(parsed_data.get("T2", 0))
+        parsed_data["T3"] = float(parsed_data.get("T3", 0))
+        parsed_data["STOP"] = float(parsed_data.get("STOP", 0))
+
         # Log parsed data after validation
         logging.info(f"Parsed alert data after validation: {parsed_data}")
 
@@ -164,28 +172,28 @@ async def webhook(req: Request):
             "symbol": data["symbol"],
             "orderQty": 1,
             "orderType": "StopLimit",  # Use StopLimit for better control
-            "stopPrice": float(data.get("stopPrice")),  # Use stopPrice from alert
-            "limitPrice": float(data.get("limitPrice", 0)),  # Use limitPrice if provided
+            "stopPrice": float(data.get("stopPrice", 0)),  # Default to 0 if missing
+            "limitPrice": float(data.get("limitPrice", 0)),  # Default to 0 if missing
             "isAutomated": True,
             "bracket1": {
                 "action": "Sell",
                 "orderType": "Limit",
-                "price": float(data.get("T1", 0))  # Use T1 from alert or default to 0
+                "price": float(data.get("T1", 0))  # Default to 0 if missing
             },
             "bracket2": {
                 "action": "Sell",
                 "orderType": "Limit",
-                "price": float(data.get("T2", 0))  # Use T2 from alert or default to 0
+                "price": float(data.get("T2", 0))  # Default to 0 if missing
             },
             "bracket3": {
                 "action": "Sell",
                 "orderType": "Limit",
-                "price": float(data.get("T3", 0))  # Use T3 from alert or default to 0
+                "price": float(data.get("T3", 0))  # Default to 0 if missing
             },
             "stopBracket": {
                 "action": "Sell",
                 "orderType": "Stop",
-                "price": float(data.get("STOP", 0))  # Use Stop from alert or default to 0
+                "price": float(data.get("STOP", 0))  # Default to 0 if missing
             }
         }
 
