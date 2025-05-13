@@ -69,10 +69,6 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price
                 # Map PRICE to TriggerPrice for consistency
                 if key == "PRICE":
                     key = "TriggerPrice"
-                elif key == "STOP":
-                    key = "stopPrice"  # Map STOP to stopPrice for Tradovate
-                elif key == "LIMIT":
-                    key = "limitPrice"  # Map LIMIT to limitPrice for Tradovate
                 parsed_data[key] = value
             elif line.strip().upper() in ["BUY", "SELL"]:
                 parsed_data["action"] = line.strip().capitalize()
@@ -81,19 +77,11 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price
         logging.info(f"Parsed alert data before validation: {parsed_data}")
 
         # Validate required fields
-        required_fields = ["symbol", "action", "stopPrice"]  # Ensure stopPrice is included
+        required_fields = ["symbol", "action"]  # Removed TriggerPrice from required fields
         for field in required_fields:
             if field not in parsed_data or not parsed_data[field]:
                 logging.error(f"Missing or invalid field: {field}. Parsed data: {parsed_data}")
                 raise ValueError(f"Missing or invalid field: {field}")
-
-        # Ensure numeric fields have default values
-        parsed_data["stopPrice"] = float(parsed_data.get("stopPrice", 0))
-        parsed_data["limitPrice"] = float(parsed_data.get("limitPrice", 0))
-        parsed_data["T1"] = float(parsed_data.get("T1", 0))
-        parsed_data["T2"] = float(parsed_data.get("T2", 0))
-        parsed_data["T3"] = float(parsed_data.get("T3", 0))
-        parsed_data["STOP"] = float(parsed_data.get("STOP", 0))
 
         # Log parsed data after validation
         logging.info(f"Parsed alert data after validation: {parsed_data}")
@@ -164,18 +152,6 @@ async def webhook(req: Request):
 
         logging.info(f"Validated payload: {data}")
 
-        # Ensure all numeric fields are validated and defaulted to a valid value
-        for key in ["stopPrice", "limitPrice", "T1", "T2", "T3", "STOP"]:
-            if key not in data or data[key] is None:
-                logging.warning(f"Field {key} is missing or None. Defaulting to 0.0.")
-                data[key] = 0.0
-            else:
-                try:
-                    data[key] = float(data[key])
-                except ValueError:
-                    logging.error(f"Field {key} has an invalid value: {data[key]}. Defaulting to 0.0.")
-                    data[key] = 0.0
-
         # Construct the OSO order payload specific to Tradovate API
         oso_order = {
             "accountSpec": client.account_spec,
@@ -183,42 +159,35 @@ async def webhook(req: Request):
             "action": data["action"],
             "symbol": data["symbol"],
             "orderQty": 1,
-            "orderType": "StopLimit",  # Use StopLimit for better control
-            "stopPrice": float(data.get("stopPrice", 0)),  # Default to 0 if missing
-            "limitPrice": float(data.get("limitPrice", 0)),  # Default to 0 if missing
+            "orderType": "Limit",
+            "price": float(data.get("TriggerPrice", 0)),  # Use TriggerPrice (mapped from PRICE) or default to 0
             "isAutomated": True,
             "bracket1": {
                 "action": "Sell",
                 "orderType": "Limit",
-                "price": float(data.get("T1", 0))  # Default to 0 if missing
+                "price": float(data.get("T1", 0))  # Use T1 from alert or default to 0
             },
             "bracket2": {
                 "action": "Sell",
                 "orderType": "Limit",
-                "price": float(data.get("T2", 0))  # Default to 0 if missing
+                "price": float(data.get("T2", 0))  # Use T2 from alert or default to 0
             },
             "bracket3": {
                 "action": "Sell",
                 "orderType": "Limit",
-                "price": float(data.get("T3", 0))  # Default to 0 if missing
+                "price": float(data.get("T3", 0))  # Use T3 from alert or default to 0
             },
             "stopBracket": {
                 "action": "Sell",
                 "orderType": "Stop",
-                "price": float(data.get("STOP", 0))  # Default to 0 if missing
+                "price": float(data.get("STOP", 0))  # Use Stop from alert or default to 0
             }
         }
 
         logging.info(f"OSO order payload: {oso_order}")
 
         # Place the OSO order
-        try:
-            logging.info(f"Sending OSO order to Tradovate: {oso_order}")
-            result = await client.place_oso_order(oso_order)
-            logging.info(f"Tradovate API response: {result}")
-        except Exception as e:
-            logging.error(f"Error placing OSO order: {e}")
-            raise HTTPException(status_code=500, detail=f"Error placing OSO order: {e}")
+        result = await client.place_oso_order(oso_order)
 
         logging.info(f"Executed OSO order | Response: {result}")
 
