@@ -120,6 +120,14 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price
         logging.error(f"Error parsing alert: {e}. Raw alert text: {alert_text}")
         raise ValueError(f"Error parsing alert: {e}")
 
+# Add a function to map incoming symbols to Tradovate-compatible symbols
+def map_symbol_to_tradovate_format(symbol: str) -> str:
+    symbol_mapping = {
+        "CME_MINI:NQ1!": "NQM5",  # Example mapping; add more as needed
+        # Add other mappings here
+    }
+    return symbol_mapping.get(symbol, symbol)  # Default to the original symbol if no mapping exists
+
 @app.post("/webhook")
 async def webhook(req: Request):
     logging.info("Webhook endpoint hit. Request received.")
@@ -185,6 +193,9 @@ async def webhook(req: Request):
             if key not in data or data[key] is None or data[key] == 0.0:
                 logging.warning(f"Field {key} is missing, None, or 0.0. Defaulting to latest price: {latest_price}.")
                 data[key] = latest_price
+
+        # Update the symbol in the data using the mapping function
+        data["symbol"] = map_symbol_to_tradovate_format(data["symbol"])
 
         # Construct the OSO order payload specific to Tradovate API
         oso_order = {
