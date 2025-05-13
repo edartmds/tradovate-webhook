@@ -188,8 +188,14 @@ async def webhook(req: Request):
         if "symbol" in data:
             data["symbol"] = map_symbol_to_tradovate_format(data["symbol"])
 
-        if latest_price is None:
-            latest_price = await get_latest_price(data["symbol"])
+        # Add a fallback mechanism if the latest price cannot be fetched
+        try:
+            if latest_price is None:
+                latest_price = await get_latest_price(data["symbol"])
+        except httpx.HTTPStatusError as e:
+            logging.error(f"Failed to fetch latest price for symbol {data['symbol']}: {e}")
+            latest_price = 100.0  # Default fallback price; adjust as needed
+            logging.warning(f"Using fallback price: {latest_price}")
 
         # Update price fields with meaningful defaults based on the latest price
         for key in ["stopPrice", "limitPrice", "T1", "T2", "T3", "STOP"]:
