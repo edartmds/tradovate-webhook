@@ -160,6 +160,7 @@ async def webhook(req: Request):
             "symbol": data["symbol"],
             "orderQty": 1,
             "orderType": "Limit",
+            "price": float(data.get("TriggerPrice", 0)),  # Use TriggerPrice (mapped from PRICE) or default to 0
             "isAutomated": True,
             "bracket1": {
                 "action": "Sell",
