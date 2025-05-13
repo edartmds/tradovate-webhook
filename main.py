@@ -120,14 +120,6 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price
         logging.error(f"Error parsing alert: {e}. Raw alert text: {alert_text}")
         raise ValueError(f"Error parsing alert: {e}")
 
-# Add a function to map incoming symbols to Tradovate-compatible symbols
-def map_symbol_to_tradovate_format(symbol: str) -> str:
-    symbol_mapping = {
-        "CME_MINI:NQ1!": "NQM5",  # Example mapping; add more as needed
-        # Add other mappings here
-    }
-    return symbol_mapping.get(symbol, symbol)  # Default to the original symbol if no mapping exists
-
 @app.post("/webhook")
 async def webhook(req: Request):
     logging.info("Webhook endpoint hit. Request received.")
@@ -183,41 +175,6 @@ async def webhook(req: Request):
                 except ValueError:
                     logging.error(f"Field {key} has an invalid value: {data[key]}. Defaulting to 0.0.")
                     data[key] = 0.0
-
-        # Ensure the symbol is mapped to Tradovate-compatible format before fetching the latest price
-        if "symbol" in data:
-            data["symbol"] = map_symbol_to_tradovate_format(data["symbol"])
-
-        # Add a fallback mechanism if the latest price cannot be fetched
-        try:
-            if latest_price is None:
-                latest_price = await get_latest_price(data["symbol"])
-        except httpx.HTTPStatusError as e:
-            logging.error(f"Failed to fetch latest price for symbol {data['symbol']}: {e}")
-            latest_price = 100.0  # Default fallback price; adjust as needed
-            logging.warning(f"Using fallback price: {latest_price}")
-
-        # Update price fields with meaningful defaults based on the latest price
-        for key in ["stopPrice", "limitPrice", "T1", "T2", "T3", "STOP"]:
-            if key not in data or data[key] is None or data[key] == 0.0:
-                logging.warning(f"Field {key} is missing, None, or 0.0. Defaulting to latest price: {latest_price}.")
-                data[key] = latest_price
-
-        # Ensure fallback price is applied to all required fields in the OSO order payload
-        for key in ["stopPrice", "limitPrice", "T1", "T2", "T3", "STOP"]:
-            if data[key] is None or data[key] == 0.0:
-                logging.warning(f"Field {key} is invalid. Applying fallback price: {latest_price}.")
-                data[key] = latest_price
-
-        # Validate the OSO order payload before sending it to Tradovate
-        required_oso_fields = ["stopPrice", "limitPrice"]
-        for field in required_oso_fields:
-            if data[field] is None or data[field] <= 0:
-                logging.error(f"Field {field} is missing or invalid in the OSO order payload: {data[field]}.")
-                raise HTTPException(status_code=400, detail=f"Invalid OSO order payload: {field} is required and must be greater than 0.")
-
-        # Update the symbol in the data using the mapping function
-        data["symbol"] = map_symbol_to_tradovate_format(data["symbol"])
 
         # Construct the OSO order payload specific to Tradovate API
         oso_order = {
