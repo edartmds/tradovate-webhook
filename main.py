@@ -187,7 +187,13 @@ async def webhook(req: Request):
         logging.info(f"OSO order payload: {oso_order}")
 
         # Place the OSO order
-        result = await client.place_oso_order(oso_order)
+        try:
+            logging.info(f"Sending OSO order to Tradovate: {oso_order}")
+            result = await client.place_oso_order(oso_order)
+            logging.info(f"Tradovate API response: {result}")
+        except Exception as e:
+            logging.error(f"Error placing OSO order: {e}")
+            raise HTTPException(status_code=500, detail=f"Error placing OSO order: {e}")
 
         logging.info(f"Executed OSO order | Response: {result}")
 
