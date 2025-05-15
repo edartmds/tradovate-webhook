@@ -158,9 +158,9 @@ async def webhook(req: Request):
             "action": data["action"],
             "symbol": data["symbol"],
             "orderQty": 1,
-            "orderType": "Limit",  # Single limit order
-            "price": float(data.get("TriggerPrice", 0)),  # Use TriggerPrice from the alert
-            "timeInForce": "GTC",  # Good 'Til Canceled
+            "orderType": "limit",  # Use lowercase as required by Tradovate
+            "price": float(data.get("TriggerPrice", 0)),
+            "timeInForce": "GTC",
             "isAutomated": True
         }
 
@@ -176,6 +176,10 @@ async def webhook(req: Request):
                 order_data=limit_order
             )
             logging.info(f"Tradovate API response: {result}")
+            # Check for error in Tradovate response
+            if isinstance(result, dict) and ("error" in result or "message" in result):
+                logging.error(f"Tradovate API error: {result}")
+                raise HTTPException(status_code=500, detail=f"Tradovate API error: {result}")
         except Exception as e:
             logging.error(f"Error placing limit order: {e}")
             raise HTTPException(status_code=500, detail=f"Error placing limit order: {e}")
