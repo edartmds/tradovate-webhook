@@ -164,25 +164,23 @@ async def webhook(req: Request):
             "isAutomated": True
         }
 
-        # Add optional brackets only if they are present in the alert data
-        if "T1" in data:
-            oso_order["bracket1"] = {
-                "action": "Sell",
-                "orderType": "Limit",
-                "price": float(data["T1"])
-            }
-        if "T2" in data:
-            oso_order["bracket2"] = {
-                "action": "Sell",
-                "orderType": "Limit",
-                "price": float(data["T2"])
-            }
-        if "T3" in data:
-            oso_order["bracket3"] = {
-                "action": "Sell",
-                "orderType": "Limit",
-                "price": float(data["T3"])
-            }
+        # Ensure brackets are always included in the payload with default values if not provided
+        oso_order["bracket1"] = {
+            "action": "Sell",
+            "orderType": "Limit",
+            "price": float(data.get("T1", 0))  # Default to 0 if T1 is not provided
+        }
+        oso_order["bracket2"] = {
+            "action": "Sell",
+            "orderType": "Limit",
+            "price": float(data.get("T2", 0))  # Default to 0 if T2 is not provided
+        }
+        oso_order["bracket3"] = {
+            "action": "Sell",
+            "orderType": "Limit",
+            "price": float(data.get("T3", 0))  # Default to 0 if T3 is not provided
+        }
+
         if "STOP" in data:
             oso_order["stopBracket"] = {
                 "action": "Sell",
