@@ -141,42 +141,27 @@ async def webhook(req: Request):
         logging.info("Skipping token validation as WEBHOOK_SECRET is hardcoded.")
         logging.info(f"Validated payload: {data}")
 
-        # Place a limit order for each price: PRICE, T1, T2, T3, CLOSE, settlement-as-close, etc.
-        # If T1, T2, T3, STOP are present, use them as take profits and stop loss for bracket orders
+        # Enforce only required fields for Tradovate order payload
+        # Place a limit order for each price: PRICE, T1, T2, T3
         try:
             action = data["action"].capitalize() if "action" in data else None
 
             # Convert TradingView symbol to Tradovate symbol if needed
             symbol = data["symbol"]
-            if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
+            if symbol == "CME_MINI:NQ1!":
                 symbol = "NQM5"
 
             order_qty = int(data.get("qty", 1))
-            entry_price = None
-            if "PRICE" in data:
-                entry_price = float(data["PRICE"])
-            elif "price" in data:
-                entry_price = float(data["price"])
-            if entry_price is None:
-                logging.error(f"No entry price found in alert: {data}")
-                raise KeyError("No entry price found in alert data")
-
-            # Bracket order logic
-            take_profits = []
-            for key in ["T1", "T2", "T3", "t1", "t2", "t3"]:
+            price_fields = []
+            for key in ["PRICE", "T1", "T2", "T3", "price", "t1", "t2", "t3"]:
                 if key in data:
                     try:
-                        take_profits.append(float(data[key]))
+                        price_fields.append((key, float(data[key])))
                     except Exception as e:
                         logging.warning(f"Could not convert {key} value to float: {data[key]} ({e})")
-            stop_loss = None
-            for key in ["STOP", "stop"]:
-                if key in data:
-                    try:
-                        stop_loss = float(data[key])
-                        break
-                    except Exception as e:
-                        logging.warning(f"Could not convert {key} value to float: {data[key]} ({e})")
+            if not price_fields:
+                logging.error(f"No limit order prices found in alert: {data}")
+                raise KeyError("No limit order prices found in alert data")
 
             # Build and log the full payload for all TradingView alert variables
             tradingview_vars = {}
@@ -186,6 +171,7 @@ async def webhook(req: Request):
             ]:
                 if key in data:
                     tradingview_vars[key] = data[key]
+            # Add the resolved Tradovate symbol and order_qty for clarity
             tradingview_vars["resolved_symbol"] = symbol
             tradingview_vars["resolved_order_qty"] = order_qty
             logging.info(f"TradingView alert variables payload: {tradingview_vars}")
@@ -194,47 +180,19 @@ async def webhook(req: Request):
             logging.error(f"Error extracting required fields for order: {e}")
             raise HTTPException(status_code=400, detail=f"Invalid or missing required order fields: {e}")
 
-        # If take profits or stop loss are present, place a bracket order (OSO)
-        if take_profits or stop_loss is not None:
-            bracket_order = {
-                "accountId": client.account_id,
-                "action": action,
-                "symbol": symbol,
-                "orderQty": order_qty,
-                "orderType": "Limit",
-                "price": entry_price,
-                "timeInForce": "GTC",
-                "isAutomated": True,
-                "bracket1": {
-                    "profitTarget": take_profits[0] if len(take_profits) > 0 else None,
-                    "stopLoss": stop_loss
-                }
-            }
-            logging.info(f"Placing bracket (OSO) order: {bracket_order}")
-            try:
-                result = await client.place_oso_order(bracket_order)
-                logging.info(f"Tradovate API response for bracket order: {result}")
-                if isinstance(result, dict) and ("error" in result or "message" in result):
-                    logging.error(f"Tradovate API error for bracket order: {result}")
-                    return {"status": "error", "order_response": result}
-                else:
-                    return {"status": "success", "order_response": result}
-            except Exception as e:
-                logging.error(f"Error placing bracket order: {e}")
-                raise HTTPException(status_code=500, detail=f"Error placing bracket order: {e}")
-        else:
-            # Place a simple limit order if no take profits or stop loss
+        order_results = []
+        for label, price in price_fields:
             limit_order = {
                 "accountId": client.account_id,
-                "action": action,
+                "action": action,  # 'Buy' or 'Sell'
                 "symbol": symbol,
                 "orderQty": order_qty,
                 "orderType": "Limit",
-                "price": entry_price,
+                "price": price,
                 "timeInForce": "GTC",
                 "isAutomated": True
             }
-            logging.info(f"Placing simple limit order: {limit_order}")
+            logging.info(f"Placing {label} limit order: {limit_order}")
             try:
                 result = await client.place_order(
                     symbol=limit_order["symbol"],
@@ -242,15 +200,18 @@ async def webhook(req: Request):
                     quantity=limit_order["orderQty"],
                     order_data=limit_order
                 )
-                logging.info(f"Tradovate API response for limit order: {result}")
+                logging.info(f"Tradovate API response for {label}: {result}")
                 if isinstance(result, dict) and ("error" in result or "message" in result):
-                    logging.error(f"Tradovate API error for limit order: {result}")
-                    return {"status": "error", "order_response": result}
+                    logging.error(f"Tradovate API error for {label}: {result}")
+                    order_results.append({"label": label, "error": result})
                 else:
-                    return {"status": "success", "order_response": result}
+                    order_results.append({"label": label, "result": result})
             except Exception as e:
-                logging.error(f"Error placing limit order: {e}")
-                raise HTTPException(status_code=500, detail=f"Error placing limit order: {e}")
+                logging.error(f"Error placing {label} limit order: {e}")
+                order_results.append({"label": label, "error": str(e)})
+
+        logging.info(f"Executed all limit orders | Results: {order_results}")
+        return {"status": "success", "order_responses": order_results}
 
     except Exception as e:
         logging.error(f"Unexpected error in webhook: {e}")
