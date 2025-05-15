@@ -141,83 +141,50 @@ async def webhook(req: Request):
         logging.info("Skipping token validation as WEBHOOK_SECRET is hardcoded.")
         logging.info(f"Validated payload: {data}")
 
-        # Place entry order, then exit/target orders in the opposite direction, and a stop loss
+        # Enforce only required fields for Tradovate order payload
+        # Place a limit order for each price: PRICE, T1, T2, T3
         try:
             action = data["action"].capitalize() if "action" in data else None
+
             # Convert TradingView symbol to Tradovate symbol if needed
             symbol = data["symbol"]
             if symbol == "CME_MINI:NQ1!":
                 symbol = "NQM5"
+
             order_qty = int(data.get("qty", 1))
-            # Entry price (PRICE, price, or t0)
-            entry_price = None
-            for key in ["PRICE", "price", "t0", "T0"]:
+            price_fields = []
+            for key in ["PRICE", "T1", "T2", "T3", "price", "t1", "t2", "t3"]:
                 if key in data:
                     try:
-                        entry_price = float(data[key])
-                        break
+                        price_fields.append((key, float(data[key])))
                     except Exception as e:
                         logging.warning(f"Could not convert {key} value to float: {data[key]} ({e})")
-            if entry_price is None:
-                logging.error(f"No entry price found in alert: {data}")
-                raise KeyError("No entry price found in alert data")
-            # Target prices (T1-T5, t1-t5)
-            target_fields = []
-            for key in ["T1", "T2", "T3", "T4", "T5", "t1", "t2", "t3", "t4", "t5"]:
+            if not price_fields:
+                logging.error(f"No limit order prices found in alert: {data}")
+                raise KeyError("No limit order prices found in alert data")
+
+            # Build and log the full payload for all TradingView alert variables
+            tradingview_vars = {}
+            for key in [
+                "accountId", "action", "symbol", "orderQty", "orderType", "timeInForce", "isAutomated",
+                "PRICE", "price", "t0", "T0", "T1", "T2", "T3", "T4", "T5", "t1", "t2", "t3", "t4", "t5", "STOP", "stop"
+            ]:
                 if key in data:
-                    try:
-                        target_fields.append((key, float(data[key])))
-                    except Exception as e:
-                        logging.warning(f"Could not convert {key} value to float: {data[key]} ({e})")
-            # Stop loss price if present
-            stop_price = None
-            for key in ["STOP", "stop"]:
-                if key in data:
-                    try:
-                        stop_price = float(data[key])
-                        break
-                    except Exception as e:
-                        logging.warning(f"Could not convert {key} value to float: {data[key]} ({e})")
+                    tradingview_vars[key] = data[key]
+            # Add the resolved Tradovate symbol and order_qty for clarity
+            tradingview_vars["resolved_symbol"] = symbol
+            tradingview_vars["resolved_order_qty"] = order_qty
+            logging.info(f"TradingView alert variables payload: {tradingview_vars}")
+
         except Exception as e:
             logging.error(f"Error extracting required fields for order: {e}")
             raise HTTPException(status_code=400, detail=f"Invalid or missing required order fields: {e}")
 
         order_results = []
-        # Place entry limit order
-        entry_order = {
-            "accountId": client.account_id,
-            "action": action,  # 'Buy' or 'Sell'
-            "symbol": symbol,
-            "orderQty": order_qty,
-            "orderType": "Limit",
-            "price": entry_price,
-            "timeInForce": "GTC",
-            "isAutomated": True
-        }
-        logging.info(f"Placing ENTRY limit order: {entry_order}")
-        try:
-            result = await client.place_order(
-                symbol=entry_order["symbol"],
-                action=entry_order["action"],
-                quantity=entry_order["orderQty"],
-                order_data=entry_order
-            )
-            logging.info(f"Tradovate API response for ENTRY: {result}")
-            if isinstance(result, dict) and ("error" in result or "message" in result):
-                logging.error(f"Tradovate API error for ENTRY: {result}")
-                order_results.append({"label": "ENTRY", "error": result})
-            else:
-                order_results.append({"label": "ENTRY", "result": result})
-        except Exception as e:
-            logging.error(f"Error placing ENTRY limit order: {e}")
-            order_results.append({"label": "ENTRY", "error": str(e)})
-
-        # Place exit/target limit orders in the opposite direction
-        exit_action = "Sell" if action == "Buy" else "Buy"
-        for label, price in target_fields:
-            exit_order = {
+        for label, price in price_fields:
+            limit_order = {
                 "accountId": client.account_id,
-                "action": exit_action,  # Opposite direction
+                "action": action,  # 'Buy' or 'Sell'
                 "symbol": symbol,
                 "orderQty": order_qty,
                 "orderType": "Limit",
@@ -225,55 +192,25 @@ async def webhook(req: Request):
                 "timeInForce": "GTC",
                 "isAutomated": True
             }
-            logging.info(f"Placing {label} EXIT limit order: {exit_order}")
+            logging.info(f"Placing {label} limit order: {limit_order}")
             try:
                 result = await client.place_order(
-                    symbol=exit_order["symbol"],
-                    action=exit_order["action"],
-                    quantity=exit_order["orderQty"],
-                    order_data=exit_order
+                    symbol=limit_order["symbol"],
+                    action=limit_order["action"],
+                    quantity=limit_order["orderQty"],
+                    order_data=limit_order
                 )
-                logging.info(f"Tradovate API response for {label} EXIT: {result}")
+                logging.info(f"Tradovate API response for {label}: {result}")
                 if isinstance(result, dict) and ("error" in result or "message" in result):
-                    logging.error(f"Tradovate API error for {label} EXIT: {result}")
-                    order_results.append({"label": f"{label}_EXIT", "error": result})
+                    logging.error(f"Tradovate API error for {label}: {result}")
+                    order_results.append({"label": label, "error": result})
                 else:
-                    order_results.append({"label": f"{label}_EXIT", "result": result})
+                    order_results.append({"label": label, "result": result})
             except Exception as e:
-                logging.error(f"Error placing {label} EXIT limit order: {e}")
-                order_results.append({"label": f"{label}_EXIT", "error": str(e)})
+                logging.error(f"Error placing {label} limit order: {e}")
+                order_results.append({"label": label, "error": str(e)})
 
-        # Place stop loss order if present
-        if stop_price is not None:
-            stop_order = {
-                "accountId": client.account_id,
-                "action": exit_action,  # Opposite direction
-                "symbol": symbol,
-                "orderQty": order_qty,
-                "orderType": "StopMarket",
-                "stopPrice": stop_price,
-                "timeInForce": "GTC",
-                "isAutomated": True
-            }
-            logging.info(f"Placing STOP loss order: {stop_order}")
-            try:
-                result = await client.place_order(
-                    symbol=stop_order["symbol"],
-                    action=stop_order["action"],
-                    quantity=stop_order["orderQty"],
-                    order_data=stop_order
-                )
-                logging.info(f"Tradovate API response for STOP: {result}")
-                if isinstance(result, dict) and ("error" in result or "message" in result):
-                    logging.error(f"Tradovate API error for STOP: {result}")
-                    order_results.append({"label": "STOP", "error": result})
-                else:
-                    order_results.append({"label": "STOP", "result": result})
-            except Exception as e:
-                logging.error(f"Error placing STOP order: {e}")
-                order_results.append({"label": "STOP", "error": str(e)})
-
-        logging.info(f"Executed all entry/exit/stop orders | Results: {order_results}")
+        logging.info(f"Executed all limit orders | Results: {order_results}")
         return {"status": "success", "order_responses": order_results}
 
     except Exception as e:
