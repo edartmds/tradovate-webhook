@@ -209,15 +209,17 @@ async def webhook(req: Request):
                 "orderType": "Limit",
                 "price": entry_price,
                 "timeInForce": "GTC",
-                "isAutomated": True,
-                "brackets": []
+                "isAutomated": True
             }
-            # Add take profits and stop loss as separate bracket objects if present
+            # Build bracket1 object as required by Tradovate
+            bracket1 = {}
             if take_profits:
-                for tp in take_profits:
-                    bracket_order["brackets"].append({"type": "Profit", "price": tp})
+                # Use the first take profit as the profitTarget (Tradovate only supports one TP in bracket1)
+                bracket1["profitTarget"] = {"price": take_profits[0]}
             if stop_loss is not None:
-                bracket_order["brackets"].append({"type": "Stop", "price": stop_loss})
+                bracket1["stopLoss"] = {"price": stop_loss}
+            if bracket1:
+                bracket_order["bracket1"] = bracket1
             logging.info(f"Placing bracket (OSO) order: {bracket_order}")
             try:
                 result = await client.place_oso_order(bracket_order)
