@@ -148,10 +148,18 @@ async def webhook(req: Request):
             if symbol == "CME_MINI:NQ1!":
                 symbol = "NQM5"
             entry_qty = int(data.get("qty", 1))
-            entry_price = float(data["PRICE"]) if "PRICE" in data else None
+            # Accept entry price from 'PRICE', 'price', or 't1' (for some alert formats)
+            entry_price = None
+            for key in ["PRICE", "price", "t1"]:
+                if key in data:
+                    try:
+                        entry_price = float(data[key])
+                        break
+                    except Exception as e:
+                        logging.warning(f"Could not convert {key} value to float: {data[key]} ({e})")
             if not entry_price:
-                logging.error(f"No entry price (PRICE) found in alert: {data}")
-                raise KeyError("No entry price (PRICE) found in alert data")
+                logging.error(f"No entry price (PRICE/price/t1) found in alert: {data}")
+                raise KeyError("No entry price (PRICE/price/t1) found in alert data")
         except Exception as e:
             logging.error(f"Error extracting required fields for entry order: {e}")
             raise HTTPException(status_code=400, detail=f"Invalid or missing required entry order fields: {e}")
@@ -183,7 +191,7 @@ async def webhook(req: Request):
         # Place exit limit orders for T1, T2, T3, and STOP (qty 1 each, opposite action)
         exit_action = "Sell" if action == "Buy" else "Buy"
         exit_results = []
-        for target in ["T1", "T2", "T3", "STOP"]:
+        for target in ["T1", "T2", "T3", "STOP", "t1", "t2", "t3", "stop"]:
             if target in data:
                 try:
                     exit_price = float(data[target])
