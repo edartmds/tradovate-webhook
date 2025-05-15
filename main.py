@@ -8,7 +8,7 @@ import httpx
 import json
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
-logging.info(f"Loaded WEBHOOK_SECRET: {WEBHOOK_SECRET}")  # Debugging purpose only, remove in production
+logging.info(f"Loaded WEBHOOK_SECRET: {WEBHOOK_SECRET}")  # Debug only
 
 LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -127,7 +127,8 @@ async def webhook(req: Request):
             "isAutomated": True
         }
 
-        logging.info(f"Final order payload: {json.dumps(order_data, indent=2)}")
+        logging.info("Prepared order_data to send to Tradovate:")
+        logging.info(json.dumps(order_data, indent=2))
 
         try:
             result = await client.place_order(
@@ -136,7 +137,8 @@ async def webhook(req: Request):
                 quantity=1,
                 order_data=order_data
             )
-            logging.info(f"Tradovate API response: {result}")
+            logging.info("Tradovate API responded with:")
+            logging.info(json.dumps(result, indent=2))
         except Exception as e:
             logging.error(f"Error placing limit order: {e}")
             raise HTTPException(status_code=500, detail=f"Error placing limit order: {e}")
