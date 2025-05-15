@@ -164,6 +164,13 @@ async def webhook(req: Request):
             "isAutomated": True
         }
 
+        # Ensure bracket1 is included in the payload with default values
+        oso_order["bracket1"] = {
+            "action": "Sell",  # Default action for bracket1
+            "orderType": "Limit",  # Default to Limit order
+            "price": float(data.get("T1", 0))  # Default to 0 if T1 is not provided
+        }
+
         logging.info(f"OSO order payload: {oso_order}")
 
         # Place the OSO order
