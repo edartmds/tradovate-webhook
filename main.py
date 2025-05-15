@@ -143,31 +143,25 @@ async def webhook(req: Request):
 
         # Enforce only required fields for Tradovate order payload
         # Place a limit order for each price: PRICE, T1, T2, T3
-        # Place a stop order for each STOP, T1, T2, T3 if present
         try:
             action = data["action"].capitalize() if "action" in data else None
+
             # Convert TradingView symbol to Tradovate symbol if needed
             symbol = data["symbol"]
             if symbol == "CME_MINI:NQ1!":
                 symbol = "NQM5"
+
             order_qty = int(data.get("qty", 1))
             price_fields = []
-            stop_fields = []
             for key in ["PRICE", "T1", "T2", "T3", "price", "t1", "t2", "t3"]:
                 if key in data:
                     try:
                         price_fields.append((key, float(data[key])))
                     except Exception as e:
                         logging.warning(f"Could not convert {key} value to float: {data[key]} ({e})")
-            for key in ["STOP", "T1", "T2", "T3", "stop", "t1", "t2", "t3"]:
-                if key in data:
-                    try:
-                        stop_fields.append((key, float(data[key])))
-                    except Exception as e:
-                        logging.warning(f"Could not convert {key} value to float: {data[key]} ({e})")
-            if not price_fields and not stop_fields:
-                logging.error(f"No order prices found in alert: {data}")
-                raise KeyError("No order prices found in alert data")
+            if not price_fields:
+                logging.error(f"No limit order prices found in alert: {data}")
+                raise KeyError("No limit order prices found in alert data")
         except Exception as e:
             logging.error(f"Error extracting required fields for order: {e}")
             raise HTTPException(status_code=400, detail=f"Invalid or missing required order fields: {e}")
@@ -202,36 +196,7 @@ async def webhook(req: Request):
                 logging.error(f"Error placing {label} limit order: {e}")
                 order_results.append({"label": label, "error": str(e)})
 
-        for label, stop_price in stop_fields:
-            stop_order = {
-                "accountId": client.account_id,
-                "action": action,  # 'Buy' or 'Sell'
-                "symbol": symbol,
-                "orderQty": order_qty,
-                "orderType": "StopMarket",
-                "stopPrice": stop_price,
-                "timeInForce": "GTC",
-                "isAutomated": True
-            }
-            logging.info(f"Placing {label} stop order: {stop_order}")
-            try:
-                result = await client.place_order(
-                    symbol=stop_order["symbol"],
-                    action=stop_order["action"],
-                    quantity=stop_order["orderQty"],
-                    order_data=stop_order
-                )
-                logging.info(f"Tradovate API response for {label} stop: {result}")
-                if isinstance(result, dict) and ("error" in result or "message" in result):
-                    logging.error(f"Tradovate API error for {label} stop: {result}")
-                    order_results.append({"label": f"{label}_stop", "error": result})
-                else:
-                    order_results.append({"label": f"{label}_stop", "result": result})
-            except Exception as e:
-                logging.error(f"Error placing {label} stop order: {e}")
-                order_results.append({"label": f"{label}_stop", "error": str(e)})
-
-        logging.info(f"Executed all orders | Results: {order_results}")
+        logging.info(f"Executed all limit orders | Results: {order_results}")
         return {"status": "success", "order_responses": order_results}
 
     except Exception as e:
