@@ -158,7 +158,7 @@ async def webhook(req: Request):
             "action": data["action"],
             "symbol": data["symbol"],
             "orderQty": 1,
-            "orderType": "limit",  # Use lowercase as required by Tradovate
+            "orderType": "Limit",  # Capitalized as required by Tradovate API
             "price": float(data.get("TriggerPrice", 0)),
             "timeInForce": "GTC",
             "isAutomated": True
