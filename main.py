@@ -120,6 +120,7 @@ async def webhook(req: Request):
         if WEBHOOK_SECRET is None:
             raise HTTPException(status_code=500, detail="Missing WEBHOOK_SECRET")
 
+        # Deduplication logic
         current_hash = hash_alert(data)
         if current_hash in recent_alert_hashes:
             logging.warning("Duplicate alert received. Skipping execution.")
@@ -130,11 +131,11 @@ async def webhook(req: Request):
 
         action = data["action"].capitalize()
         symbol = data["symbol"]
-        if symbol == "CME_MINI:NQ1!":
+        if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
             symbol = "NQM5"
 
+        # Cancel all previous orders for this symbol before placing new ones
         await cancel_all_orders(symbol)
-        await flatten_position(symbol)
 
         order_plan = []
         if "PRICE" in data:
