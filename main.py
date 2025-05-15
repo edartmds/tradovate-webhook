@@ -142,55 +142,59 @@ async def webhook(req: Request):
         logging.info(f"Validated payload: {data}")
 
         # Enforce only required fields for Tradovate order payload
-        # Extract and sanitize fields from the alert data
+        # Place a limit order for each price: PRICE, T1, T2, T3
         try:
             action = data["action"].capitalize() if "action" in data else None
             symbol = data["symbol"]
             order_qty = int(data.get("qty", 1))
-            # Try TriggerPrice, then PRICE, then price
-            if "TriggerPrice" in data:
-                price = float(data["TriggerPrice"])
-            elif "PRICE" in data:
-                price = float(data["PRICE"])
-            elif "price" in data:
-                price = float(data["price"])
-            else:
-                logging.error(f"Incoming data missing TriggerPrice/PRICE/price: {data}")
-                raise KeyError("TriggerPrice, PRICE, or price not found in alert data")
+            price_fields = []
+            if "PRICE" in data:
+                price_fields.append(("PRICE", float(data["PRICE"])))
+            if "T1" in data:
+                price_fields.append(("T1", float(data["T1"])))
+            if "T2" in data:
+                price_fields.append(("T2", float(data["T2"])))
+            if "T3" in data:
+                price_fields.append(("T3", float(data["T3"])))
+            if not price_fields:
+                logging.error(f"No limit order prices found in alert: {data}")
+                raise KeyError("No limit order prices found in alert data")
         except Exception as e:
             logging.error(f"Error extracting required fields for order: {e}")
             raise HTTPException(status_code=400, detail=f"Invalid or missing required order fields: {e}")
 
-        limit_order = {
-            "accountId": client.account_id,
-            "action": action,  # 'Buy' or 'Sell'
-            "symbol": symbol,
-            "orderQty": order_qty,
-            "orderType": "Limit",  # Capital L
-            "price": price,
-            "timeInForce": "GTC",
-            "isAutomated": True
-        }
-        logging.info(f"Final Tradovate limit order payload: {limit_order}")
+        order_results = []
+        for label, price in price_fields:
+            limit_order = {
+                "accountId": client.account_id,
+                "action": action,  # 'Buy' or 'Sell'
+                "symbol": symbol,
+                "orderQty": order_qty,
+                "orderType": "Limit",
+                "price": price,
+                "timeInForce": "GTC",
+                "isAutomated": True
+            }
+            logging.info(f"Placing {label} limit order: {limit_order}")
+            try:
+                result = await client.place_order(
+                    symbol=limit_order["symbol"],
+                    action=limit_order["action"],
+                    quantity=limit_order["orderQty"],
+                    order_data=limit_order
+                )
+                logging.info(f"Tradovate API response for {label}: {result}")
+                if isinstance(result, dict) and ("error" in result or "message" in result):
+                    logging.error(f"Tradovate API error for {label}: {result}")
+                    order_results.append({"label": label, "error": result})
+                else:
+                    order_results.append({"label": label, "result": result})
+            except Exception as e:
+                logging.error(f"Error placing {label} limit order: {e}")
+                order_results.append({"label": label, "error": str(e)})
 
-        try:
-            logging.info(f"Sending limit order to Tradovate: {limit_order}")
-            result = await client.place_order(
-                symbol=limit_order["symbol"],
-                action=limit_order["action"],
-                quantity=limit_order["orderQty"],
-                order_data=limit_order
-            )
-            logging.info(f"Tradovate API response: {result}")
-            if isinstance(result, dict) and ("error" in result or "message" in result):
-                logging.error(f"Tradovate API error: {result}")
-                raise HTTPException(status_code=500, detail=f"Tradovate API error: {result}")
-        except Exception as e:
-            logging.error(f"Error placing limit order: {e}")
-            raise HTTPException(status_code=500, detail=f"Error placing limit order: {e}")
-
-        logging.info(f"Executed limit order | Response: {result}")
-        return {"status": "success", "order_response": result}
+        logging.info(f"Executed all limit orders | Results: {order_results}")
+        return {"status": "success", "order_responses": order_results}
 
     except Exception as e:
         logging.error(f"Unexpected error in webhook: {e}")
