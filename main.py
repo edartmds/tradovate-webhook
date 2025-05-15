@@ -144,9 +144,7 @@ async def webhook(req: Request):
         # Place a single entry order for 3 contracts, then separate exit limit orders for T1, T2, T3 (qty 1 each, opposite action)
         try:
             action = data["action"].capitalize() if "action" in data else None
-            symbol = data["symbol"]
-            if symbol == "CME_MINI:NQ1!":
-                symbol = "NQM5"
+            symbol = "NQM5"  # Always use NQM5 for all orders regardless of incoming symbol
             entry_qty = 3
             entry_price = float(data["PRICE"]) if "PRICE" in data else None
             if not entry_price:
@@ -190,7 +188,7 @@ async def webhook(req: Request):
                     exit_order = {
                         "accountId": client.account_id,
                         "action": exit_action,
-                        "symbol": symbol,
+                        "symbol": symbol,  # Always use NQM5 for all orders regardless of incoming symbol
                         "orderQty": 1,
                         "orderType": "Limit",
                         "price": exit_price,
