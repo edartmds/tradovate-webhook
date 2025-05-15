@@ -170,7 +170,7 @@ async def webhook(req: Request):
         # Place the limit order
         try:
             logging.info(f"Sending limit order to Tradovate: {limit_order}")
-            result = await client.place_order(limit_order)  # Updated to use place_order instead of place_oso_order
+            result = await client.place_order(**limit_order)  # Unpack dict as keyword arguments
             logging.info(f"Tradovate API response: {result}")
         except Exception as e:
             logging.error(f"Error placing limit order: {e}")
