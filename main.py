@@ -147,7 +147,14 @@ async def webhook(req: Request):
             action = data["action"].capitalize() if "action" in data else None
             symbol = data["symbol"]
             order_qty = int(data.get("qty", 1))
-            price = float(data["TriggerPrice"])
+            # Try TriggerPrice, then fallback to PRICE
+            if "TriggerPrice" in data:
+                price = float(data["TriggerPrice"])
+            elif "PRICE" in data:
+                price = float(data["PRICE"])
+            else:
+                logging.error(f"Incoming data missing TriggerPrice/PRICE: {data}")
+                raise KeyError("TriggerPrice or PRICE not found in alert data")
         except Exception as e:
             logging.error(f"Error extracting required fields for order: {e}")
             raise HTTPException(status_code=400, detail=f"Invalid or missing required order fields: {e}")
