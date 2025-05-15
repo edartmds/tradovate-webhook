@@ -141,7 +141,7 @@ async def webhook(req: Request):
             order_plan.append({
                 "label": "STOP",
                 "action": "Sell" if action.lower() == "buy" else "Buy",
-                "orderType": "StopMarket",
+                "orderType": "Stop",
                 "stopPrice": data["STOP"],
                 "qty": 3
             })
@@ -163,7 +163,7 @@ async def webhook(req: Request):
             elif order["orderType"] == "StopLimit":
                 order_payload["price"] = order["price"]
                 order_payload["stopPrice"] = order["stopPrice"]
-            elif order["orderType"] == "StopMarket":
+            elif order["orderType"] == "Stop":
                 order_payload["stopPrice"] = order["stopPrice"]
 
             logging.info(f"Placing {order['label']} order: {order_payload}")
