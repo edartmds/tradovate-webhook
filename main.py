@@ -26,7 +26,8 @@ logging.basicConfig(
 
 app = FastAPI()
 client = TradovateClient()
-last_alert_hash = None
+recent_alert_hashes = set()
+MAX_HASHES = 20  # Keep the last 20 unique alerts
 
 @app.on_event("startup")
 async def startup_event():
@@ -98,7 +99,7 @@ def hash_alert(data: dict) -> str:
 
 @app.post("/webhook")
 async def webhook(req: Request):
-    global last_alert_hash
+    global recent_alert_hashes
     logging.info("Webhook endpoint hit.")
     try:
         content_type = req.headers.get("content-type")
@@ -120,10 +121,12 @@ async def webhook(req: Request):
             raise HTTPException(status_code=500, detail="Missing WEBHOOK_SECRET")
 
         current_hash = hash_alert(data)
-        if current_hash == last_alert_hash:
+        if current_hash in recent_alert_hashes:
             logging.warning("Duplicate alert received. Skipping execution.")
             return {"status": "duplicate", "detail": "Duplicate alert skipped."}
-        last_alert_hash = current_hash
+        recent_alert_hashes.add(current_hash)
+        if len(recent_alert_hashes) > MAX_HASHES:
+            recent_alert_hashes = set(list(recent_alert_hashes)[-MAX_HASHES:])
 
         action = data["action"].capitalize()
         symbol = data["symbol"]
