@@ -153,7 +153,7 @@ async def webhook(req: Request):
         logging.info(f"Validated payload: {data}")
 
         # Construct a single limit order payload based on the Tradovate API schema
-        oso_order = {
+        limit_order = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
             "action": data["action"],
@@ -165,18 +165,18 @@ async def webhook(req: Request):
             "isAutomated": True
         }
 
-        logging.info(f"OSO order payload: {oso_order}")
+        logging.info(f"Limit order payload: {limit_order}")
 
-        # Place the OSO order
+        # Place the limit order
         try:
-            logging.info(f"Sending OSO order to Tradovate: {oso_order}")
-            result = await client.place_oso_order(oso_order)
+            logging.info(f"Sending limit order to Tradovate: {limit_order}")
+            result = await client.place_order(limit_order)  # Use place_order instead of place_oso_order
             logging.info(f"Tradovate API response: {result}")
         except Exception as e:
-            logging.error(f"Error placing OSO order: {e}")
-            raise HTTPException(status_code=500, detail=f"Error placing OSO order: {e}")
+            logging.error(f"Error placing limit order: {e}")
+            raise HTTPException(status_code=500, detail=f"Error placing limit order: {e}")
 
-        logging.info(f"Executed OSO order | Response: {result}")
+        logging.info(f"Executed limit order | Response: {result}")
 
         return {"status": "success", "order_response": result}
 
