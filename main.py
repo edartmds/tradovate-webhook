@@ -141,66 +141,48 @@ async def webhook(req: Request):
         logging.info("Skipping token validation as WEBHOOK_SECRET is hardcoded.")
         logging.info(f"Validated payload: {data}")
 
-        # Place a limit order for each price: PRICE, T1, T2, T3, CLOSE, settlement-as-close, etc.
-        # If T1, T2, T3, STOP are present, use them as take profits and stop loss for bracket orders
-        try:
-            action = data["action"].capitalize() if "action" in data else None
+        # Extract action, symbol, and order_qty first so they are available for all logic
+        action = data["action"].capitalize() if "action" in data else None
+        symbol = data["symbol"]
+        if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
+            symbol = "NQM5"
+        order_qty = int(data.get("qty", 1))
 
-            # Convert TradingView symbol to Tradovate symbol if needed
-            symbol = data["symbol"]
-            if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
-                symbol = "NQM5"
+        # Extract all relevant price variables from TradingView alert
+        price_vars = {}
+        for key in ["PRICE", "price", "t1", "T1", "T2", "t2", "T3", "t3", "CLOSE", "close"]:
+            if key in data:
+                try:
+                    price_vars[key] = float(data[key])
+                except Exception as e:
+                    logging.warning(f"Could not convert {key} value to float: {data[key]} ({e})")
 
-            order_qty = int(data.get("qty", 1))
-            # If no entry price is found, use t1 as the entry price if present
-            entry_price = None
-            if "PRICE" in data:
-                entry_price = float(data["PRICE"])
-            elif "price" in data:
-                entry_price = float(data["price"])
-            elif "t1" in data:
-                entry_price = float(data["t1"])
-            elif "T1" in data:
-                entry_price = float(data["T1"])
-            if entry_price is None:
-                logging.error(f"No entry price found in alert: {data}")
-                raise KeyError("No entry price found in alert data")
+        # Entry price (for parent order)
+        entry_price = None
+        for key in ["PRICE", "price", "t1", "T1"]:
+            if key in price_vars:
+                entry_price = price_vars[key]
+                break
+        if entry_price is None:
+            logging.error(f"No entry price found in alert: {data}")
+            raise KeyError("No entry price found in alert data")
 
-            # Bracket order logic
-            take_profits = []
-            for key in ["T1", "T2", "T3", "t1", "t2", "t3"]:
-                if key in data:
-                    try:
-                        take_profits.append(float(data[key]))
-                    except Exception as e:
-                        logging.warning(f"Could not convert {key} value to float: {data[key]} ({e})")
-            stop_loss = None
-            for key in ["STOP", "stop"]:
-                if key in data:
-                    try:
-                        stop_loss = float(data[key])
-                        break
-                    except Exception as e:
-                        logging.warning(f"Could not convert {key} value to float: {data[key]} ({e})")
+        # Take profits (T1, T2, T3, t1, t2, t3)
+        tp_keys = ["T1", "t1", "T2", "t2", "T3", "t3"]
+        take_profits = []
+        for key in tp_keys:
+            if key in price_vars:
+                take_profits.append(price_vars[key])
 
-            # Build and log the full payload for all TradingView alert variables
-            tradingview_vars = {}
-            for key in [
-                "accountId", "action", "symbol", "orderQty", "orderType", "timeInForce", "isAutomated",
-                "PRICE", "price", "t0", "T0", "T1", "T2", "T3", "T4", "T5", "t1", "t2", "t3", "t4", "t5", "STOP", "stop"
-            ]:
-                if key in data:
-                    tradingview_vars[key] = data[key]
-            tradingview_vars["resolved_symbol"] = symbol
-            tradingview_vars["resolved_order_qty"] = order_qty
-            logging.info(f"TradingView alert variables payload: {tradingview_vars}")
-
-        except Exception as e:
-            logging.error(f"Error extracting required fields for order: {e}")
-            raise HTTPException(status_code=400, detail=f"Invalid or missing required order fields: {e}")
+        # Stop loss (CLOSE, close)
+        stop_loss_value = None
+        for key in ["CLOSE", "close"]:
+            if key in price_vars:
+                stop_loss_value = price_vars[key]
+                break
 
         # If take profits or stop loss are present, place a bracket order (OSO)
-        if any(key in data for key in ["T1", "T2", "T3", "t1", "t2", "t3"]) or "CLOSE" in data or "close" in data:
+        if take_profits or stop_loss_value is not None:
             bracket_order = {
                 "accountId": client.account_id,
                 "action": action,
@@ -213,44 +195,28 @@ async def webhook(req: Request):
             }
             child_action = "Sell" if action == "Buy" else "Buy"
             # Map T1, T2, T3 (and lowercase) to bracket1, bracket2, bracket3
-            tp_keys = ["T1", "T2", "T3", "t1", "t2", "t3"]
             bracket_idx = 1
-            for tp_key in tp_keys:
-                if tp_key in data:
-                    try:
-                        tp_val = float(data[tp_key])
-                        bracket_name = f"bracket{bracket_idx}"
-                        bracket_order[bracket_name] = {
-                            "action": child_action,
-                            "orderType": "Limit",
-                            "profitTarget": {
-                                "price": tp_val,
-                                "action": child_action,
-                                "orderType": "Limit",
-                                "timeInForce": "GTC",
-                                "orderQty": order_qty,
-                                "symbol": symbol,
-                                "isAutomated": True
-                            }
-                        }
-                        bracket_idx += 1
-                    except Exception as e:
-                        logging.warning(f"Could not convert {tp_key} value to float: {data[tp_key]} ({e})")
+            for tp in take_profits:
+                bracket_name = f"bracket{bracket_idx}"
+                bracket_order[bracket_name] = {
+                    "action": child_action,
+                    "orderType": "Limit",
+                    "profitTarget": {
+                        "price": tp,
+                        "action": child_action,
+                        "orderType": "Limit",
+                        "timeInForce": "GTC",
+                        "orderQty": order_qty,
+                        "symbol": symbol,
+                        "isAutomated": True
+                    }
+                }
+                bracket_idx += 1
             # Stop loss: use CLOSE or close, only in bracket1
-            stop_loss_value = None
-            for key in ["CLOSE", "close"]:
-                if key in data:
-                    try:
-                        stop_loss_value = float(data[key])
-                        break
-                    except Exception as e:
-                        logging.warning(f"Could not convert {key} value to float: {data[key]} ({e})")
             if stop_loss_value is not None:
-                # Attach stopLoss to bracket1 (first bracket)
                 if "bracket1" not in bracket_order:
                     bracket_order["bracket1"] = {"action": child_action, "orderType": "Stop"}
                 else:
-                    # If bracket1 already exists (from T1), ensure orderType is Limit
                     if "orderType" not in bracket_order["bracket1"]:
                         bracket_order["bracket1"]["orderType"] = "Limit"
                 bracket_order["bracket1"]["stopLoss"] = {
