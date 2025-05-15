@@ -152,7 +152,7 @@ async def webhook(req: Request):
 
         logging.info(f"Validated payload: {data}")
 
-        # Construct a single limit order payload
+        # Construct a single limit order payload based on the Tradovate API schema
         oso_order = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
@@ -161,14 +161,8 @@ async def webhook(req: Request):
             "orderQty": 1,
             "orderType": "Limit",  # Single limit order
             "price": float(data.get("TriggerPrice", 0)),  # Use TriggerPrice from the alert
+            "timeInForce": "GTC",  # Good 'Til Canceled
             "isAutomated": True
-        }
-
-        # Ensure bracket1 is included in the payload with default values
-        oso_order["bracket1"] = {
-            "action": "Sell",  # Default action for bracket1
-            "orderType": "Limit",  # Default to Limit order
-            "price": float(data.get("T1", 0))  # Default to 0 if T1 is not provided
         }
 
         logging.info(f"OSO order payload: {oso_order}")
