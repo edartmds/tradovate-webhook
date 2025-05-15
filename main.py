@@ -141,8 +141,7 @@ async def webhook(req: Request):
         logging.info("Skipping token validation as WEBHOOK_SECRET is hardcoded.")
         logging.info(f"Validated payload: {data}")
 
-        # Enforce only required fields for Tradovate order payload
-        # Place a limit order for each price: PRICE, T1, T2, T3
+        # Place a limit order for each price: PRICE, T1, T2, T3, CLOSE, settlement-as-close, etc.
         try:
             action = data["action"].capitalize() if "action" in data else None
 
@@ -153,10 +152,15 @@ async def webhook(req: Request):
 
             order_qty = int(data.get("qty", 1))
             price_fields = []
-            for key in ["PRICE", "T1", "T2", "T3", "price", "t1", "t2", "t3"]:
+            for key in [
+                "PRICE", "T1", "T2", "T3", "CLOSE", "close", "settlement-as-close", "price", "t1", "t2", "t3"
+            ]:
                 if key in data:
                     try:
-                        price_fields.append((key, float(data[key])))
+                        val = data[key]
+                        # Only treat as price if value is a number, not a boolean
+                        if isinstance(val, (int, float)) or (isinstance(val, str) and val.replace('.', '', 1).isdigit()):
+                            price_fields.append((key, float(val)))
                     except Exception as e:
                         logging.warning(f"Could not convert {key} value to float: {data[key]} ({e})")
             if not price_fields:
