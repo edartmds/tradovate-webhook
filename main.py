@@ -30,11 +30,9 @@ client = TradovateClient()
 
 @app.on_event("startup")
 async def startup_event():
-    # Authenticate the Tradovate client on startup
     await client.authenticate()
 
 async def get_latest_price(symbol: str):
-    # Fetch the latest price for the symbol using Tradovate's REST API
     url = f"https://demo-api.tradovate.com/v1/marketdata/quote/{symbol}"
     headers = {"Authorization": f"Bearer {client.access_token}"}
     async with httpx.AsyncClient() as http_client:
@@ -79,7 +77,6 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price
         logging.info(f"Parsed alert data after validation: {parsed_data}")
 
         tradovate_payload = {
-            "accountId": account_id,
             "action": parsed_data["action"],
             "symbol": parsed_data["symbol"],
             "orderQty": 1,
@@ -88,10 +85,6 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price
             "timeInForce": "GTC",
             "isAutomated": True
         }
-
-        for target in ["T1", "T2", "T3", "STOP"]:
-            if target in parsed_data:
-                tradovate_payload[target.lower()] = float(parsed_data[target])
 
         return tradovate_payload
 
@@ -137,7 +130,6 @@ async def webhook(req: Request):
         logging.info(f"Validated payload: {data}")
 
         limit_order = {
-            "accountId": client.account_id,
             "action": data["action"],
             "symbol": data["symbol"],
             "orderQty": 1,
@@ -151,7 +143,7 @@ async def webhook(req: Request):
 
         try:
             logging.info(f"Sending limit order to Tradovate: {limit_order}")
-            result = await client.place_order(limit_order)  # ✅ FIX: pass as single argument
+            result = await client.place_order(**limit_order)  # ✅ FINAL FIX
             logging.info(f"Tradovate API response: {result}")
         except Exception as e:
             logging.error(f"Error placing limit order: {e}")
