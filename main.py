@@ -142,20 +142,18 @@ async def webhook(req: Request):
         logging.info(f"Validated payload: {data}")
 
         # Enforce only required fields for Tradovate order payload
-        # Place a limit order for each price: PRICE, T1, T2, T3
+        # Place a limit order for each price: PRICE, T1, T2, T3 (case-insensitive)
         try:
             action = data["action"].capitalize() if "action" in data else None
             symbol = data["symbol"]
             order_qty = int(data.get("qty", 1))
             price_fields = []
-            if "PRICE" in data:
-                price_fields.append(("PRICE", float(data["PRICE"])))
-            if "T1" in data:
-                price_fields.append(("T1", float(data["T1"])))
-            if "T2" in data:
-                price_fields.append(("T2", float(data["T2"])))
-            if "T3" in data:
-                price_fields.append(("T3", float(data["T3"])))
+            for key in ["PRICE", "T1", "T2", "T3", "price", "t1", "t2", "t3"]:
+                if key in data:
+                    try:
+                        price_fields.append((key, float(data[key])))
+                    except Exception as e:
+                        logging.warning(f"Could not convert {key} value to float: {data[key]} ({e})")
             if not price_fields:
                 logging.error(f"No limit order prices found in alert: {data}")
                 raise KeyError("No limit order prices found in alert data")
