@@ -141,17 +141,28 @@ async def webhook(req: Request):
         logging.info("Skipping token validation as WEBHOOK_SECRET is hardcoded.")
         logging.info(f"Validated payload: {data}")
 
+        # Enforce only required fields for Tradovate order payload
+        # Extract and sanitize fields from the alert data
+        try:
+            action = data["action"].capitalize() if "action" in data else None
+            symbol = data["symbol"]
+            order_qty = int(data.get("qty", 1))
+            price = float(data["TriggerPrice"])
+        except Exception as e:
+            logging.error(f"Error extracting required fields for order: {e}")
+            raise HTTPException(status_code=400, detail=f"Invalid or missing required order fields: {e}")
+
         limit_order = {
             "accountId": client.account_id,
-            "action": data["action"],
-            "symbol": data["symbol"],
-            "orderQty": 1,
-            "orderType": "Limit",
-            "price": float(data.get("TriggerPrice", 0)),
+            "action": action,  # 'Buy' or 'Sell'
+            "symbol": symbol,
+            "orderQty": order_qty,
+            "orderType": "Limit",  # Capital L
+            "price": price,
             "timeInForce": "GTC",
             "isAutomated": True
         }
-        logging.info(f"Limit order payload: {limit_order}")
+        logging.info(f"Final Tradovate limit order payload: {limit_order}")
 
         try:
             logging.info(f"Sending limit order to Tradovate: {limit_order}")
