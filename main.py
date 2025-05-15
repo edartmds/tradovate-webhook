@@ -148,15 +148,20 @@ async def webhook(req: Request):
 
             # Convert TradingView symbol to Tradovate symbol if needed
             symbol = data["symbol"]
-            if symbol == "CME_MINI:NQ1!":
+            if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
                 symbol = "NQM5"
 
             order_qty = int(data.get("qty", 1))
+            # If no entry price is found, use t1 as the entry price if present
             entry_price = None
             if "PRICE" in data:
                 entry_price = float(data["PRICE"])
             elif "price" in data:
                 entry_price = float(data["price"])
+            elif "t1" in data:
+                entry_price = float(data["t1"])
+            elif "T1" in data:
+                entry_price = float(data["T1"])
             if entry_price is None:
                 logging.error(f"No entry price found in alert: {data}")
                 raise KeyError("No entry price found in alert data")
