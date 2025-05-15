@@ -154,7 +154,6 @@ async def webhook(req: Request):
 
         # Construct a single limit order payload based on the Tradovate API schema
         limit_order = {
-            "accountSpec": client.account_spec,
             "accountId": client.account_id,
             "action": data["action"],
             "symbol": data["symbol"],
@@ -170,7 +169,12 @@ async def webhook(req: Request):
         # Place the limit order
         try:
             logging.info(f"Sending limit order to Tradovate: {limit_order}")
-            result = await client.place_order(**limit_order)  # Unpack dict as keyword arguments
+            result = await client.place_order(
+                symbol=limit_order["symbol"],
+                action=limit_order["action"],
+                quantity=limit_order["orderQty"],
+                order_data=limit_order
+            )
             logging.info(f"Tradovate API response: {result}")
         except Exception as e:
             logging.error(f"Error placing limit order: {e}")
