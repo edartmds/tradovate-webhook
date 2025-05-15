@@ -137,7 +137,6 @@ async def webhook(req: Request):
         logging.info(f"Validated payload: {data}")
 
         limit_order = {
-            "accountSpec": client.account_spec,
             "accountId": client.account_id,
             "action": data["action"],
             "symbol": data["symbol"],
