@@ -159,30 +159,36 @@ async def webhook(req: Request):
             "action": data["action"],
             "symbol": data["symbol"],
             "orderQty": 1,
-            "orderType": "Limit",
+            "orderType": "Stop",  # Prioritize Stop order as suggested
             "price": float(data.get("TriggerPrice", 0)),  # Use TriggerPrice (mapped from PRICE) or default to 0
-            "isAutomated": True,
-            "bracket1": {
+            "isAutomated": True
+        }
+
+        # Add optional brackets only if they are present in the alert data
+        if "T1" in data:
+            oso_order["bracket1"] = {
                 "action": "Sell",
                 "orderType": "Limit",
-                "price": float(data.get("T1", 0))  # Use T1 from alert or default to 0
-            },
-            "bracket2": {
+                "price": float(data["T1"])
+            }
+        if "T2" in data:
+            oso_order["bracket2"] = {
                 "action": "Sell",
                 "orderType": "Limit",
-                "price": float(data.get("T2", 0))  # Use T2 from alert or default to 0
-            },
-            "bracket3": {
+                "price": float(data["T2"])
+            }
+        if "T3" in data:
+            oso_order["bracket3"] = {
                 "action": "Sell",
                 "orderType": "Limit",
-                "price": float(data.get("T3", 0))  # Use T3 from alert or default to 0
-            },
-            "stopBracket": {
+                "price": float(data["T3"])
+            }
+        if "STOP" in data:
+            oso_order["stopBracket"] = {
                 "action": "Sell",
                 "orderType": "Stop",
-                "price": float(data.get("STOP", 0))  # Use Stop from alert or default to 0
+                "price": float(data["STOP"])
             }
-        }
 
         logging.info(f"OSO order payload: {oso_order}")
 
