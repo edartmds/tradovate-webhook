@@ -57,8 +57,6 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price
                 key, value = line.split("=", 1)
                 key = key.strip()
                 value = value.strip()
-                if key == "PRICE":
-                    key = "TriggerPrice"
                 parsed_data[key] = value
             elif line.strip().upper() in ["BUY", "SELL"]:
                 parsed_data["action"] = line.strip().capitalize()
@@ -126,8 +124,8 @@ async def webhook(req: Request):
             order_plan.append({
                 "label": "STOP",
                 "action": "Sell" if action.lower() == "buy" else "Buy",
-                "orderType": "Stop",
-                "price": data["STOP"],
+                "orderType": "StopMarket",
+                "stopPrice": data["STOP"],
                 "qty": 3
             })
 
@@ -139,10 +137,14 @@ async def webhook(req: Request):
                 "action": order["action"],
                 "orderQty": order["qty"],
                 "orderType": order["orderType"],
-                "price": order["price"],
                 "timeInForce": "GTC",
                 "isAutomated": True
             }
+            if order["orderType"] in ["Limit", "StopLimit"]:
+                order_payload["price"] = order["price"]
+            if order["orderType"] in ["StopMarket", "StopLimit"]:
+                order_payload["stopPrice"] = order["stopPrice"]
+
             logging.info(f"Placing {order['label']} order: {order_payload}")
             try:
                 result = await client.place_order(
