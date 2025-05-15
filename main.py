@@ -79,11 +79,11 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price
         tradovate_payload = {
             "action": parsed_data["action"],
             "symbol": parsed_data["symbol"],
-            "orderQty": 1,
-            "orderType": "Limit",
+            "qty": 1,
+            "order_type": "Limit",
             "price": float(parsed_data.get("TriggerPrice", 0)),
-            "timeInForce": "GTC",
-            "isAutomated": True
+            "tif": "GTC",
+            "automated": True
         }
 
         return tradovate_payload
@@ -132,18 +132,18 @@ async def webhook(req: Request):
         limit_order = {
             "action": data["action"],
             "symbol": data["symbol"],
-            "orderQty": 1,
-            "orderType": "Limit",
+            "qty": 1,
+            "order_type": "Limit",
             "price": float(data.get("TriggerPrice", 0)),
-            "timeInForce": "GTC",
-            "isAutomated": True
+            "tif": "GTC",
+            "automated": True
         }
 
         logging.info(f"Limit order payload: {limit_order}")
 
         try:
             logging.info(f"Sending limit order to Tradovate: {limit_order}")
-            result = await client.place_order(**limit_order)  # ✅ FINAL FIX
+            result = await client.place_order(**limit_order)
             logging.info(f"Tradovate API response: {result}")
         except Exception as e:
             logging.error(f"Error placing limit order: {e}")
