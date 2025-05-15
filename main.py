@@ -213,11 +213,12 @@ async def webhook(req: Request):
             }
             # Build bracket1 object as required by Tradovate
             bracket1 = {}
+            # Tradovate requires 'action' in profitTarget and stopLoss, which must be the opposite of the main order's action
+            child_action = "Sell" if action == "Buy" else "Buy"
             if take_profits:
-                # Use the first take profit as the profitTarget (Tradovate only supports one TP in bracket1)
-                bracket1["profitTarget"] = {"price": take_profits[0]}
+                bracket1["profitTarget"] = {"price": take_profits[0], "action": child_action}
             if stop_loss is not None:
-                bracket1["stopLoss"] = {"price": stop_loss}
+                bracket1["stopLoss"] = {"price": stop_loss, "action": child_action}
             if bracket1:
                 bracket_order["bracket1"] = bracket1
             logging.info(f"Placing bracket (OSO) order: {bracket_order}")
