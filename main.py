@@ -210,11 +210,14 @@ async def webhook(req: Request):
                 "price": entry_price,
                 "timeInForce": "GTC",
                 "isAutomated": True,
-                "bracket1": {
-                    "profitTarget": take_profits[0] if len(take_profits) > 0 else None,
-                    "stopLoss": stop_loss
-                }
+                "brackets": []
             }
+            # Add take profits and stop loss as separate bracket objects if present
+            if take_profits:
+                for tp in take_profits:
+                    bracket_order["brackets"].append({"type": "Profit", "price": tp})
+            if stop_loss is not None:
+                bracket_order["brackets"].append({"type": "Stop", "price": stop_loss})
             logging.info(f"Placing bracket (OSO) order: {bracket_order}")
             try:
                 result = await client.place_oso_order(bracket_order)
