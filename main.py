@@ -6,6 +6,7 @@ from tradovate_api import TradovateClient
 import uvicorn
 import httpx
 import json
+import hashlib
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 logging.info(f"Loaded WEBHOOK_SECRET: {WEBHOOK_SECRET}")
@@ -25,6 +26,7 @@ logging.basicConfig(
 
 app = FastAPI()
 client = TradovateClient()
+last_alert_hash = None
 
 @app.on_event("startup")
 async def startup_event():
@@ -39,7 +41,6 @@ async def get_latest_price(symbol: str):
         data = response.json()
         return data["last"]
 
-# Utility methods for client if not already defined
 async def cancel_all_orders(symbol):
     url = f"https://demo-api.tradovate.com/v1/order/cancelallorders"
     headers = {"Authorization": f"Bearer {client.access_token}"}
@@ -91,8 +92,13 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price
         logging.error(f"Error parsing alert: {e}")
         raise ValueError(f"Error parsing alert: {e}")
 
+def hash_alert(data: dict) -> str:
+    alert_string = json.dumps(data, sort_keys=True)
+    return hashlib.sha256(alert_string.encode()).hexdigest()
+
 @app.post("/webhook")
 async def webhook(req: Request):
+    global last_alert_hash
     logging.info("Webhook endpoint hit.")
     try:
         content_type = req.headers.get("content-type")
@@ -113,12 +119,17 @@ async def webhook(req: Request):
         if WEBHOOK_SECRET is None:
             raise HTTPException(status_code=500, detail="Missing WEBHOOK_SECRET")
 
+        current_hash = hash_alert(data)
+        if current_hash == last_alert_hash:
+            logging.warning("Duplicate alert received. Skipping execution.")
+            return {"status": "duplicate", "detail": "Duplicate alert skipped."}
+        last_alert_hash = current_hash
+
         action = data["action"].capitalize()
         symbol = data["symbol"]
         if symbol == "CME_MINI:NQ1!":
             symbol = "NQM5"
 
-        # Cancel existing orders and flatten positions before placing new ones
         await cancel_all_orders(symbol)
         await flatten_position(symbol)
 
@@ -167,17 +178,22 @@ async def webhook(req: Request):
                 order_payload["stopPrice"] = order["stopPrice"]
 
             logging.info(f"Placing {order['label']} order: {order_payload}")
-            try:
-                result = await client.place_order(
-                    symbol=symbol,
-                    action=order["action"],
-                    quantity=order["qty"],
-                    order_data=order_payload
-                )
-                order_results.append({order["label"]: result})
-            except Exception as e:
-                logging.error(f"Error placing {order['label']} order: {e}")
-                order_results.append({order["label"]: str(e)})
+            retry_count = 0
+            while retry_count < 3:
+                try:
+                    result = await client.place_order(
+                        symbol=symbol,
+                        action=order["action"],
+                        quantity=order["qty"],
+                        order_data=order_payload
+                    )
+                    order_results.append({order["label"]: result})
+                    break
+                except Exception as e:
+                    logging.error(f"Error placing {order['label']} order (attempt {retry_count + 1}): {e}")
+                    retry_count += 1
+                    if retry_count == 3:
+                        order_results.append({order["label"]: str(e)})
 
         return {"status": "success", "order_responses": order_results}
 
