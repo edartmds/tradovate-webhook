@@ -211,31 +211,30 @@ async def webhook(req: Request):
                 "timeInForce": "GTC",
                 "isAutomated": True
             }
-            # Build bracket1 object as required by Tradovate
-            bracket1 = {}
             child_action = "Sell" if action == "Buy" else "Buy"
-            # Take profits: T1, T2, T3 (and t1, t2, t3)
-            profit_targets = []
-            for key in ["T1", "T2", "T3", "t1", "t2", "t3"]:
-                if key in data:
+            # Map T1, T2, T3 (and lowercase) to bracket1, bracket2, bracket3
+            tp_keys = ["T1", "T2", "T3", "t1", "t2", "t3"]
+            bracket_idx = 1
+            for tp_key in tp_keys:
+                if tp_key in data:
                     try:
-                        profit_targets.append(float(data[key]))
+                        tp_val = float(data[tp_key])
+                        bracket_name = f"bracket{bracket_idx}"
+                        bracket_order[bracket_name] = {
+                            "profitTarget": {
+                                "price": tp_val,
+                                "action": child_action,
+                                "orderType": "Limit",
+                                "timeInForce": "GTC",
+                                "orderQty": order_qty,
+                                "symbol": symbol,
+                                "isAutomated": True
+                            }
+                        }
+                        bracket_idx += 1
                     except Exception as e:
-                        logging.warning(f"Could not convert {key} value to float: {data[key]} ({e})")
-            # Add a profitTarget for each TP
-            if profit_targets:
-                bracket1["profitTarget"] = [
-                    {
-                        "price": tp,
-                        "action": child_action,
-                        "orderType": "Limit",
-                        "timeInForce": "GTC",
-                        "orderQty": order_qty,
-                        "symbol": symbol,
-                        "isAutomated": True
-                    } for tp in profit_targets
-                ]
-            # Stop loss: use CLOSE or close
+                        logging.warning(f"Could not convert {tp_key} value to float: {data[tp_key]} ({e})")
+            # Stop loss: use CLOSE or close, only in bracket1
             stop_loss_value = None
             for key in ["CLOSE", "close"]:
                 if key in data:
@@ -245,7 +244,10 @@ async def webhook(req: Request):
                     except Exception as e:
                         logging.warning(f"Could not convert {key} value to float: {data[key]} ({e})")
             if stop_loss_value is not None:
-                bracket1["stopLoss"] = {
+                # Attach stopLoss to bracket1 (first bracket)
+                if "bracket1" not in bracket_order:
+                    bracket_order["bracket1"] = {}
+                bracket_order["bracket1"]["stopLoss"] = {
                     "price": stop_loss_value,
                     "action": child_action,
                     "orderType": "Stop",
@@ -254,8 +256,6 @@ async def webhook(req: Request):
                     "symbol": symbol,
                     "isAutomated": True
                 }
-            if bracket1:
-                bracket_order["bracket1"] = bracket1
             logging.info(f"Placing bracket (OSO) order: {bracket_order}")
             try:
                 result = await client.place_oso_order(bracket_order)
