@@ -7,6 +7,7 @@ import uvicorn
 import httpx
 import json
 import hashlib
+import asyncio
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 logging.info(f"Loaded WEBHOOK_SECRET: {WEBHOOK_SECRET}")
@@ -97,6 +98,42 @@ def hash_alert(data: dict) -> str:
     alert_string = json.dumps(data, sort_keys=True)
     return hashlib.sha256(alert_string.encode()).hexdigest()
 
+async def monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids):
+    """
+    Monitor the stop loss order and cancel associated take profit orders if the stop loss is hit.
+    """
+    logging.info(f"Monitoring SL order {sl_order_id} for execution.")
+    while True:
+        try:
+            # Check the status of the SL order
+            url = f"https://demo-api.tradovate.com/v1/order/{sl_order_id}"
+            headers = {"Authorization": f"Bearer {client.access_token}"}
+            async with httpx.AsyncClient() as http_client:
+                response = await http_client.get(url, headers=headers)
+                response.raise_for_status()
+                order_status = response.json()
+
+            if order_status.get("status") == "Filled":
+                logging.info(f"SL order {sl_order_id} was filled. Cancelling TP orders: {tp_order_ids}")
+
+                # Cancel all TP orders
+                for tp_order_id in tp_order_ids:
+                    cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{tp_order_id}"
+                    async with httpx.AsyncClient() as http_client:
+                        await http_client.post(cancel_url, headers=headers)
+
+                break
+
+            elif order_status.get("status") in ["Cancelled", "Rejected"]:
+                logging.info(f"SL order {sl_order_id} was {order_status.get('status')}. Stopping monitoring.")
+                break
+
+            await asyncio.sleep(1)  # Poll every second
+
+        except Exception as e:
+            logging.error(f"Error monitoring SL order {sl_order_id}: {e}")
+            await asyncio.sleep(5)  # Retry after a delay
+
 @app.post("/webhook")
 async def webhook(req: Request):
     global recent_alert_hashes
@@ -161,6 +198,9 @@ async def webhook(req: Request):
                 "qty": 3
             })
 
+        sl_order_id = None
+        tp_order_ids = []
+
         order_results = []
         for order in order_plan:
             order_payload = {
@@ -191,6 +231,12 @@ async def webhook(req: Request):
                         quantity=order["qty"],
                         order_data=order_payload
                     )
+
+                    if order["label"] == "STOP":
+                        sl_order_id = result.get("id")
+                    elif order["label"].startswith("TP"):
+                        tp_order_ids.append(result.get("id"))
+
                     order_results.append({order["label"]: result})
                     break
                 except Exception as e:
@@ -198,6 +244,10 @@ async def webhook(req: Request):
                     retry_count += 1
                     if retry_count == 3:
                         order_results.append({order["label"]: str(e)})
+
+        # Start monitoring the stop order in the background
+        if sl_order_id and tp_order_ids:
+            asyncio.create_task(monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids))
 
         return {"status": "success", "order_responses": order_results}
 
