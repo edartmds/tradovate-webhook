@@ -159,7 +159,7 @@ async def webhook(req: Request):
             "action": data["action"],
             "symbol": data["symbol"],
             "orderQty": 1,
-            "orderType": "Stop",  # Prioritize Stop order as suggested
+            "orderType": "Limit",  # Change to Limit order
             "price": float(data.get("TriggerPrice", 0)),  # Use TriggerPrice (mapped from PRICE) or default to 0
             "isAutomated": True
         }
@@ -184,7 +184,7 @@ async def webhook(req: Request):
         if "STOP" in data:
             oso_order["stopBracket"] = {
                 "action": "Sell",
-                "orderType": "Stop",
+                "orderType": "Limit",  # Change Stop order to Limit order
                 "price": float(data["STOP"])
             }
 
