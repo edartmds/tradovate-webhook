@@ -111,29 +111,21 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price
 @app.post("/webhook")
 async def webhook(req: Request):
     logging.info("Webhook endpoint hit. Request received.")
-
-    # Ensure the client is authenticated and account_spec is set
-    if not client.account_spec:
-        logging.info("Authenticating client as account_spec is not set.")
-        await client.authenticate()
-
     try:
         content_type = req.headers.get("content-type")
         logging.info(f"Received webhook request with content type: {content_type}")
-
+        # Log the raw request body for debugging
+        raw_body = await req.body()
+        logging.info(f"Raw request body: {raw_body}")
         if content_type == "application/json":
             data = await req.json()
         elif content_type.startswith("text/plain"):
-            text_data = await req.body()
-            text_data = text_data.decode("utf-8")
+            text_data = raw_body.decode("utf-8")
             logging.info(f"Received plain text data: {text_data}")
             try:
-                # Fetch the latest price if TriggerPrice is missing
                 latest_price = None
                 if "symbol=" in text_data:
                     latest_price = await get_latest_price(text_data.split("symbol=")[1].split(",")[0])
-
-                # Parse the plain text alert into JSON
                 data = parse_alert_to_tradovate_json(text_data, client.account_id, latest_price)
             except ValueError as e:
                 logging.error(f"Error parsing alert: {e}")
@@ -142,31 +134,25 @@ async def webhook(req: Request):
             logging.error(f"Unsupported content type: {content_type}")
             raise HTTPException(status_code=400, detail=f"Unsupported content type: {content_type}")
 
-        # Hardcode the WEBHOOK_SECRET for validation
         if WEBHOOK_SECRET is None:
             logging.error("WEBHOOK_SECRET is not set in the environment variables.")
             raise HTTPException(status_code=500, detail="Server configuration error: WEBHOOK_SECRET is missing.")
 
-        # Skip token validation since it is hardcoded
         logging.info("Skipping token validation as WEBHOOK_SECRET is hardcoded.")
-
         logging.info(f"Validated payload: {data}")
 
-        # Construct a single limit order payload based on the Tradovate API schema
         limit_order = {
             "accountId": client.account_id,
             "action": data["action"],
             "symbol": data["symbol"],
             "orderQty": 1,
-            "orderType": "Limit",  # Capitalized as required by Tradovate API
+            "orderType": "Limit",
             "price": float(data.get("TriggerPrice", 0)),
             "timeInForce": "GTC",
             "isAutomated": True
         }
-
         logging.info(f"Limit order payload: {limit_order}")
 
-        # Place the limit order
         try:
             logging.info(f"Sending limit order to Tradovate: {limit_order}")
             result = await client.place_order(
@@ -176,7 +162,6 @@ async def webhook(req: Request):
                 order_data=limit_order
             )
             logging.info(f"Tradovate API response: {result}")
-            # Check for error in Tradovate response
             if isinstance(result, dict) and ("error" in result or "message" in result):
                 logging.error(f"Tradovate API error: {result}")
                 raise HTTPException(status_code=500, detail=f"Tradovate API error: {result}")
@@ -185,11 +170,10 @@ async def webhook(req: Request):
             raise HTTPException(status_code=500, detail=f"Error placing limit order: {e}")
 
         logging.info(f"Executed limit order | Response: {result}")
-
         return {"status": "success", "order_response": result}
 
     except Exception as e:
-        logging.error(f"Unexpected error: {e}")
+        logging.error(f"Unexpected error in webhook: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 if __name__ == "__main__":
