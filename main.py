@@ -200,7 +200,7 @@ async def webhook(req: Request):
             raise HTTPException(status_code=400, detail=f"Invalid or missing required order fields: {e}")
 
         # If take profits or stop loss are present, place a bracket order (OSO)
-        if take_profits or stop_loss is not None:
+        if any(key in data for key in ["T1", "T2", "T3", "t1", "t2", "t3"]) or "CLOSE" in data or "close" in data:
             bracket_order = {
                 "accountId": client.account_id,
                 "action": action,
@@ -213,12 +213,47 @@ async def webhook(req: Request):
             }
             # Build bracket1 object as required by Tradovate
             bracket1 = {}
-            # Tradovate requires 'action' in profitTarget and stopLoss, which must be the opposite of the main order's action
             child_action = "Sell" if action == "Buy" else "Buy"
-            if take_profits:
-                bracket1["profitTarget"] = {"price": take_profits[0], "action": child_action}
-            if stop_loss is not None:
-                bracket1["stopLoss"] = {"price": stop_loss, "action": child_action}
+            # Take profits: T1, T2, T3 (and t1, t2, t3)
+            profit_targets = []
+            for key in ["T1", "T2", "T3", "t1", "t2", "t3"]:
+                if key in data:
+                    try:
+                        profit_targets.append(float(data[key]))
+                    except Exception as e:
+                        logging.warning(f"Could not convert {key} value to float: {data[key]} ({e})")
+            # Add a profitTarget for each TP
+            if profit_targets:
+                bracket1["profitTarget"] = [
+                    {
+                        "price": tp,
+                        "action": child_action,
+                        "orderType": "Limit",
+                        "timeInForce": "GTC",
+                        "orderQty": order_qty,
+                        "symbol": symbol,
+                        "isAutomated": True
+                    } for tp in profit_targets
+                ]
+            # Stop loss: use CLOSE or close
+            stop_loss_value = None
+            for key in ["CLOSE", "close"]:
+                if key in data:
+                    try:
+                        stop_loss_value = float(data[key])
+                        break
+                    except Exception as e:
+                        logging.warning(f"Could not convert {key} value to float: {data[key]} ({e})")
+            if stop_loss_value is not None:
+                bracket1["stopLoss"] = {
+                    "price": stop_loss_value,
+                    "action": child_action,
+                    "orderType": "Stop",
+                    "timeInForce": "GTC",
+                    "orderQty": order_qty,
+                    "symbol": symbol,
+                    "isAutomated": True
+                }
             if bracket1:
                 bracket_order["bracket1"] = bracket1
             logging.info(f"Placing bracket (OSO) order: {bracket_order}")
