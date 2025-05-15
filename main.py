@@ -39,6 +39,19 @@ async def get_latest_price(symbol: str):
         data = response.json()
         return data["last"]
 
+# Utility methods for client if not already defined
+async def cancel_all_orders(symbol):
+    url = f"https://demo-api.tradovate.com/v1/order/cancelallorders"
+    headers = {"Authorization": f"Bearer {client.access_token}"}
+    async with httpx.AsyncClient() as http_client:
+        await http_client.post(url, headers=headers, json={"symbol": symbol})
+
+async def flatten_position(symbol):
+    url = f"https://demo-api.tradovate.com/v1/position/closeposition"
+    headers = {"Authorization": f"Bearer {client.access_token}"}
+    async with httpx.AsyncClient() as http_client:
+        await http_client.post(url, headers=headers, json={"symbol": symbol})
+
 def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price: float = None) -> dict:
     logging.info(f"Raw alert text: {alert_text}")
     try:
@@ -85,7 +98,7 @@ async def webhook(req: Request):
         content_type = req.headers.get("content-type")
         raw_body = await req.body()
 
-        latest_price = None  # <-- FIXED initialization
+        latest_price = None
 
         if content_type == "application/json":
             data = await req.json()
@@ -104,6 +117,10 @@ async def webhook(req: Request):
         symbol = data["symbol"]
         if symbol == "CME_MINI:NQ1!":
             symbol = "NQM5"
+
+        # Cancel existing orders and flatten positions before placing new ones
+        await cancel_all_orders(symbol)
+        await flatten_position(symbol)
 
         order_plan = []
         if "PRICE" in data:
@@ -140,9 +157,13 @@ async def webhook(req: Request):
                 "timeInForce": "GTC",
                 "isAutomated": True
             }
-            if order["orderType"] in ["Limit", "StopLimit"]:
+
+            if order["orderType"] == "Limit":
                 order_payload["price"] = order["price"]
-            if order["orderType"] in ["StopMarket", "StopLimit"]:
+            elif order["orderType"] == "StopLimit":
+                order_payload["price"] = order["price"]
+                order_payload["stopPrice"] = order["stopPrice"]
+            elif order["orderType"] == "StopMarket":
                 order_payload["stopPrice"] = order["stopPrice"]
 
             logging.info(f"Placing {order['label']} order: {order_payload}")
