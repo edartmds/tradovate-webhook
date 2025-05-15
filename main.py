@@ -145,17 +145,20 @@ async def webhook(req: Request):
         # Place a limit order for each price: PRICE, T1, T2, T3
         try:
             action = data["action"].capitalize() if "action" in data else None
+
+            # Convert TradingView symbol to Tradovate symbol if needed
             symbol = data["symbol"]
+            if symbol == "CME_MINI:NQ1!":
+                symbol = "NQM5"
+
             order_qty = int(data.get("qty", 1))
             price_fields = []
-            if "PRICE" in data:
-                price_fields.append(("PRICE", float(data["PRICE"])))
-            if "T1" in data:
-                price_fields.append(("T1", float(data["T1"])))
-            if "T2" in data:
-                price_fields.append(("T2", float(data["T2"])))
-            if "T3" in data:
-                price_fields.append(("T3", float(data["T3"])))
+            for key in ["PRICE", "T1", "T2", "T3", "price", "t1", "t2", "t3"]:
+                if key in data:
+                    try:
+                        price_fields.append((key, float(data[key])))
+                    except Exception as e:
+                        logging.warning(f"Could not convert {key} value to float: {data[key]} ({e})")
             if not price_fields:
                 logging.error(f"No limit order prices found in alert: {data}")
                 raise KeyError("No limit order prices found in alert data")
