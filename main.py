@@ -8,13 +8,11 @@ import httpx
 import json
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
-logging.info(f"Loaded WEBHOOK_SECRET: {WEBHOOK_SECRET}")  # Debugging purpose only, remove in production
+logging.info(f"Loaded WEBHOOK_SECRET: {WEBHOOK_SECRET}")
 
-# Create log directory if it doesn't exist
 LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
 
-# Set up logging
 log_file = os.path.join(LOG_DIR, "webhook_trades.log")
 logging.basicConfig(
     handlers=[
@@ -30,27 +28,21 @@ client = TradovateClient()
 
 @app.on_event("startup")
 async def startup_event():
-    # Authenticate the Tradovate client on startup
     await client.authenticate()
 
 async def get_latest_price(symbol: str):
-    # Fetch the latest price for the symbol using Tradovate's REST API
     url = f"https://demo-api.tradovate.com/v1/marketdata/quote/{symbol}"
     headers = {"Authorization": f"Bearer {client.access_token}"}
     async with httpx.AsyncClient() as http_client:
         response = await http_client.get(url, headers=headers)
         response.raise_for_status()
         data = response.json()
-        return data["last"]  # Return the last traded price
+        return data["last"]
 
 def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price: float = None) -> dict:
-    logging.info(f"Raw alert text: {alert_text}")  # Log raw alert text for debugging
-
+    logging.info(f"Raw alert text: {alert_text}")
     try:
-        # Split the alert text into lines and parse key-value pairs
         parsed_data = {}
-
-        # Handle JSON-like structure at the start of the alert text
         if alert_text.startswith("="):
             try:
                 json_part, remaining_text = alert_text[1:].split("\n", 1)
@@ -60,157 +52,107 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price
             except (json.JSONDecodeError, ValueError) as e:
                 raise ValueError(f"Error parsing JSON-like structure: {e}")
 
-        # Adjust parsing for the remaining text
         for line in alert_text.split("\n"):
             if "=" in line:
                 key, value = line.split("=", 1)
                 key = key.strip()
                 value = value.strip()
-                # Map PRICE to TriggerPrice for consistency
                 if key == "PRICE":
                     key = "TriggerPrice"
                 parsed_data[key] = value
             elif line.strip().upper() in ["BUY", "SELL"]:
                 parsed_data["action"] = line.strip().capitalize()
 
-        # Log parsed data for debugging
-        logging.info(f"Parsed alert data before validation: {parsed_data}")
+        logging.info(f"Parsed alert data: {parsed_data}")
 
-        # Validate required fields
-        required_fields = ["symbol", "action"]  # Removed TriggerPrice from required fields
+        required_fields = ["symbol", "action"]
         for field in required_fields:
             if field not in parsed_data or not parsed_data[field]:
-                logging.error(f"Missing or invalid field: {field}. Parsed data: {parsed_data}")
                 raise ValueError(f"Missing or invalid field: {field}")
 
-        # Log parsed data after validation
-        logging.info(f"Parsed alert data after validation: {parsed_data}")
-
-        # Construct the Tradovate JSON payload
-        tradovate_payload = {
-            "accountId": account_id,
-            "action": parsed_data["action"],
-            "symbol": parsed_data["symbol"],
-            "orderQty": 1,  # Default quantity; adjust as needed
-            "orderType": "Stop",  # Assuming Stop order; adjust as needed
-            "timeInForce": "GTC",  # Good 'Til Canceled; adjust as needed
-            "isAutomated": True
-        }
-
-        # Add optional fields like T1, T2, T3, and STOP
-        for target in ["T1", "T2", "T3", "STOP"]:
+        for target in ["T1", "T2", "T3", "STOP", "PRICE"]:
             if target in parsed_data:
-                tradovate_payload[target.lower()] = float(parsed_data[target])
+                parsed_data[target] = float(parsed_data[target])
 
-        return tradovate_payload
+        return parsed_data
 
     except Exception as e:
-        logging.error(f"Error parsing alert: {e}. Raw alert text: {alert_text}")
+        logging.error(f"Error parsing alert: {e}")
         raise ValueError(f"Error parsing alert: {e}")
 
 @app.post("/webhook")
 async def webhook(req: Request):
-    logging.info("Webhook endpoint hit. Request received.")
+    logging.info("Webhook endpoint hit.")
     try:
         content_type = req.headers.get("content-type")
-        logging.info(f"Received webhook request with content type: {content_type}")
-        # Log the raw request body for debugging
         raw_body = await req.body()
-        logging.info(f"Raw request body: {raw_body}")
         if content_type == "application/json":
             data = await req.json()
         elif content_type.startswith("text/plain"):
             text_data = raw_body.decode("utf-8")
-            logging.info(f"Received plain text data: {text_data}")
-            try:
-                latest_price = None
-                if "symbol=" in text_data:
-                    latest_price = await get_latest_price(text_data.split("symbol=")[1].split(",")[0])
-                data = parse_alert_to_tradovate_json(text_data, client.account_id, latest_price)
-            except ValueError as e:
-                logging.error(f"Error parsing alert: {e}")
-                raise HTTPException(status_code=400, detail=str(e))
+            if "symbol=" in text_data:
+                latest_price = await get_latest_price(text_data.split("symbol=")[1].split(",")[0])
+            data = parse_alert_to_tradovate_json(text_data, client.account_id, latest_price)
         else:
-            logging.error(f"Unsupported content type: {content_type}")
-            raise HTTPException(status_code=400, detail=f"Unsupported content type: {content_type}")
+            raise HTTPException(status_code=400, detail="Unsupported content type")
 
         if WEBHOOK_SECRET is None:
-            logging.error("WEBHOOK_SECRET is not set in the environment variables.")
-            raise HTTPException(status_code=500, detail="Server configuration error: WEBHOOK_SECRET is missing.")
+            raise HTTPException(status_code=500, detail="Missing WEBHOOK_SECRET")
 
-        logging.info("Skipping token validation as WEBHOOK_SECRET is hardcoded.")
-        logging.info(f"Validated payload: {data}")
+        action = data["action"].capitalize()
+        symbol = data["symbol"]
+        if symbol == "CME_MINI:NQ1!":
+            symbol = "NQM5"
 
-        # Enforce only required fields for Tradovate order payload
-        # Place a limit order for each price: PRICE, T1, T2, T3
-        try:
-            action = data["action"].capitalize() if "action" in data else None
+        order_plan = []
+        if "PRICE" in data:
+            order_plan.append({"label": "ENTRY", "action": action, "orderType": "Limit", "price": data["PRICE"], "qty": 3})
 
-            # Convert TradingView symbol to Tradovate symbol if needed
-            symbol = data["symbol"]
-            if symbol == "CME_MINI:NQ1!":
-                symbol = "NQM5"
+        for i in range(1, 4):
+            key = f"T{i}"
+            if key in data:
+                order_plan.append({
+                    "label": f"TP{i}",
+                    "action": "Sell" if action.lower() == "buy" else "Buy",
+                    "orderType": "Limit",
+                    "price": data[key],
+                    "qty": 1
+                })
 
-            order_qty = int(data.get("qty", 1))
-            price_fields = []
-            for key in ["PRICE", "T1", "T2", "T3", "price", "t1", "t2", "t3"]:
-                if key in data:
-                    try:
-                        price_fields.append((key, float(data[key])))
-                    except Exception as e:
-                        logging.warning(f"Could not convert {key} value to float: {data[key]} ({e})")
-            if not price_fields:
-                logging.error(f"No limit order prices found in alert: {data}")
-                raise KeyError("No limit order prices found in alert data")
-
-            # Build and log the full payload for all TradingView alert variables
-            tradingview_vars = {}
-            for key in [
-                "accountId", "action", "symbol", "orderQty", "orderType", "timeInForce", "isAutomated",
-                "PRICE", "price", "t0", "T0", "T1", "T2", "T3", "T4", "T5", "t1", "t2", "t3", "t4", "t5", "STOP", "stop"
-            ]:
-                if key in data:
-                    tradingview_vars[key] = data[key]
-            # Add the resolved Tradovate symbol and order_qty for clarity
-            tradingview_vars["resolved_symbol"] = symbol
-            tradingview_vars["resolved_order_qty"] = order_qty
-            logging.info(f"TradingView alert variables payload: {tradingview_vars}")
-
-        except Exception as e:
-            logging.error(f"Error extracting required fields for order: {e}")
-            raise HTTPException(status_code=400, detail=f"Invalid or missing required order fields: {e}")
+        if "STOP" in data:
+            order_plan.append({
+                "label": "STOP",
+                "action": "Sell" if action.lower() == "buy" else "Buy",
+                "orderType": "Stop",
+                "price": data["STOP"],
+                "qty": 3
+            })
 
         order_results = []
-        for label, price in price_fields:
-            limit_order = {
+        for order in order_plan:
+            order_payload = {
                 "accountId": client.account_id,
-                "action": action,  # 'Buy' or 'Sell'
                 "symbol": symbol,
-                "orderQty": order_qty,
-                "orderType": "Limit",
-                "price": price,
+                "action": order["action"],
+                "orderQty": order["qty"],
+                "orderType": order["orderType"],
+                "price": order["price"],
                 "timeInForce": "GTC",
                 "isAutomated": True
             }
-            logging.info(f"Placing {label} limit order: {limit_order}")
+            logging.info(f"Placing {order['label']} order: {order_payload}")
             try:
                 result = await client.place_order(
-                    symbol=limit_order["symbol"],
-                    action=limit_order["action"],
-                    quantity=limit_order["orderQty"],
-                    order_data=limit_order
+                    symbol=symbol,
+                    action=order["action"],
+                    quantity=order["qty"],
+                    order_data=order_payload
                 )
-                logging.info(f"Tradovate API response for {label}: {result}")
-                if isinstance(result, dict) and ("error" in result or "message" in result):
-                    logging.error(f"Tradovate API error for {label}: {result}")
-                    order_results.append({"label": label, "error": result})
-                else:
-                    order_results.append({"label": label, "result": result})
+                order_results.append({order["label"]: result})
             except Exception as e:
-                logging.error(f"Error placing {label} limit order: {e}")
-                order_results.append({"label": label, "error": str(e)})
+                logging.error(f"Error placing {order['label']} order: {e}")
+                order_results.append({order["label"]: str(e)})
 
-        logging.info(f"Executed all limit orders | Results: {order_results}")
         return {"status": "success", "order_responses": order_results}
 
     except Exception as e:
