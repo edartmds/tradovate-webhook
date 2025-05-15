@@ -181,6 +181,18 @@ async def webhook(req: Request):
                 stop_loss_value = price_vars[key]
                 break
 
+        # Validate that all required prices are present for bracket orders
+        if take_profits or stop_loss_value is not None:
+            # Check for missing take profit prices
+            for idx, tp in enumerate(take_profits, 1):
+                if tp is None:
+                    logging.error(f"Take profit price T{idx} is missing or invalid in alert: {data}")
+                    raise HTTPException(status_code=400, detail=f"Take profit price T{idx} is missing or invalid.")
+            # Check for missing stop loss price if stop loss is expected
+            if ("CLOSE" in data or "close" in data) and stop_loss_value is None:
+                logging.error(f"Stop loss price (CLOSE/close) is missing or invalid in alert: {data}")
+                raise HTTPException(status_code=400, detail="Stop loss price (CLOSE/close) is missing or invalid.")
+
         # If take profits or stop loss are present, place a bracket order (OSO)
         if take_profits or stop_loss_value is not None:
             bracket_order = {
