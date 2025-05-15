@@ -10,11 +10,9 @@ import json
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 logging.info(f"Loaded WEBHOOK_SECRET: {WEBHOOK_SECRET}")  # Debugging purpose only, remove in production
 
-# Create log directory if it doesn't exist
 LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
 
-# Set up logging
 log_file = os.path.join(LOG_DIR, "webhook_trades.log")
 logging.basicConfig(
     handlers=[
@@ -75,18 +73,7 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price
                 raise ValueError(f"Missing or invalid field: {field}")
 
         logging.info(f"Parsed alert data after validation: {parsed_data}")
-
-        tradovate_payload = {
-            "action": parsed_data["action"],
-            "symbol": parsed_data["symbol"],
-            "qty": 1,
-            "order_type": "Limit",
-            "price": float(parsed_data.get("TriggerPrice", 0)),
-            "tif": "GTC",
-            "automated": True
-        }
-
-        return tradovate_payload
+        return parsed_data
 
     except Exception as e:
         logging.error(f"Error parsing alert: {e}. Raw alert text: {alert_text}")
@@ -129,27 +116,31 @@ async def webhook(req: Request):
         logging.info("Skipping token validation as WEBHOOK_SECRET is hardcoded.")
         logging.info(f"Validated payload: {data}")
 
-        limit_order = {
+        order_data = {
+            "accountId": client.account_id,
             "action": data["action"],
             "symbol": data["symbol"],
-            "qty": 1,
-            "order_type": "Limit",
+            "orderQty": 1,
+            "orderType": "Limit",
             "price": float(data.get("TriggerPrice", 0)),
-            "tif": "GTC",
-            "automated": True
+            "timeInForce": "GTC",
+            "isAutomated": True
         }
 
-        logging.info(f"Limit order payload: {limit_order}")
+        logging.info(f"Final order payload: {json.dumps(order_data, indent=2)}")
 
         try:
-            logging.info(f"Sending limit order to Tradovate: {limit_order}")
-            result = await client.place_order(**limit_order)
+            result = await client.place_order(
+                symbol=data["symbol"],
+                action=data["action"],
+                quantity=1,
+                order_data=order_data
+            )
             logging.info(f"Tradovate API response: {result}")
         except Exception as e:
             logging.error(f"Error placing limit order: {e}")
             raise HTTPException(status_code=500, detail=f"Error placing limit order: {e}")
 
-        logging.info(f"Executed limit order | Response: {result}")
         return {"status": "success", "order_response": result}
 
     except Exception as e:
