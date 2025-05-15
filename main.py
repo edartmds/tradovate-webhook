@@ -86,6 +86,9 @@ async def webhook(req: Request):
     try:
         content_type = req.headers.get("content-type")
         raw_body = await req.body()
+
+        latest_price = None  # <-- FIXED initialization
+
         if content_type == "application/json":
             data = await req.json()
         elif content_type.startswith("text/plain"):
