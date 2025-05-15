@@ -152,41 +152,17 @@ async def webhook(req: Request):
 
         logging.info(f"Validated payload: {data}")
 
-        # Construct the OSO order payload specific to Tradovate API
+        # Construct a single limit order payload
         oso_order = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
             "action": data["action"],
             "symbol": data["symbol"],
             "orderQty": 1,
-            "orderType": "Limit",  # Change to Limit order
-            "price": float(data.get("TriggerPrice", 0)),  # Use TriggerPrice (mapped from PRICE) or default to 0
+            "orderType": "Limit",  # Single limit order
+            "price": float(data.get("TriggerPrice", 0)),  # Use TriggerPrice from the alert
             "isAutomated": True
         }
-
-        # Ensure brackets are always included in the payload with default values if not provided
-        oso_order["bracket1"] = {
-            "action": "Sell",
-            "orderType": "Limit",
-            "price": float(data.get("T1", 0))  # Default to 0 if T1 is not provided
-        }
-        oso_order["bracket2"] = {
-            "action": "Sell",
-            "orderType": "Limit",
-            "price": float(data.get("T2", 0))  # Default to 0 if T2 is not provided
-        }
-        oso_order["bracket3"] = {
-            "action": "Sell",
-            "orderType": "Limit",
-            "price": float(data.get("T3", 0))  # Default to 0 if T3 is not provided
-        }
-
-        if "STOP" in data:
-            oso_order["stopBracket"] = {
-                "action": "Sell",
-                "orderType": "Limit",  # Change Stop order to Limit order
-                "price": float(data["STOP"])
-            }
 
         logging.info(f"OSO order payload: {oso_order}")
 
