@@ -222,6 +222,7 @@ async def webhook(req: Request):
                         bracket_name = f"bracket{bracket_idx}"
                         bracket_order[bracket_name] = {
                             "action": child_action,
+                            "orderType": "Limit",
                             "profitTarget": {
                                 "price": tp_val,
                                 "action": child_action,
@@ -247,7 +248,11 @@ async def webhook(req: Request):
             if stop_loss_value is not None:
                 # Attach stopLoss to bracket1 (first bracket)
                 if "bracket1" not in bracket_order:
-                    bracket_order["bracket1"] = {"action": child_action}
+                    bracket_order["bracket1"] = {"action": child_action, "orderType": "Stop"}
+                else:
+                    # If bracket1 already exists (from T1), ensure orderType is Limit
+                    if "orderType" not in bracket_order["bracket1"]:
+                        bracket_order["bracket1"]["orderType"] = "Limit"
                 bracket_order["bracket1"]["stopLoss"] = {
                     "price": stop_loss_value,
                     "action": child_action,
