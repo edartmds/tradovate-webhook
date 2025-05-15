@@ -41,11 +41,10 @@ async def get_latest_price(symbol: str):
         response = await http_client.get(url, headers=headers)
         response.raise_for_status()
         data = response.json()
-        return data["last"]  # Return the last traded price
+        return data["last"]
 
 def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price: float = None) -> dict:
-    logging.info(f"Raw alert text: {alert_text}")  # Log raw alert text for debugging
-
+    logging.info(f"Raw alert text: {alert_text}")
     try:
         parsed_data = {}
 
@@ -84,7 +83,8 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price
             "action": parsed_data["action"],
             "symbol": parsed_data["symbol"],
             "orderQty": 1,
-            "orderType": "Stop",
+            "orderType": "Limit",
+            "price": float(parsed_data.get("TriggerPrice", 0)),
             "timeInForce": "GTC",
             "isAutomated": True
         }
@@ -151,7 +151,7 @@ async def webhook(req: Request):
 
         try:
             logging.info(f"Sending limit order to Tradovate: {limit_order}")
-            result = await client.place_order(**limit_order)  # ✅ FIXED: unpack dict as kwargs
+            result = await client.place_order(limit_order)  # ✅ FIX: pass as single argument
             logging.info(f"Tradovate API response: {result}")
         except Exception as e:
             logging.error(f"Error placing limit order: {e}")
