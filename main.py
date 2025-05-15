@@ -147,22 +147,16 @@ async def webhook(req: Request):
             action = data["action"].capitalize() if "action" in data else None
             symbol = data["symbol"]
             order_qty = int(data.get("qty", 1))
-            order_type = data.get("orderType", "Limit").capitalize()
-            # Price logic
-            price = None
+            # Try TriggerPrice, then PRICE, then price
             if "TriggerPrice" in data:
                 price = float(data["TriggerPrice"])
             elif "PRICE" in data:
                 price = float(data["PRICE"])
             elif "price" in data:
                 price = float(data["price"])
-            elif order_type == "Limit" and "t1" in data:
-                price = float(data["t1"])
-            elif order_type == "Stop" and "stop" in data:
-                price = float(data["stop"])
-            if price is None:
-                logging.error(f"Incoming data missing price for orderType {order_type}: {data}")
-                raise KeyError("No valid price found for order")
+            else:
+                logging.error(f"Incoming data missing TriggerPrice/PRICE/price: {data}")
+                raise KeyError("TriggerPrice, PRICE, or price not found in alert data")
         except Exception as e:
             logging.error(f"Error extracting required fields for order: {e}")
             raise HTTPException(status_code=400, detail=f"Invalid or missing required order fields: {e}")
@@ -172,7 +166,7 @@ async def webhook(req: Request):
             "action": action,  # 'Buy' or 'Sell'
             "symbol": symbol,
             "orderQty": order_qty,
-            "orderType": order_type,  # Capital L or S
+            "orderType": "Limit",  # Capital L
             "price": price,
             "timeInForce": "GTC",
             "isAutomated": True
