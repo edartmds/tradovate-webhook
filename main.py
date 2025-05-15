@@ -149,9 +149,9 @@ async def webhook(req: Request):
             if symbol == "CME_MINI:NQ1!":
                 symbol = "NQM5"
             order_qty = int(data.get("qty", 1))
-            # Entry price (PRICE or price)
+            # Entry price (PRICE, price, or t0)
             entry_price = None
-            for key in ["PRICE", "price"]:
+            for key in ["PRICE", "price", "t0", "T0"]:
                 if key in data:
                     try:
                         entry_price = float(data[key])
