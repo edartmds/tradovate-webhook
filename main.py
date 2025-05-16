@@ -151,95 +151,6 @@ async def monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids):
             logging.error(f"Error monitoring SL order {sl_order_id}: {e}")
             await asyncio.sleep(5)  # Retry after a delay
 
-async def monitor_tp_orders_and_adjust_sl(sl_order_id, tp_order_ids, total_contracts=3):
-    """
-    Monitor take profit orders and adjust the stop loss quantity when TPs are hit.
-    
-    Args:
-        sl_order_id: The ID of the stop loss order to adjust
-        tp_order_ids: List of take profit order IDs to monitor
-        total_contracts: Total number of contracts initially placed
-    """
-    logging.info(f"Starting to monitor TP orders {tp_order_ids} to adjust SL order {sl_order_id}")
-    
-    # Track which TP orders have been filled
-    filled_tp_orders = set()
-    remaining_contracts = total_contracts
-    
-    while True:
-        try:
-            # Sleep briefly to avoid hammering the API
-            await asyncio.sleep(1)
-            
-            # Get the latest state of the stop loss order
-            sl_url = f"https://demo-api.tradovate.com/v1/order/{sl_order_id}"
-            headers = {"Authorization": f"Bearer {client.access_token}"}
-            
-            # Check if SL order still exists and is active
-            async with httpx.AsyncClient() as http_client:
-                sl_response = await http_client.get(sl_url, headers=headers)
-                sl_response.raise_for_status()
-                sl_status = sl_response.json()
-            
-            # If stop loss is no longer active, stop monitoring
-            if sl_status.get("status") in ["Filled", "Cancelled", "Rejected"]:
-                logging.info(f"SL order {sl_order_id} is {sl_status.get('status')}. Stopping TP monitoring.")
-                break
-                
-            # Check each TP order that hasn't been filled yet
-            for tp_id in tp_order_ids:
-                if tp_id in filled_tp_orders:
-                    continue
-                    
-                tp_url = f"https://demo-api.tradovate.com/v1/order/{tp_id}"
-                async with httpx.AsyncClient() as http_client:
-                    tp_response = await http_client.get(tp_url, headers=headers)
-                    
-                    # Skip if order doesn't exist anymore
-                    if tp_response.status_code == 404:
-                        continue
-                        
-                    tp_response.raise_for_status()
-                    tp_status = tp_response.json()
-                
-                # If a TP order has been filled
-                if tp_status.get("status") == "Filled":
-                    filled_tp_orders.add(tp_id)
-                    logging.info(f"TP order {tp_id} has been filled!")
-                    
-                    # Calculate the number of contracts filled by this TP
-                    contracts_filled = tp_status.get("orderQty", 1)
-                    remaining_contracts -= contracts_filled
-                    
-                    # If we still have open positions, update the SL order quantity
-                    if remaining_contracts > 0:
-                        logging.info(f"Adjusting SL order {sl_order_id} to {remaining_contracts} contracts")
-                        
-                        # Update the stop loss order with new quantity
-                        modify_url = f"https://demo-api.tradovate.com/v1/order/modifyorder"
-                        modify_data = {
-                            "orderId": sl_order_id,
-                            "orderQty": remaining_contracts
-                        }
-                        
-                        async with httpx.AsyncClient() as http_client:
-                            modify_response = await http_client.post(modify_url, headers=headers, json=modify_data)
-                            modify_response.raise_for_status()
-                            logging.info(f"Successfully adjusted SL order to {remaining_contracts} contracts")
-                    else:
-                        # All contracts are filled, so we can stop monitoring
-                        logging.info("All contracts have been filled by TP orders. Stopping monitoring.")
-                        return
-            
-            # If all TP orders have been filled, stop monitoring
-            if len(filled_tp_orders) == len(tp_order_ids):
-                logging.info("All TP orders have been processed. Stopping monitoring.")
-                break
-                
-        except Exception as e:
-            logging.error(f"Error monitoring TP orders: {e}", exc_info=True)
-            await asyncio.sleep(5)  # Retry after a longer delay on error
-
 async def place_order(symbol, action, quantity, order_data):
     """
     Custom place_order implementation to ensure proper handling of order types
@@ -408,14 +319,12 @@ async def webhook(req: Request):
                         
         # Log our collected order IDs for monitoring
         logging.info(f"SL order ID for monitoring: {sl_order_id}")
-        logging.info(f"TP order IDs for potential cancellation: {tp_order_ids}")        # Start monitoring the stop order in the background if we have both SL and TP orders
+        logging.info(f"TP order IDs for potential cancellation: {tp_order_ids}")
+
+        # Start monitoring the stop order in the background if we have both SL and TP orders
         if sl_order_id and tp_order_ids:
             logging.info(f"Starting background monitoring for SL order {sl_order_id}")
             monitoring_task = asyncio.create_task(monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids))
-            logging.info(f"Starting background monitoring for TP orders to adjust SL order {sl_order_id}")
-            tp_monitoring_task = asyncio.create_task(monitor_tp_orders_and_adjust_sl(sl_order_id, tp_order_ids))
-            logging.info(f"Starting background monitoring for TP orders to adjust SL order {sl_order_id}")
-            tp_monitoring_task = asyncio.create_task(monitor_tp_orders_and_adjust_sl(sl_order_id, tp_order_ids))
 
         return {"status": "success", "order_responses": order_results}
 
