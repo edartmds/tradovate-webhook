@@ -134,6 +134,52 @@ async def monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids):
             logging.error(f"Error monitoring SL order {sl_order_id}: {e}")
             await asyncio.sleep(5)  # Retry after a delay
 
+async def monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, symbol):
+    """
+    Monitor TP orders. As each TP is filled, reduce the SL order size. If all TPs are filled, cancel the SL order.
+    """
+    remaining_qty = sl_order_qty
+    filled_tp = set()
+    logging.info(f"Monitoring TP orders {tp_order_ids} to adjust SL order {sl_order_id}.")
+    while True:
+        try:
+            all_filled = True
+            for idx, tp_order_id in enumerate(tp_order_ids):
+                if tp_order_id in filled_tp:
+                    continue
+                url = f"https://demo-api.tradovate.com/v1/order/{tp_order_id}"
+                headers = {"Authorization": f"Bearer {client.access_token}"}
+                async with httpx.AsyncClient() as http_client:
+                    response = await http_client.get(url, headers=headers)
+                    response.raise_for_status()
+                    order_status = response.json()
+                if order_status.get("status") == "Filled":
+                    filled_tp.add(tp_order_id)
+                    remaining_qty -= 1
+                    logging.info(f"TP order {tp_order_id} filled. Adjusting SL order {sl_order_id} to qty {remaining_qty}.")
+                    # Modify SL order to new qty if contracts remain
+                    if remaining_qty > 0:
+                        mod_url = f"https://demo-api.tradovate.com/v1/order/modify/{sl_order_id}"
+                        payload = {"orderQty": remaining_qty}
+                        async with httpx.AsyncClient() as http_client:
+                            await http_client.post(mod_url, headers=headers, json=payload)
+                    else:
+                        # All TPs filled, cancel SL
+                        cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{sl_order_id}"
+                        async with httpx.AsyncClient() as http_client:
+                            await http_client.post(cancel_url, headers=headers)
+                        logging.info(f"All TPs filled, SL order {sl_order_id} cancelled.")
+                        return
+                elif order_status.get("status") not in ["Filled", "Working"]:
+                    all_filled = False
+            if len(filled_tp) == len(tp_order_ids):
+                # All TPs filled, SL should be cancelled already
+                return
+            await asyncio.sleep(1)
+        except Exception as e:
+            logging.error(f"Error monitoring TP orders: {e}")
+            await asyncio.sleep(5)
+
 @app.post("/webhook")
 async def webhook(req: Request):
     global recent_alert_hashes
@@ -201,6 +247,7 @@ async def webhook(req: Request):
 
         sl_order_id = None
         tp_order_ids = []
+        sl_order_qty = 0
 
         order_results = []
         for order in order_plan:
@@ -235,6 +282,7 @@ async def webhook(req: Request):
 
                     if order["label"] == "STOP":
                         sl_order_id = result.get("id")
+                        sl_order_qty = order["qty"]
                     elif order["label"].startswith("TP"):
                         tp_order_ids.append(result.get("id"))
 
@@ -249,6 +297,7 @@ async def webhook(req: Request):
         # Start monitoring the stop order in the background
         if sl_order_id and tp_order_ids:
             asyncio.create_task(monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids))
+            asyncio.create_task(monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, symbol))
 
         return {"status": "success", "order_responses": order_results}
 
