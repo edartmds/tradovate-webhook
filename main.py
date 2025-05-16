@@ -35,19 +35,13 @@ async def startup_event():
     await client.authenticate()
 
 async def get_latest_price(symbol: str):
-    # Normalize the symbol for market data queries
-    symbol_map = {
-        "CME_MINI:NQ1!": "NQM5",
-        "NQ1!": "NQM5"
-    }
-    normalized_symbol = symbol_map.get(symbol, symbol)
-    url = f"https://demo-api.tradovate.com/v1/marketdata/quote/{normalized_symbol}"
+    url = f"https://demo-api.tradovate.com/v1/marketdata/quote/{symbol}"
     headers = {"Authorization": f"Bearer {client.access_token}"}
     async with httpx.AsyncClient() as http_client:
         response = await http_client.get(url, headers=headers)
         response.raise_for_status()
         data = response.json()
-        return data.get("last") or data.get("price")
+        return data["last"]
 
 async def cancel_all_orders(symbol):
     url = f"https://demo-api.tradovate.com/v1/order/cancelallorders"
@@ -264,8 +258,8 @@ async def webhook(req: Request):
         # Check for open position (should be flat)
         pos_url = f"https://demo-api.tradovate.com/v1/position/list"
         headers = {"Authorization": f"Bearer {client.access_token}"}
-        async with httpx.AsyncClient() as http_http_client:
-            pos_resp = await http_http_client.get(pos_url, headers=headers)
+        async with httpx.AsyncClient() as http_client:
+            pos_resp = await http_client.get(pos_url, headers=headers)
             pos_resp.raise_for_status()
             positions = pos_resp.json()
             for pos in positions:
@@ -339,24 +333,11 @@ async def webhook(req: Request):
             }
             if order["orderType"] == "Limit":
                 order_payload["price"] = order["price"]
-                logging.debug(f"Limit order price set to: {order['price']}")
             elif order["orderType"] == "StopLimit":
                 order_payload["price"] = order["price"]
                 order_payload["stopPrice"] = order["stopPrice"]
             elif order["orderType"] == "Stop":
                 order_payload["stopPrice"] = order["stopPrice"]
-
-            # Fetch the latest market price before placing the order
-            market_price = await get_latest_price(symbol)
-            logging.info(f"Market price for {symbol} before placing limit order: {market_price}")
-
-            # Ensure the limit order price is above/below the market price based on action
-            if order["orderType"] == "Limit":
-                if (order["action"].lower() == "buy" and order["price"] >= market_price) or \
-                   (order["action"].lower() == "sell" and order["price"] <= market_price):
-                    logging.warning(f"Limit order price {order['price']} for {order['action']} is invalid as it would execute immediately.")
-                    return {"status": "error", "detail": "Limit order price would execute immediately."}
-
             logging.info(f"Placing {order['label']} order: {order_payload}")
             retry_count = 0
             while retry_count < 3:
