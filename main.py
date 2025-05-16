@@ -313,7 +313,7 @@ async def webhook(req: Request):
                 "timeInForce": "GTC",
                 "isAutomated": True
             }
-            # Explicitly set stopPrice for all orders
+            # Explicitly set stopPrice for all orders, including ENTRY
             if "price" in order:
                 order_payload["stopPrice"] = order["price"]
             elif "stopPrice" in order:
