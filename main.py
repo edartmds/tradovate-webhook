@@ -43,8 +43,10 @@ async def ensure_authenticated():
         logging.warning("Access token is missing. Re-authenticating...")
         await client.authenticate()
     else:
-        # Optionally, add logic to check token expiration if supported by the API
         logging.info("Access token is present.")
+
+    # Optionally, add logic to check token expiration if supported by the API
+    logging.info("Authentication verified.")
 
 async def get_latest_price(symbol: str):
     await ensure_authenticated()
@@ -237,6 +239,8 @@ async def get_current_position_size(symbol):
                 return pos.get("netPos", 0)
     return 0
 
+# Add detailed logging to the place_order function and verify authentication
+
 async def place_order(order, symbol):
     """
     Place an order using the Tradovate API.
@@ -252,10 +256,21 @@ async def place_order(order, symbol):
         "stopPrice": order.get("stopPrice"),
         "quantity": order["qty"]
     }
+
+    logging.info(f"Placing order with payload: {payload}")
+
     async with httpx.AsyncClient() as http_client:
-        response = await http_client.post(url, headers=headers, json=payload)
-        response.raise_for_status()
-        return response.json()
+        try:
+            response = await http_client.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            logging.info(f"Order placed successfully: {response.json()}")
+            return response.json()
+        except httpx.HTTPStatusError as e:
+            logging.error(f"HTTP error while placing order: {e.response.status_code} - {e.response.text}")
+            raise
+        except Exception as e:
+            logging.error(f"Unexpected error while placing order: {e}")
+            raise
 
 # Update the webhook logic to explicitly map TradingView alert variables to order payloads
 
@@ -279,6 +294,8 @@ async def webhook(req: Request):
             data = parse_alert_to_tradovate_json(text_data, client.account_id, latest_price)
         else:
             raise HTTPException(status_code=400, detail="Unsupported content type")
+
+        logging.info(f"Parsed alert data: {data}")
 
         if WEBHOOK_SECRET is None:
             raise HTTPException(status_code=500, detail="Missing WEBHOOK_SECRET")
@@ -354,6 +371,7 @@ async def webhook(req: Request):
                     sl_order_id = result.get("id")
                     sl_order_qty = order["qty"]
             except Exception as e:
+                logging.error(f"Error placing order {order['label']}: {e}")
                 order_results.append({order["label"]: str(e)})
 
         # Monitor SL and TP orders if applicable
