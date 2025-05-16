@@ -217,9 +217,11 @@ async def webhook(req: Request):
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
             symbol = "NQM5"
 
-        # Cancel all previous orders and flatten positions for this symbol
+        # --- Ensure all previous orders and positions are closed before new entry ---
         await cancel_all_orders(symbol)
         await flatten_position(symbol)
+        await asyncio.sleep(1.5)  # Give Tradovate time to process cancels/flatten
+        # ---
 
         order_plan = []
         if "PRICE" in data:
