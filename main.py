@@ -122,6 +122,7 @@ def hash_alert(data: dict) -> str:
 async def monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids):
     """
     Monitor the stop loss order and cancel associated take profit orders if the stop loss is hit.
+    Flatten all positions if the stop loss is filled.
     """
     logging.info(f"Monitoring SL order {sl_order_id} for execution.")
     tp_cancelled = False
@@ -143,6 +144,10 @@ async def monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids):
                     async with httpx.AsyncClient() as http_client:
                         await http_client.post(cancel_url, headers=headers)
                 tp_cancelled = True
+
+                # Flatten all positions
+                logging.info("Flattening all positions as SL order was filled.")
+                await flatten_position(order_status.get("symbol"))
                 break
             elif order_status.get("status") in ["Cancelled", "Rejected"]:
                 logging.info(f"SL order {sl_order_id} was {order_status.get('status')}. Stopping monitoring.")
@@ -161,6 +166,7 @@ async def monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids):
 async def monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, symbol):
     """
     Monitor TP orders. As each TP is filled, reduce the SL order size. If all TPs are filled, cancel the SL order.
+    Flatten all positions if T3 is filled.
     """
     remaining_qty = sl_order_qty
     filled_tp = set()
@@ -193,6 +199,12 @@ async def monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, symb
                         async with httpx.AsyncClient() as http_client:
                             await http_client.post(cancel_url, headers=headers)
                         logging.info(f"All TPs filled, SL order {sl_order_id} cancelled.")
+                        return
+
+                    # Flatten all positions if T3 is filled
+                    if idx == 2:  # T3 is the third TP order
+                        logging.info("Flattening all positions as T3 was filled.")
+                        await flatten_position(symbol)
                         return
                 elif order_status.get("status") not in ["Filled", "Working"]:
                     all_filled = False
