@@ -272,7 +272,14 @@ async def webhook(req: Request):
         # Place entry, TP, and SL orders together (bracket/OCO style)
         order_plan = []
         if "PRICE" in data:
-            order_plan.append({"label": "ENTRY", "action": action, "orderType": "Limit", "price": data["PRICE"], "qty": 3})
+            # Always use a LIMIT order for entry at the specified price
+            order_plan.append({
+                "label": "ENTRY",
+                "action": action,
+                "orderType": "Limit",
+                "price": data["PRICE"],
+                "qty": 3
+            })
         for i in range(1, 4):
             key = f"T{i}"
             if key in data:
@@ -305,7 +312,11 @@ async def webhook(req: Request):
                 "timeInForce": "GTC",
                 "isAutomated": True
             }
-            if order["orderType"] == "Limit":
+            # Ensure entry is always a LIMIT order at the specified price
+            if order["label"] == "ENTRY":
+                order_payload["orderType"] = "Limit"
+                order_payload["price"] = order["price"]
+            elif order["orderType"] == "Limit":
                 order_payload["price"] = order["price"]
             elif order["orderType"] == "StopLimit":
                 order_payload["price"] = order["price"]
