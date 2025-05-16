@@ -55,6 +55,26 @@ async def flatten_position(symbol):
     async with httpx.AsyncClient() as http_client:
         await http_client.post(url, headers=headers, json={"symbol": symbol})
 
+async def wait_until_no_open_orders(symbol, timeout=10):
+    """
+    Poll Tradovate until there are no open orders for the symbol, or until timeout (seconds).
+    """
+    url = f"https://demo-api.tradovate.com/v1/order/list"
+    headers = {"Authorization": f"Bearer {client.access_token}"}
+    start = asyncio.get_event_loop().time()
+    while True:
+        async with httpx.AsyncClient() as http_client:
+            resp = await http_client.get(url, headers=headers)
+            resp.raise_for_status()
+            orders = resp.json()
+            open_orders = [o for o in orders if o.get("symbol") == symbol and o.get("status") in ("Working", "Accepted")]
+            if not open_orders:
+                return
+        if asyncio.get_event_loop().time() - start > timeout:
+            logging.warning(f"Timeout waiting for all open orders to clear for {symbol}.")
+            return
+        await asyncio.sleep(0.5)
+
 def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price: float = None) -> dict:
     logging.info(f"Raw alert text: {alert_text}")
     try:
@@ -103,6 +123,7 @@ async def monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids):
     Monitor the stop loss order and cancel associated take profit orders if the stop loss is hit.
     """
     logging.info(f"Monitoring SL order {sl_order_id} for execution.")
+    tp_cancelled = False
     while True:
         try:
             # Check the status of the SL order
@@ -115,21 +136,23 @@ async def monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids):
 
             if order_status.get("status") == "Filled":
                 logging.info(f"SL order {sl_order_id} was filled. Cancelling TP orders: {tp_order_ids}")
-
                 # Cancel all TP orders
                 for tp_order_id in tp_order_ids:
                     cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{tp_order_id}"
                     async with httpx.AsyncClient() as http_client:
                         await http_client.post(cancel_url, headers=headers)
-
+                tp_cancelled = True
                 break
-
             elif order_status.get("status") in ["Cancelled", "Rejected"]:
                 logging.info(f"SL order {sl_order_id} was {order_status.get('status')}. Stopping monitoring.")
                 break
-
+            # If any TP orders are still open after SL is filled, force cancel
+            if tp_cancelled:
+                for tp_order_id in tp_order_ids:
+                    cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{tp_order_id}"
+                    async with httpx.AsyncClient() as http_client:
+                        await http_client.post(cancel_url, headers=headers)
             await asyncio.sleep(1)  # Poll every second
-
         except Exception as e:
             logging.error(f"Error monitoring SL order {sl_order_id}: {e}")
             await asyncio.sleep(5)  # Retry after a delay
@@ -220,7 +243,7 @@ async def webhook(req: Request):
         # --- Ensure all previous orders and positions are closed before new entry ---
         await cancel_all_orders(symbol)
         await flatten_position(symbol)
-        await asyncio.sleep(1.5)  # Give Tradovate time to process cancels/flatten
+        await wait_until_no_open_orders(symbol, timeout=10)
         # ---
 
         order_plan = []
