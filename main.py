@@ -1,6 +1,5 @@
 import os
 import logging
-import uuid
 from datetime import datetime
 from fastapi import FastAPI, Request, HTTPException
 from tradovate_api import TradovateClient
@@ -30,9 +29,6 @@ app = FastAPI()
 client = TradovateClient()
 recent_alert_hashes = set()
 MAX_HASHES = 20  # Keep the last 20 unique alerts
-
-# Add a global dictionary to track orders by alert ID
-alert_orders = {}
 
 @app.on_event("startup")
 async def startup_event():
@@ -79,28 +75,6 @@ async def wait_until_no_open_orders(symbol, timeout=10):
             return
         await asyncio.sleep(0.5)
 
-async def cancel_orders_by_alert_id(alert_id):
-    """
-    Cancel all orders associated with a specific alert ID.
-    """
-    if alert_id in alert_orders:
-        for order_id in alert_orders[alert_id]:
-            cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{order_id}"
-            headers = {"Authorization": f"Bearer {client.access_token}"}
-            async with httpx.AsyncClient() as http_client:
-                try:
-                    await http_client.post(cancel_url, headers=headers)
-                    logging.info(f"Cancelled order {order_id} for alert ID {alert_id}.")
-                except Exception as e:
-                    logging.error(f"Error cancelling order {order_id} for alert ID {alert_id}: {e}")
-
-async def flatten_positions_by_alert_id(alert_id, symbol):
-    """
-    Flatten all positions associated with a specific alert ID.
-    """
-    logging.info(f"Flattening positions for alert ID {alert_id}.")
-    await flatten_position(symbol)
-
 def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price: float = None) -> dict:
     logging.info(f"Raw alert text: {alert_text}")
     try:
@@ -144,10 +118,9 @@ def hash_alert(data: dict) -> str:
     alert_string = json.dumps(data, sort_keys=True)
     return hashlib.sha256(alert_string.encode()).hexdigest()
 
-async def monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids, alert_id, symbol):
+async def monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids):
     """
     Monitor the stop loss order and cancel associated take profit orders if the stop loss is hit.
-    Flatten all positions and cancel orders associated with the alert ID if the stop loss is filled.
     """
     logging.info(f"Monitoring SL order {sl_order_id} for execution.")
     tp_cancelled = False
@@ -164,28 +137,36 @@ async def monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids, alert_id, 
             if order_status.get("status") == "Filled":
                 logging.info(f"SL order {sl_order_id} was filled. Cancelling TP orders: {tp_order_ids}")
                 # Cancel all TP orders
-                await cancel_orders_by_alert_id(alert_id)
-
-                # Flatten all positions
-                await flatten_positions_by_alert_id(alert_id, symbol)
+                for tp_order_id in tp_order_ids:
+                    cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{tp_order_id}"
+                    async with httpx.AsyncClient() as http_client:
+                        await http_client.post(cancel_url, headers=headers)
+                tp_cancelled = True
                 break
             elif order_status.get("status") in ["Cancelled", "Rejected"]:
                 logging.info(f"SL order {sl_order_id} was {order_status.get('status')}. Stopping monitoring.")
                 break
+            # If any TP orders are still open after SL is filled, force cancel
+            if tp_cancelled:
+                for tp_order_id in tp_order_ids:
+                    cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{tp_order_id}"
+                    async with httpx.AsyncClient() as http_client:
+                        await http_client.post(cancel_url, headers=headers)
             await asyncio.sleep(1)  # Poll every second
         except Exception as e:
             logging.error(f"Error monitoring SL order {sl_order_id}: {e}")
             await asyncio.sleep(5)  # Retry after a delay
 
-async def monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, alert_id, symbol):
+async def monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, symbol):
     """
-    Monitor TP orders. As each TP is filled, reduce the SL order size. If T3 is filled, flatten all positions and cancel orders associated with the alert ID.
+    Monitor TP orders. As each TP is filled, reduce the SL order size. If all TPs are filled, cancel the SL order.
     """
     remaining_qty = sl_order_qty
     filled_tp = set()
     logging.info(f"Monitoring TP orders {tp_order_ids} to adjust SL order {sl_order_id}.")
     while True:
         try:
+            all_filled = True
             for idx, tp_order_id in enumerate(tp_order_ids):
                 if tp_order_id in filled_tp:
                     continue
@@ -207,13 +188,16 @@ async def monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, aler
                             await http_client.post(mod_url, headers=headers, json=payload)
                     else:
                         # All TPs filled, cancel SL
-                        await cancel_orders_by_alert_id(alert_id)
+                        cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{sl_order_id}"
+                        async with httpx.AsyncClient() as http_client:
+                            await http_client.post(cancel_url, headers=headers)
+                        logging.info(f"All TPs filled, SL order {sl_order_id} cancelled.")
                         return
-
-                    # Flatten all positions if T3 is filled
-                    if idx == 2:  # T3 is the third TP order
-                        await flatten_positions_by_alert_id(alert_id, symbol)
-                        return
+                elif order_status.get("status") not in ["Filled", "Working"]:
+                    all_filled = False
+            if len(filled_tp) == len(tp_order_ids):
+                # All TPs filled, SL should be cancelled already
+                return
             await asyncio.sleep(1)
         except Exception as e:
             logging.error(f"Error monitoring TP orders: {e}")
@@ -221,7 +205,7 @@ async def monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, aler
 
 @app.post("/webhook")
 async def webhook(req: Request):
-    global recent_alert_hashes, alert_orders
+    global recent_alert_hashes
     logging.info("Webhook endpoint hit.")
     try:
         content_type = req.headers.get("content-type")
@@ -251,10 +235,6 @@ async def webhook(req: Request):
         if len(recent_alert_hashes) > MAX_HASHES:
             recent_alert_hashes = set(list(recent_alert_hashes)[-MAX_HASHES:])
 
-        # Generate a unique ID for the alert
-        alert_id = str(uuid.uuid4())
-        logging.info(f"Generated unique alert ID: {alert_id}")
-
         action = data["action"].capitalize()
         symbol = data["symbol"]
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
@@ -280,8 +260,8 @@ async def webhook(req: Request):
 
         # Check for open orders (should be none)
         order_url = f"https://demo-api.tradovate.com/v1/order/list"
-        async with httpx.AsyncClient() as http_client:
-            order_resp = await http_client.get(order_url, headers=headers)
+        async with httpx.AsyncClient() as http_http_client:
+            order_resp = await http_http_client.get(order_url, headers=headers)
             order_resp.raise_for_status()
             orders = order_resp.json()
             open_orders = [o for o in orders if o.get("symbol") == symbol and o.get("status") in ("Working", "Accepted")]
@@ -298,8 +278,7 @@ async def webhook(req: Request):
                 "action": action,
                 "orderType": "Limit",
                 "price": data["PRICE"],
-                "qty": 3,
-                "alert_id": alert_id  # Associate the alert ID with the order
+                "qty": 3
             })
         for i in range(1, 4):
             key = f"T{i}"
@@ -309,8 +288,7 @@ async def webhook(req: Request):
                     "action": "Sell" if action.lower() == "buy" else "Buy",
                     "orderType": "Limit",
                     "price": data[key],
-                    "qty": 1,
-                    "alert_id": alert_id  # Associate the alert ID with the order
+                    "qty": 1
                 })
         if "STOP" in data:
             order_plan.append({
@@ -318,13 +296,8 @@ async def webhook(req: Request):
                 "action": "Sell" if action.lower() == "buy" else "Buy",
                 "orderType": "Stop",
                 "stopPrice": data["STOP"],
-                "qty": 3,
-                "alert_id": alert_id  # Associate the alert ID with the order
+                "qty": 3
             })
-
-        # Track orders by alert ID
-        alert_orders[alert_id] = []
-
         sl_order_id = None
         tp_order_ids = []
         sl_order_qty = 0
@@ -337,9 +310,9 @@ async def webhook(req: Request):
                 "orderQty": order["qty"],
                 "orderType": order["orderType"],
                 "timeInForce": "GTC",
-                "isAutomated": True,
-                "alert_id": order["alert_id"]  # Include the alert ID in the payload
+                "isAutomated": True
             }
+            # Ensure entry is treated like T1, T2, T3
             if order["orderType"] == "Limit":
                 order_payload["price"] = order["price"]
             elif order["orderType"] == "StopLimit":
@@ -358,8 +331,6 @@ async def webhook(req: Request):
                         quantity=order["qty"],
                         order_data=order_payload
                     )
-                    if result.get("id"):
-                        alert_orders[alert_id].append(result.get("id"))
                     if order["label"] == "STOP":
                         sl_order_id = result.get("id")
                         sl_order_qty = order["qty"]
@@ -372,14 +343,11 @@ async def webhook(req: Request):
                     retry_count += 1
                     if retry_count == 3:
                         order_results.append({order["label"]: str(e)})
-
-        # Start monitoring the stop order and TP orders
+        # Start monitoring the stop order in the background
         if sl_order_id and tp_order_ids:
-            asyncio.create_task(monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids, alert_id, symbol))
-            asyncio.create_task(monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, alert_id, symbol))
-
+            asyncio.create_task(monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids))
+            asyncio.create_task(monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, symbol))
         return {"status": "success", "order_responses": order_results}
-
     except Exception as e:
         logging.error(f"Unexpected error in webhook: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
