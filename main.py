@@ -260,8 +260,8 @@ async def webhook(req: Request):
 
         # Check for open orders (should be none)
         order_url = f"https://demo-api.tradovate.com/v1/order/list"
-        async with httpx.AsyncClient() as http_client:
-            order_resp = await http_client.get(order_url, headers=headers)
+        async with httpx.AsyncClient() as http_http_client:
+            order_resp = await http_http_client.get(order_url, headers=headers)
             order_resp.raise_for_status()
             orders = order_resp.json()
             open_orders = [o for o in orders if o.get("symbol") == symbol and o.get("status") in ("Working", "Accepted")]
@@ -312,17 +312,15 @@ async def webhook(req: Request):
                 "timeInForce": "GTC",
                 "isAutomated": True
             }
-            # Ensure entry is always a LIMIT order at the specified price
-            if order["label"] == "ENTRY":
-                order_payload["orderType"] = "Limit"
-                order_payload["price"] = order["price"]
-            elif order["orderType"] == "Limit":
+            # Ensure entry is treated like T1, T2, T3
+            if order["orderType"] == "Limit":
                 order_payload["price"] = order["price"]
             elif order["orderType"] == "StopLimit":
                 order_payload["price"] = order["price"]
                 order_payload["stopPrice"] = order["stopPrice"]
             elif order["orderType"] == "Stop":
                 order_payload["stopPrice"] = order["stopPrice"]
+
             logging.info(f"Placing {order['label']} order: {order_payload}")
             retry_count = 0
             while retry_count < 3:
@@ -336,7 +334,7 @@ async def webhook(req: Request):
                     if order["label"] == "STOP":
                         sl_order_id = result.get("id")
                         sl_order_qty = order["qty"]
-                    elif order["label"].startswith("TP"):
+                    elif order["label"].startswith("TP") or order["label"] == "ENTRY":
                         tp_order_ids.append(result.get("id"))
                     order_results.append({order["label"]: result})
                     break
