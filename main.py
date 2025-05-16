@@ -113,15 +113,20 @@ async def monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids):
                 response.raise_for_status()
                 order_status = response.json()
 
-            if order_status.get("status") == "Filled":
-                logging.info(f"SL order {sl_order_id} was filled. Cancelling TP orders: {tp_order_ids}")
+            # If the stop loss order is filled or triggered
+            if order_status.get("status") == "Filled" or order_status.get("status") == "Triggered":
+                logging.info(f"SL order {sl_order_id} was {order_status.get('status')}. Cancelling TP orders: {tp_order_ids}")
 
-                # Cancel all TP orders
+                # Cancel all TP orders regardless of open position status
                 for tp_order_id in tp_order_ids:
-                    cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{tp_order_id}"
-                    async with httpx.AsyncClient() as http_client:
-                        await http_client.post(cancel_url, headers=headers)
-
+                    try:
+                        cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{tp_order_id}"
+                        async with httpx.AsyncClient() as http_client:
+                            cancel_response = await http_client.post(cancel_url, headers=headers)
+                            cancel_response.raise_for_status()
+                            logging.info(f"Successfully cancelled TP order {tp_order_id}")
+                    except Exception as e:
+                        logging.error(f"Error cancelling TP order {tp_order_id}: {e}")
                 break
 
             elif order_status.get("status") in ["Cancelled", "Rejected"]:
@@ -133,6 +138,29 @@ async def monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids):
         except Exception as e:
             logging.error(f"Error monitoring SL order {sl_order_id}: {e}")
             await asyncio.sleep(5)  # Retry after a delay
+
+async def place_order(symbol, action, quantity, order_data):
+    """
+    Custom place_order implementation to ensure proper handling of order types
+    """
+    url = "https://demo-api.tradovate.com/v1/order/placeorder"
+    headers = {"Authorization": f"Bearer {client.access_token}"}
+    
+    # Ensure we're strictly following the order_data properties for order placement
+    # This prevents any automatic filling of orders at market price
+    
+    # Log the exact order we're sending to the API
+    logging.info(f"Sending order to API: {order_data}")
+    
+    async with httpx.AsyncClient() as http_client:
+        response = await http_client.post(url, headers=headers, json=order_data)
+        response.raise_for_status()
+        result = response.json()
+        
+        # Log the response we get back
+        logging.info(f"API response for order: {result}")
+        
+        return result
 
 @app.post("/webhook")
 async def webhook(req: Request):
@@ -149,7 +177,10 @@ async def webhook(req: Request):
         elif content_type.startswith("text/plain"):
             text_data = raw_body.decode("utf-8")
             if "symbol=" in text_data:
-                latest_price = await get_latest_price(text_data.split("symbol=")[1].split(",")[0])
+                symbol_raw = text_data.split("symbol=")[1].split("\n")[0].strip()
+                if "," in symbol_raw:
+                    symbol_raw = symbol_raw.split(",")[0]
+                latest_price = await get_latest_price(symbol_raw)
             data = parse_alert_to_tradovate_json(text_data, client.account_id, latest_price)
         else:
             raise HTTPException(status_code=400, detail="Unsupported content type")
@@ -176,28 +207,40 @@ async def webhook(req: Request):
         await flatten_position(symbol)
 
         order_plan = []
+        # Only place orders if we have a specific PRICE for entry
         if "PRICE" in data:
-            order_plan.append({"label": "ENTRY", "action": action, "orderType": "Limit", "price": data["PRICE"], "qty": 3})
-
-        for i in range(1, 4):
-            key = f"T{i}"
-            if key in data:
-                order_plan.append({
-                    "label": f"TP{i}",
-                    "action": "Sell" if action.lower() == "buy" else "Buy",
-                    "orderType": "Limit",
-                    "price": data[key],
-                    "qty": 1
-                })
-
-        if "STOP" in data:
+            # Add the ENTRY limit order
             order_plan.append({
-                "label": "STOP",
-                "action": "Sell" if action.lower() == "buy" else "Buy",
-                "orderType": "Stop",
-                "stopPrice": data["STOP"],
+                "label": "ENTRY", 
+                "action": action, 
+                "orderType": "Limit", 
+                "price": data["PRICE"], 
                 "qty": 3
             })
+            
+            # Only add TP and SL orders if we have an entry point
+            for i in range(1, 4):
+                key = f"T{i}"
+                if key in data:
+                    order_plan.append({
+                        "label": f"TP{i}",
+                        "action": "Sell" if action.lower() == "buy" else "Buy",
+                        "orderType": "Limit",
+                        "price": data[key],
+                        "qty": 1
+                    })
+
+            if "STOP" in data:
+                order_plan.append({
+                    "label": "STOP",
+                    "action": "Sell" if action.lower() == "buy" else "Buy",
+                    "orderType": "Stop",
+                    "stopPrice": data["STOP"],
+                    "qty": 3
+                })
+        else:
+            logging.warning("No PRICE specified in the alert data. Cannot place limit order.")
+            return {"status": "error", "detail": "No PRICE specified for limit order"}
 
         sl_order_id = None
         tp_order_ids = []
@@ -210,11 +253,12 @@ async def webhook(req: Request):
                 "action": order["action"],
                 "orderQty": order["qty"],
                 "orderType": order["orderType"],
-                "timeInForce": "GTC",
+                "timeInForce": "GTC",  # Good Till Cancelled
                 "isAutomated": True
             }
 
             if order["orderType"] == "Limit":
+                # Ensure we're setting a limit price for limit orders
                 order_payload["price"] = order["price"]
             elif order["orderType"] == "StopLimit":
                 order_payload["price"] = order["price"]
@@ -226,7 +270,7 @@ async def webhook(req: Request):
             retry_count = 0
             while retry_count < 3:
                 try:
-                    result = await client.place_order(
+                    result = await place_order(
                         symbol=symbol,
                         action=order["action"],
                         quantity=order["qty"],
