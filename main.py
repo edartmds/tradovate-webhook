@@ -176,6 +176,8 @@ async def monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, symb
                     response.raise_for_status()
                     order_status = response.json()
 
+                logging.info(f"TP order {tp_order_id} status: {order_status.get('status')}")
+
                 if order_status.get("status") == "Filled":
                     filled_tp.add(tp_order_id)
                     remaining_qty -= 1
@@ -185,18 +187,24 @@ async def monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, symb
                     if remaining_qty > 0:
                         mod_url = f"https://demo-api.tradovate.com/v1/order/modify/{sl_order_id}"
                         payload = {"orderQty": remaining_qty}
+                        logging.info(f"Modifying SL order {sl_order_id} with payload: {payload}")
                         async with httpx.AsyncClient() as http_client:
-                            await http_client.post(mod_url, headers=headers, json=payload)
+                            mod_response = await http_client.post(mod_url, headers=headers, json=payload)
+                            mod_response.raise_for_status()
+                            logging.info(f"SL order {sl_order_id} successfully modified to qty {remaining_qty}.")
                     else:
                         # All TPs filled, cancel SL
                         cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{sl_order_id}"
+                        logging.info(f"Cancelling SL order {sl_order_id} as all TPs are filled.")
                         async with httpx.AsyncClient() as http_client:
-                            await http_client.post(cancel_url, headers=headers)
-                        logging.info(f"All TPs filled, SL order {sl_order_id} cancelled.")
+                            cancel_response = await http_client.post(cancel_url, headers=headers)
+                            cancel_response.raise_for_status()
+                            logging.info(f"SL order {sl_order_id} successfully cancelled.")
                         return
 
             if len(filled_tp) == len(tp_order_ids):
                 # All TPs filled, SL should be cancelled already
+                logging.info("All TP orders filled. Exiting monitoring loop.")
                 return
 
             await asyncio.sleep(1)
