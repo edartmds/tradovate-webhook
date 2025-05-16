@@ -257,7 +257,8 @@ async def place_order(order, symbol):
         response.raise_for_status()
         return response.json()
 
-# Ensure deduplication logic is robust
+# Update the webhook logic to explicitly map TradingView alert variables to order payloads
+
 @app.post("/webhook")
 async def webhook(req: Request):
     global recent_alert_hashes
@@ -311,36 +312,35 @@ async def webhook(req: Request):
         sl_order_id = None  # Initialize SL order ID
         sl_order_qty = 0  # Initialize SL order quantity
 
-        remaining_contracts = max(0, 3 - abs(current_position_size))
-
-        if "PRICE" in data and remaining_contracts > 0:
+        # Entry stop order for 3 contracts
+        if "PRICE" in data:
             order_plan.append({
                 "label": "ENTRY",
                 "action": action,
                 "orderType": "Stop",
                 "price": data["PRICE"],
-                "qty": min(remaining_contracts, 3)
+                "qty": 3
             })
 
-        for i in range(1, 4):
-            key = f"T{i}"
-            if key in data and remaining_contracts > 0:
+        # Take profit orders for 1 contract each
+        for i, target in enumerate(["T1", "T2", "T3"], start=1):
+            if target in data:
                 order_plan.append({
                     "label": f"TP{i}",
                     "action": "Sell" if action.lower() == "buy" else "Buy",
                     "orderType": "Stop",
-                    "price": data[key],
+                    "price": data[target],
                     "qty": 1
                 })
-                remaining_contracts -= 1
 
-        if "STOP" in data and remaining_contracts > 0:
+        # Stop loss order for remaining open contracts
+        if "STOP" in data:
             order_plan.append({
                 "label": "STOP",
                 "action": "Sell" if action.lower() == "buy" else "Buy",
                 "orderType": "Stop",
                 "stopPrice": data["STOP"],
-                "qty": min(remaining_contracts, 3)
+                "qty": 3
             })
 
         # Execute the order plan
