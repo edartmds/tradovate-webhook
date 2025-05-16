@@ -258,8 +258,8 @@ async def webhook(req: Request):
         # Check for open position (should be flat)
         pos_url = f"https://demo-api.tradovate.com/v1/position/list"
         headers = {"Authorization": f"Bearer {client.access_token}"}
-        async with httpx.AsyncClient() as http_client:
-            pos_resp = await http_client.get(pos_url, headers=headers)
+        async with httpx.AsyncClient() as http_http_client:
+            pos_resp = await http_http_client.get(pos_url, headers=headers)
             pos_resp.raise_for_status()
             positions = pos_resp.json()
             for pos in positions:
@@ -300,6 +300,23 @@ async def webhook(req: Request):
                 "stopPrice": data["STOP"],
                 "qty": 3
             })
+
+        # Fetch the latest market price for validation
+        latest_price = await get_latest_price(symbol)
+        logging.info(f"Latest market price for {symbol}: {latest_price}")
+
+        # Validate limit order prices
+        for order in order_plan:
+            if order["orderType"] == "Limit":
+                if action.lower() == "buy" and order["price"] >= latest_price:
+                    logging.warning(f"Buy limit order price {order['price']} is above or equal to the market price {latest_price}. Skipping order.")
+                    continue
+                elif action.lower() == "sell" and order["price"] <= latest_price:
+                    logging.warning(f"Sell limit order price {order['price']} is below or equal to the market price {latest_price}. Skipping order.")
+                    continue
+
+                logging.info(f"Validated limit order price {order['price']} for {order['label']}.")
+
         sl_order_id = None
         tp_order_ids = []
         sl_order_qty = 0
@@ -316,11 +333,24 @@ async def webhook(req: Request):
             }
             if order["orderType"] == "Limit":
                 order_payload["price"] = order["price"]
+                logging.debug(f"Limit order price set to: {order['price']}")
             elif order["orderType"] == "StopLimit":
                 order_payload["price"] = order["price"]
                 order_payload["stopPrice"] = order["stopPrice"]
             elif order["orderType"] == "Stop":
                 order_payload["stopPrice"] = order["stopPrice"]
+
+            # Fetch the latest market price before placing the order
+            market_price = await get_latest_price(symbol)
+            logging.info(f"Market price for {symbol} before placing limit order: {market_price}")
+
+            # Ensure the limit order price is above/below the market price based on action
+            if order["orderType"] == "Limit":
+                if (order["action"].lower() == "buy" and order["price"] >= market_price) or \
+                   (order["action"].lower() == "sell" and order["price"] <= market_price):
+                    logging.warning(f"Limit order price {order['price']} for {order['action']} is invalid as it would execute immediately.")
+                    return {"status": "error", "detail": "Limit order price would execute immediately."}
+
             logging.info(f"Placing {order['label']} order: {order_payload}")
             retry_count = 0
             while retry_count < 3:
