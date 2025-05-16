@@ -250,8 +250,8 @@ async def webhook(req: Request):
         # Check for open position (should be flat)
         pos_url = f"https://demo-api.tradovate.com/v1/position/list"
         headers = {"Authorization": f"Bearer {client.access_token}"}
-        async with httpx.AsyncClient() as http_client:
-            pos_resp = await http_client.get(pos_url, headers=headers)
+        async with httpx.AsyncClient() as http_http_client:
+            pos_resp = await http_http_client.get(pos_url, headers=headers)
             pos_resp.raise_for_status()
             positions = pos_resp.json()
             for pos in positions:
@@ -313,7 +313,7 @@ async def webhook(req: Request):
                 "timeInForce": "GTC",
                 "isAutomated": True
             }
-            # Explicitly set stopPrice for all orders, including ENTRY
+            # Explicitly set stopPrice for all orders, including T1, T2, T3, and ENTRY
             if "price" in order:
                 order_payload["stopPrice"] = order["price"]
             elif "stopPrice" in order:
