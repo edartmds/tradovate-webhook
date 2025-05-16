@@ -313,9 +313,14 @@ async def webhook(req: Request):
                 "timeInForce": "GTC",
                 "isAutomated": True
             }
-            # Set stopPrice for all orders, including T1, T2, T3
+            # Explicitly set stopPrice for all orders
             if "price" in order:
                 order_payload["stopPrice"] = order["price"]
+            elif "stopPrice" in order:
+                order_payload["stopPrice"] = order["stopPrice"]
+            else:
+                logging.error(f"Missing stopPrice for order: {order}")
+                continue  # Skip orders without a valid stopPrice
 
             logging.info(f"Placing {order['label']} order: {order_payload}")
             retry_count = 0
