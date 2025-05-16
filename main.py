@@ -246,10 +246,78 @@ async def webhook(req: Request):
         await wait_until_no_open_orders(symbol, timeout=10)
         # ---
 
-        order_plan = []
-        if "PRICE" in data:
-            order_plan.append({"label": "ENTRY", "action": action, "orderType": "Limit", "price": data["PRICE"], "qty": 3})
+        # Check for open position (should be flat)
+        pos_url = f"https://demo-api.tradovate.com/v1/position/list"
+        headers = {"Authorization": f"Bearer {client.access_token}"}
+        async with httpx.AsyncClient() as http_client:
+            pos_resp = await http_client.get(pos_url, headers=headers)
+            pos_resp.raise_for_status()
+            positions = pos_resp.json()
+            for pos in positions:
+                if pos.get("symbol") == symbol and abs(pos.get("netPos", 0)) > 0:
+                    logging.warning(f"Position for {symbol} is not flat after flatten. Skipping order placement.")
+                    return {"status": "skipped", "detail": "Position not flat after flatten."}
 
+        # Check for open orders (should be none)
+        order_url = f"https://demo-api.tradovate.com/v1/order/list"
+        async with httpx.AsyncClient() as http_client:
+            order_resp = await http_client.get(order_url, headers=headers)
+            order_resp.raise_for_status()
+            orders = order_resp.json()
+            open_orders = [o for o in orders if o.get("symbol") == symbol and o.get("status") in ("Working", "Accepted")]
+            if open_orders:
+                logging.warning(f"Open orders for {symbol} still exist after cancel. Skipping order placement.")
+                return {"status": "skipped", "detail": "Open orders still exist after cancel."}
+
+        # Place only the entry order first
+        order_results = []
+        entry_order = None
+        if "PRICE" in data:
+            entry_order = {"label": "ENTRY", "action": action, "orderType": "Limit", "price": data["PRICE"], "qty": 3}
+            order_payload = {
+                "accountId": client.account_id,
+                "symbol": symbol,
+                "action": entry_order["action"],
+                "orderQty": entry_order["qty"],
+                "orderType": entry_order["orderType"],
+                "price": entry_order["price"],
+                "timeInForce": "GTC",
+                "isAutomated": True
+            }
+            logging.info(f"Placing ENTRY order: {order_payload}")
+            try:
+                entry_result = await client.place_order(
+                    symbol=symbol,
+                    action=entry_order["action"],
+                    quantity=entry_order["qty"],
+                    order_data=order_payload
+                )
+                order_results.append({"ENTRY": entry_result})
+                entry_id = entry_result.get("id")
+            except Exception as e:
+                logging.error(f"Error placing ENTRY order: {e}")
+                return {"status": "error", "detail": str(e)}
+        else:
+            return {"status": "error", "detail": "No entry price in alert."}
+
+        # Wait for entry order to fill before placing TP/SL
+        filled = False
+        for _ in range(60):  # Wait up to 60 seconds
+            order_url = f"https://demo-api.tradovate.com/v1/order/{entry_id}"
+            async with httpx.AsyncClient() as http_client:
+                resp = await http_client.get(order_url, headers=headers)
+                resp.raise_for_status()
+                status = resp.json().get("status")
+                if status == "Filled":
+                    filled = True
+                    break
+            await asyncio.sleep(1)
+        if not filled:
+            logging.warning(f"Entry order {entry_id} not filled after 60s. Not placing TP/SL.")
+            return {"status": "entry_not_filled", "order_responses": order_results}
+
+        # Place TP/SL orders only after entry is filled
+        order_plan = []
         for i in range(1, 4):
             key = f"T{i}"
             if key in data:
@@ -260,7 +328,6 @@ async def webhook(req: Request):
                     "price": data[key],
                     "qty": 1
                 })
-
         if "STOP" in data:
             order_plan.append({
                 "label": "STOP",
@@ -269,12 +336,9 @@ async def webhook(req: Request):
                 "stopPrice": data["STOP"],
                 "qty": 3
             })
-
         sl_order_id = None
         tp_order_ids = []
         sl_order_qty = 0
-
-        order_results = []
         for order in order_plan:
             order_payload = {
                 "accountId": client.account_id,
@@ -285,7 +349,6 @@ async def webhook(req: Request):
                 "timeInForce": "GTC",
                 "isAutomated": True
             }
-
             if order["orderType"] == "Limit":
                 order_payload["price"] = order["price"]
             elif order["orderType"] == "StopLimit":
@@ -293,7 +356,6 @@ async def webhook(req: Request):
                 order_payload["stopPrice"] = order["stopPrice"]
             elif order["orderType"] == "Stop":
                 order_payload["stopPrice"] = order["stopPrice"]
-
             logging.info(f"Placing {order['label']} order: {order_payload}")
             retry_count = 0
             while retry_count < 3:
@@ -304,13 +366,11 @@ async def webhook(req: Request):
                         quantity=order["qty"],
                         order_data=order_payload
                     )
-
                     if order["label"] == "STOP":
                         sl_order_id = result.get("id")
                         sl_order_qty = order["qty"]
                     elif order["label"].startswith("TP"):
                         tp_order_ids.append(result.get("id"))
-
                     order_results.append({order["label"]: result})
                     break
                 except Exception as e:
@@ -318,14 +378,11 @@ async def webhook(req: Request):
                     retry_count += 1
                     if retry_count == 3:
                         order_results.append({order["label"]: str(e)})
-
         # Start monitoring the stop order in the background
         if sl_order_id and tp_order_ids:
             asyncio.create_task(monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids))
             asyncio.create_task(monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, symbol))
-
         return {"status": "success", "order_responses": order_results}
-
     except Exception as e:
         logging.error(f"Unexpected error in webhook: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
