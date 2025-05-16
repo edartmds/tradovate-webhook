@@ -37,9 +37,8 @@ async def startup_event():
 async def get_latest_price(symbol: str):
     # Normalize the symbol for market data queries
     symbol_map = {
-        "CME_MINI:NQ1!": "NQH5",
-        "NQ1!": "NQH5",
-        "NQM5": "NQH5"
+        "CME_MINI:NQ1!": "NQM5",
+        "NQ1!": "NQM5"
     }
     normalized_symbol = symbol_map.get(symbol, symbol)
     url = f"https://demo-api.tradovate.com/v1/marketdata/quote/{normalized_symbol}"
