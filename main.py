@@ -309,12 +309,13 @@ async def webhook(req: Request):
                 "symbol": symbol,
                 "action": order["action"],
                 "orderQty": order["qty"],
-                "orderType": "Stop",  # Replacing Limit with Stop
+                "orderType": "Stop",  # Ensure all orders are Stop orders
                 "timeInForce": "GTC",
                 "isAutomated": True
             }
-            # Ensure stopPrice is set for all stop orders
-            order_payload["stopPrice"] = order.get("price", order.get("stopPrice"))
+            # Set stopPrice for all orders, including T1, T2, T3
+            if "price" in order:
+                order_payload["stopPrice"] = order["price"]
 
             logging.info(f"Placing {order['label']} order: {order_payload}")
             retry_count = 0
