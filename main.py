@@ -34,7 +34,20 @@ MAX_HASHES = 20  # Keep the last 20 unique alerts
 async def startup_event():
     await client.authenticate()
 
+async def ensure_authenticated():
+    """
+    Ensure the client is authenticated by checking the access token.
+    If the token is missing or expired, re-authenticate.
+    """
+    if not client.access_token:
+        logging.warning("Access token is missing. Re-authenticating...")
+        await client.authenticate()
+    else:
+        # Optionally, add logic to check token expiration if supported by the API
+        logging.info("Access token is present.")
+
 async def get_latest_price(symbol: str):
+    await ensure_authenticated()
     url = f"https://demo-api.tradovate.com/v1/marketdata/quote/{symbol}"
     headers = {"Authorization": f"Bearer {client.access_token}"}
     async with httpx.AsyncClient() as http_client:
@@ -44,18 +57,21 @@ async def get_latest_price(symbol: str):
         return data["last"]
 
 async def cancel_all_orders(symbol):
+    await ensure_authenticated()
     url = f"https://demo-api.tradovate.com/v1/order/cancelallorders"
     headers = {"Authorization": f"Bearer {client.access_token}"}
     async with httpx.AsyncClient() as http_client:
         await http_client.post(url, headers=headers, json={"symbol": symbol})
 
 async def flatten_position(symbol):
+    await ensure_authenticated()
     url = f"https://demo-api.tradovate.com/v1/position/closeposition"
     headers = {"Authorization": f"Bearer {client.access_token}"}
     async with httpx.AsyncClient() as http_client:
         await http_client.post(url, headers=headers, json={"symbol": symbol})
 
 async def wait_until_no_open_orders(symbol, timeout=10):
+    await ensure_authenticated()
     """
     Poll Tradovate until there are no open orders for the symbol, or until timeout (seconds).
     """
@@ -126,6 +142,7 @@ async def monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids):
     tp_cancelled = False
     while True:
         try:
+            await ensure_authenticated()
             # Check the status of the SL order
             url = f"https://demo-api.tradovate.com/v1/order/{sl_order_id}"
             headers = {"Authorization": f"Bearer {client.access_token}"}
@@ -166,6 +183,7 @@ async def monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, symb
     logging.info(f"Monitoring TP orders {tp_order_ids} to adjust SL order {sl_order_id}.")
     while True:
         try:
+            await ensure_authenticated()
             all_filled = True
             for idx, tp_order_id in enumerate(tp_order_ids):
                 if tp_order_id in filled_tp:
@@ -209,6 +227,7 @@ async def webhook(req: Request):
     global recent_alert_hashes
     logging.info("Webhook endpoint hit.")
     try:
+        await ensure_authenticated()
         content_type = req.headers.get("content-type")
         raw_body = await req.body()
 
