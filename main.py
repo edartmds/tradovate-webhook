@@ -171,8 +171,9 @@ async def webhook(req: Request):
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
             symbol = "NQM5"
 
-        # Cancel all previous orders for this symbol before placing new ones
+        # Cancel all previous orders and flatten positions for this symbol
         await cancel_all_orders(symbol)
+        await flatten_position(symbol)
 
         order_plan = []
         if "PRICE" in data:
