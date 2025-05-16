@@ -221,7 +221,8 @@ async def monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, symb
             logging.error(f"Error monitoring TP orders: {e}")
             await asyncio.sleep(5)
 
-# Ensure deduplication logic is robust
+# Refine the logic to ensure all orders are placed correctly based on TradingView alert variables
+
 @app.post("/webhook")
 async def webhook(req: Request):
     global recent_alert_hashes
@@ -243,6 +244,8 @@ async def webhook(req: Request):
         else:
             raise HTTPException(status_code=400, detail="Unsupported content type")
 
+        logging.info(f"Parsed alert data: {data}")
+
         if WEBHOOK_SECRET is None:
             raise HTTPException(status_code=500, detail="Missing WEBHOOK_SECRET")
 
@@ -257,59 +260,36 @@ async def webhook(req: Request):
 
         action = data["action"].capitalize()
         symbol = data["symbol"]
-        if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
-            symbol = "NQM5"
 
         # --- Ensure all previous orders and positions are closed before new entry ---
         await cancel_all_orders(symbol)
         await flatten_position(symbol)
-        await wait_until_no_open_orders(symbol, timeout=10)
-        # ---
 
-        # Check for open position (should be flat)
-        pos_url = f"https://demo-api.tradovate.com/v1/position/list"
-        headers = {"Authorization": f"Bearer {client.access_token}"}
-        async with httpx.AsyncClient() as http_http_client:
-            pos_resp = await http_http_client.get(pos_url, headers=headers)
-            pos_resp.raise_for_status()
-            positions = pos_resp.json()
-            for pos in positions:
-                if pos.get("symbol") == symbol and abs(pos.get("netPos", 0)) > 0:
-                    logging.warning(f"Position for {symbol} is not flat after flatten. Skipping order placement.")
-                    return {"status": "skipped", "detail": "Position not flat after flatten."}
-
-        # Check for open orders (should be none)
-        order_url = f"https://demo-api.tradovate.com/v1/order/list"
-        async with httpx.AsyncClient() as http_http_client:
-            order_resp = await http_http_client.get(order_url, headers=headers)
-            order_resp.raise_for_status()
-            orders = order_resp.json()
-            open_orders = [o for o in orders if o.get("symbol") == symbol and o.get("status") in ("Working", "Accepted")]
-            if open_orders:
-                logging.warning(f"Open orders for {symbol} still exist after cancel. Skipping order placement.")
-                return {"status": "skipped", "detail": "Open orders still exist after cancel."}
-
-        # Place entry, TP, and SL orders together (bracket/OCO style)
+        # Place new orders based on the alert data
         order_plan = []
+
+        # Entry stop order for 3 contracts
         if "PRICE" in data:
-            # Always use a LIMIT order for entry at the specified price
             order_plan.append({
                 "label": "ENTRY",
                 "action": action,
-                "orderType": "Stop",  # Replacing Limit with Stop
+                "orderType": "Stop",
                 "price": data["PRICE"],
                 "qty": 3
             })
-        for i in range(1, 4):
-            key = f"T{i}"
-            if key in data:
+
+        # Take profit orders for 1 contract each
+        for i, target in enumerate(["T1", "T2", "T3"], start=1):
+            if target in data:
                 order_plan.append({
                     "label": f"TP{i}",
                     "action": "Sell" if action.lower() == "buy" else "Buy",
-                    "orderType": "Stop",  # Replacing Limit with Stop
-                    "price": data[key],
+                    "orderType": "Stop",
+                    "price": data[target],
                     "qty": 1
                 })
+
+        # Stop loss order for remaining open contracts
         if "STOP" in data:
             order_plan.append({
                 "label": "STOP",
@@ -318,9 +298,8 @@ async def webhook(req: Request):
                 "stopPrice": data["STOP"],
                 "qty": 3
             })
-        sl_order_id = None
-        tp_order_ids = []
-        sl_order_qty = 0
+
+        # Execute the order plan
         order_results = []
         for order in order_plan:
             order_payload = {
@@ -328,11 +307,11 @@ async def webhook(req: Request):
                 "symbol": symbol,
                 "action": order["action"],
                 "orderQty": order["qty"],
-                "orderType": "Stop",  # Ensure all orders are Stop orders
+                "orderType": "Stop",
                 "timeInForce": "GTC",
                 "isAutomated": True
             }
-            # Explicitly set stopPrice for all orders, including T1, T2, T3, and ENTRY
+            # Explicitly set stopPrice for all orders
             if "price" in order:
                 order_payload["stopPrice"] = order["price"]
             elif "stopPrice" in order:
@@ -342,32 +321,20 @@ async def webhook(req: Request):
                 continue  # Skip orders without a valid stopPrice
 
             logging.info(f"Placing {order['label']} order: {order_payload}")
-            retry_count = 0
-            while retry_count < 3:
-                try:
-                    result = await client.place_order(
-                        symbol=symbol,
-                        action=order["action"],
-                        quantity=order["qty"],
-                        order_data=order_payload
-                    )
-                    if order["label"] == "STOP":
-                        sl_order_id = result.get("id")
-                        sl_order_qty = order["qty"]
-                    elif order["label"].startswith("TP") or order["label"] == "ENTRY":
-                        tp_order_ids.append(result.get("id"))
-                    order_results.append({order["label"]: result})
-                    break
-                except Exception as e:
-                    logging.error(f"Error placing {order['label']} order (attempt {retry_count + 1}): {e}")
-                    retry_count += 1
-                    if retry_count == 3:
-                        order_results.append({order["label"]: str(e)})
-        # Start monitoring the stop order in the background
-        if sl_order_id and tp_order_ids:
-            asyncio.create_task(monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids))
-            asyncio.create_task(monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, symbol))
+            try:
+                result = await client.place_order(
+                    symbol=symbol,
+                    action=order["action"],
+                    quantity=order["qty"],
+                    order_data=order_payload
+                )
+                order_results.append({order["label"]: result})
+            except Exception as e:
+                logging.error(f"Error placing {order['label']} order: {e}")
+                order_results.append({order["label"]: str(e)})
+
         return {"status": "success", "order_responses": order_results}
+
     except Exception as e:
         logging.error(f"Unexpected error in webhook: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
