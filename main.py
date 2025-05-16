@@ -166,8 +166,7 @@ async def monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, symb
     logging.info(f"Monitoring TP orders {tp_order_ids} to adjust SL order {sl_order_id}.")
     while True:
         try:
-            all_filled = True
-            for idx, tp_order_id in enumerate(tp_order_ids):
+            for tp_order_id in tp_order_ids:
                 if tp_order_id in filled_tp:
                     continue
                 url = f"https://demo-api.tradovate.com/v1/order/{tp_order_id}"
@@ -176,10 +175,12 @@ async def monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, symb
                     response = await http_client.get(url, headers=headers)
                     response.raise_for_status()
                     order_status = response.json()
+
                 if order_status.get("status") == "Filled":
                     filled_tp.add(tp_order_id)
                     remaining_qty -= 1
                     logging.info(f"TP order {tp_order_id} filled. Adjusting SL order {sl_order_id} to qty {remaining_qty}.")
+
                     # Modify SL order to new qty if contracts remain
                     if remaining_qty > 0:
                         mod_url = f"https://demo-api.tradovate.com/v1/order/modify/{sl_order_id}"
@@ -193,11 +194,11 @@ async def monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, symb
                             await http_client.post(cancel_url, headers=headers)
                         logging.info(f"All TPs filled, SL order {sl_order_id} cancelled.")
                         return
-                elif order_status.get("status") not in ["Filled", "Working"]:
-                    all_filled = False
+
             if len(filled_tp) == len(tp_order_ids):
                 # All TPs filled, SL should be cancelled already
                 return
+
             await asyncio.sleep(1)
         except Exception as e:
             logging.error(f"Error monitoring TP orders: {e}")
@@ -260,8 +261,8 @@ async def webhook(req: Request):
 
         # Check for open orders (should be none)
         order_url = f"https://demo-api.tradovate.com/v1/order/list"
-        async with httpx.AsyncClient() as http_client:
-            order_resp = await http_client.get(order_url, headers=headers)
+        async with httpx.AsyncClient() as http_http_client:
+            order_resp = await http_http_client.get(order_url, headers=headers)
             order_resp.raise_for_status()
             orders = order_resp.json()
             open_orders = [o for o in orders if o.get("symbol") == symbol and o.get("status") in ("Working", "Accepted")]
@@ -272,14 +273,7 @@ async def webhook(req: Request):
         # Place entry, TP, and SL orders together (bracket/OCO style)
         order_plan = []
         if "PRICE" in data:
-            # Always use a LIMIT order for entry at the specified price
-            order_plan.append({
-                "label": "ENTRY",
-                "action": action,
-                "orderType": "Limit",
-                "price": data["PRICE"],
-                "qty": 3
-            })
+            order_plan.append({"label": "ENTRY", "action": action, "orderType": "Limit", "price": data["PRICE"], "qty": 3})
         for i in range(1, 4):
             key = f"T{i}"
             if key in data:
@@ -312,11 +306,7 @@ async def webhook(req: Request):
                 "timeInForce": "GTC",
                 "isAutomated": True
             }
-            # Ensure entry is always a LIMIT order at the specified price
-            if order["label"] == "ENTRY":
-                order_payload["orderType"] = "Limit"
-                order_payload["price"] = order["price"]
-            elif order["orderType"] == "Limit":
+            if order["orderType"] == "Limit":
                 order_payload["price"] = order["price"]
             elif order["orderType"] == "StopLimit":
                 order_payload["price"] = order["price"]
