@@ -221,6 +221,22 @@ async def monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, symb
             logging.error(f"Error monitoring TP orders: {e}")
             await asyncio.sleep(5)
 
+async def get_current_position_size(symbol):
+    """
+    Retrieve the current net position size for the given symbol.
+    """
+    await ensure_authenticated()
+    url = f"https://demo-api.tradovate.com/v1/position/list"
+    headers = {"Authorization": f"Bearer {client.access_token}"}
+    async with httpx.AsyncClient() as http_client:
+        response = await http_client.get(url, headers=headers)
+        response.raise_for_status()
+        positions = response.json()
+        for pos in positions:
+            if pos.get("symbol") == symbol:
+                return pos.get("netPos", 0)
+    return 0
+
 # Ensure deduplication logic is robust
 @app.post("/webhook")
 async def webhook(req: Request):
@@ -260,6 +276,12 @@ async def webhook(req: Request):
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
             symbol = "NQM5"
 
+        # Check current position size
+        current_position_size = await get_current_position_size(symbol)
+        if abs(current_position_size) >= 3:
+            logging.warning(f"Maximum position size reached for {symbol}. Skipping order placement.")
+            return {"status": "skipped", "detail": "Maximum position size reached."}
+
         # --- Ensure all previous orders and positions are closed before new entry ---
         await cancel_all_orders(symbol)
         await flatten_position(symbol)
@@ -291,33 +313,53 @@ async def webhook(req: Request):
 
         # Place entry, TP, and SL orders together (bracket/OCO style)
         order_plan = []
-        if "PRICE" in data:
-            # Always use a LIMIT order for entry at the specified price
+        current_position_size = 0  # Initialize current position size
+
+        # Fetch the current position size for the symbol
+        pos_url = f"https://demo-api.tradovate.com/v1/position/list"
+        headers = {"Authorization": f"Bearer {client.access_token}"}
+        async with httpx.AsyncClient() as http_http_client:
+            pos_resp = await http_http_client.get(pos_url, headers=headers)
+            pos_resp.raise_for_status()
+            positions = pos_resp.json()
+            for pos in positions:
+                if pos.get("symbol") == symbol:
+                    current_position_size = abs(pos.get("netPos", 0))
+
+        # Calculate the remaining contracts that can be traded
+        remaining_contracts = max(0, 3 - current_position_size)
+
+        if "PRICE" in data and remaining_contracts > 0:
+            # Use a LIMIT order for entry at the specified price
             order_plan.append({
                 "label": "ENTRY",
                 "action": action,
-                "orderType": "Stop",  # Replacing Limit with Stop
+                "orderType": "Stop",
                 "price": data["PRICE"],
-                "qty": 3
+                "qty": min(remaining_contracts, 3)  # Ensure we don't exceed the max contracts
             })
+
         for i in range(1, 4):
             key = f"T{i}"
-            if key in data:
+            if key in data and remaining_contracts > 0:
                 order_plan.append({
                     "label": f"TP{i}",
                     "action": "Sell" if action.lower() == "buy" else "Buy",
-                    "orderType": "Stop",  # Replacing Limit with Stop
+                    "orderType": "Stop",
                     "price": data[key],
-                    "qty": 1
+                    "qty": 1  # Each TP order is for 1 contract
                 })
-        if "STOP" in data:
+                remaining_contracts -= 1
+
+        if "STOP" in data and remaining_contracts > 0:
             order_plan.append({
                 "label": "STOP",
                 "action": "Sell" if action.lower() == "buy" else "Buy",
                 "orderType": "Stop",
                 "stopPrice": data["STOP"],
-                "qty": 3
+                "qty": min(remaining_contracts, 3)  # Ensure we don't exceed the max contracts
             })
+
         sl_order_id = None
         tp_order_ids = []
         sl_order_qty = 0
