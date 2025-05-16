@@ -269,55 +269,10 @@ async def webhook(req: Request):
                 logging.warning(f"Open orders for {symbol} still exist after cancel. Skipping order placement.")
                 return {"status": "skipped", "detail": "Open orders still exist after cancel."}
 
-        # Place only the entry order first
-        order_results = []
-        entry_order = None
-        if "PRICE" in data:
-            entry_order = {"label": "ENTRY", "action": action, "orderType": "Limit", "price": data["PRICE"], "qty": 3}
-            order_payload = {
-                "accountId": client.account_id,
-                "symbol": symbol,
-                "action": entry_order["action"],
-                "orderQty": entry_order["qty"],
-                "orderType": entry_order["orderType"],
-                "price": entry_order["price"],
-                "timeInForce": "GTC",
-                "isAutomated": True
-            }
-            logging.info(f"Placing ENTRY order: {order_payload}")
-            try:
-                entry_result = await client.place_order(
-                    symbol=symbol,
-                    action=entry_order["action"],
-                    quantity=entry_order["qty"],
-                    order_data=order_payload
-                )
-                order_results.append({"ENTRY": entry_result})
-                entry_id = entry_result.get("id")
-            except Exception as e:
-                logging.error(f"Error placing ENTRY order: {e}")
-                return {"status": "error", "detail": str(e)}
-        else:
-            return {"status": "error", "detail": "No entry price in alert."}
-
-        # Wait for entry order to fill before placing TP/SL
-        filled = False
-        for _ in range(60):  # Wait up to 60 seconds
-            order_url = f"https://demo-api.tradovate.com/v1/order/{entry_id}"
-            async with httpx.AsyncClient() as http_client:
-                resp = await http_client.get(order_url, headers=headers)
-                resp.raise_for_status()
-                status = resp.json().get("status")
-                if status == "Filled":
-                    filled = True
-                    break
-            await asyncio.sleep(1)
-        if not filled:
-            logging.warning(f"Entry order {entry_id} not filled after 60s. Not placing TP/SL.")
-            return {"status": "entry_not_filled", "order_responses": order_results}
-
-        # Place TP/SL orders only after entry is filled
+        # Place entry, TP, and SL orders together (bracket/OCO style)
         order_plan = []
+        if "PRICE" in data:
+            order_plan.append({"label": "ENTRY", "action": action, "orderType": "Limit", "price": data["PRICE"], "qty": 3})
         for i in range(1, 4):
             key = f"T{i}"
             if key in data:
@@ -339,6 +294,7 @@ async def webhook(req: Request):
         sl_order_id = None
         tp_order_ids = []
         sl_order_qty = 0
+        order_results = []
         for order in order_plan:
             order_payload = {
                 "accountId": client.account_id,
