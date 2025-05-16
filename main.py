@@ -1,5 +1,6 @@
 import os
 import logging
+import uuid
 from datetime import datetime
 from fastapi import FastAPI, Request, HTTPException
 from tradovate_api import TradovateClient
@@ -235,6 +236,10 @@ async def webhook(req: Request):
         if len(recent_alert_hashes) > MAX_HASHES:
             recent_alert_hashes = set(list(recent_alert_hashes)[-MAX_HASHES:])
 
+        # Generate a unique ID for the alert
+        alert_id = str(uuid.uuid4())
+        logging.info(f"Generated unique alert ID: {alert_id}")
+
         action = data["action"].capitalize()
         symbol = data["symbol"]
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
@@ -278,7 +283,8 @@ async def webhook(req: Request):
                 "action": action,
                 "orderType": "Limit",
                 "price": data["PRICE"],
-                "qty": 3
+                "qty": 3,
+                "alert_id": alert_id  # Associate the alert ID with the order
             })
         for i in range(1, 4):
             key = f"T{i}"
@@ -288,7 +294,8 @@ async def webhook(req: Request):
                     "action": "Sell" if action.lower() == "buy" else "Buy",
                     "orderType": "Limit",
                     "price": data[key],
-                    "qty": 1
+                    "qty": 1,
+                    "alert_id": alert_id  # Associate the alert ID with the order
                 })
         if "STOP" in data:
             order_plan.append({
@@ -296,8 +303,10 @@ async def webhook(req: Request):
                 "action": "Sell" if action.lower() == "buy" else "Buy",
                 "orderType": "Stop",
                 "stopPrice": data["STOP"],
-                "qty": 3
+                "qty": 3,
+                "alert_id": alert_id  # Associate the alert ID with the order
             })
+
         sl_order_id = None
         tp_order_ids = []
         sl_order_qty = 0
@@ -310,9 +319,9 @@ async def webhook(req: Request):
                 "orderQty": order["qty"],
                 "orderType": order["orderType"],
                 "timeInForce": "GTC",
-                "isAutomated": True
+                "isAutomated": True,
+                "alert_id": order["alert_id"]  # Include the alert ID in the payload
             }
-            # Ensure entry is treated like T1, T2, T3
             if order["orderType"] == "Limit":
                 order_payload["price"] = order["price"]
             elif order["orderType"] == "StopLimit":
@@ -343,11 +352,14 @@ async def webhook(req: Request):
                     retry_count += 1
                     if retry_count == 3:
                         order_results.append({order["label"]: str(e)})
+
         # Start monitoring the stop order in the background
         if sl_order_id and tp_order_ids:
             asyncio.create_task(monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids))
             asyncio.create_task(monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, symbol))
+
         return {"status": "success", "order_responses": order_results}
+
     except Exception as e:
         logging.error(f"Unexpected error in webhook: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
