@@ -47,25 +47,13 @@ async def cancel_all_orders(symbol):
     url = f"https://demo-api.tradovate.com/v1/order/cancelallorders"
     headers = {"Authorization": f"Bearer {client.access_token}"}
     async with httpx.AsyncClient() as http_client:
-        response = await http_client.post(url, headers=headers, json={"symbol": symbol})
-        response.raise_for_status()
-        logging.info(f"Cancelled all orders for {symbol}: {response.status_code}")
+        await http_client.post(url, headers=headers, json={"symbol": symbol})
 
 async def flatten_position(symbol):
     url = f"https://demo-api.tradovate.com/v1/position/closeposition"
     headers = {"Authorization": f"Bearer {client.access_token}"}
     async with httpx.AsyncClient() as http_client:
-        try:
-            response = await http_client.post(url, headers=headers, json={"symbol": symbol})
-            response.raise_for_status()
-            logging.info(f"Flattened position for {symbol}: {response.status_code}")
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                # No position found, this is fine
-                logging.info(f"No open position found for {symbol} to flatten")
-            else:
-                # Re-raise for other errors
-                raise
+        await http_client.post(url, headers=headers, json={"symbol": symbol})
 
 def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price: float = None) -> dict:
     logging.info(f"Raw alert text: {alert_text}")
@@ -125,20 +113,15 @@ async def monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids):
                 response.raise_for_status()
                 order_status = response.json()
 
-            # If the stop loss order is filled or triggered
-            if order_status.get("status") == "Filled" or order_status.get("status") == "Triggered":
-                logging.info(f"SL order {sl_order_id} was {order_status.get('status')}. Cancelling TP orders: {tp_order_ids}")
+            if order_status.get("status") == "Filled":
+                logging.info(f"SL order {sl_order_id} was filled. Cancelling TP orders: {tp_order_ids}")
 
-                # Cancel all TP orders regardless of open position status
+                # Cancel all TP orders
                 for tp_order_id in tp_order_ids:
-                    try:
-                        cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{tp_order_id}"
-                        async with httpx.AsyncClient() as http_client:
-                            cancel_response = await http_client.post(cancel_url, headers=headers)
-                            cancel_response.raise_for_status()
-                            logging.info(f"Successfully cancelled TP order {tp_order_id}")
-                    except Exception as e:
-                        logging.error(f"Error cancelling TP order {tp_order_id}: {e}")
+                    cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{tp_order_id}"
+                    async with httpx.AsyncClient() as http_client:
+                        await http_client.post(cancel_url, headers=headers)
+
                 break
 
             elif order_status.get("status") in ["Cancelled", "Rejected"]:
@@ -150,29 +133,6 @@ async def monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids):
         except Exception as e:
             logging.error(f"Error monitoring SL order {sl_order_id}: {e}")
             await asyncio.sleep(5)  # Retry after a delay
-
-async def place_order(symbol, action, quantity, order_data):
-    """
-    Custom place_order implementation to ensure proper handling of order types
-    """
-    url = "https://demo-api.tradovate.com/v1/order/placeorder"
-    headers = {"Authorization": f"Bearer {client.access_token}"}
-    
-    # Ensure we're strictly following the order_data properties for order placement
-    # This prevents any automatic filling of orders at market price
-    
-    # Log the exact order we're sending to the API
-    logging.info(f"Sending order to API: {order_data}")
-    
-    async with httpx.AsyncClient() as http_client:
-        response = await http_client.post(url, headers=headers, json=order_data)
-        response.raise_for_status()
-        result = response.json()
-        
-        # Log the response we get back
-        logging.info(f"API response for order: {result}")
-        
-        return result
 
 @app.post("/webhook")
 async def webhook(req: Request):
@@ -189,10 +149,7 @@ async def webhook(req: Request):
         elif content_type.startswith("text/plain"):
             text_data = raw_body.decode("utf-8")
             if "symbol=" in text_data:
-                symbol_raw = text_data.split("symbol=")[1].split("\n")[0].strip()
-                if "," in symbol_raw:
-                    symbol_raw = symbol_raw.split(",")[0]
-                latest_price = await get_latest_price(symbol_raw)
+                latest_price = await get_latest_price(text_data.split("symbol=")[1].split(",")[0])
             data = parse_alert_to_tradovate_json(text_data, client.account_id, latest_price)
         else:
             raise HTTPException(status_code=400, detail="Unsupported content type")
@@ -214,52 +171,33 @@ async def webhook(req: Request):
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
             symbol = "NQM5"
 
-        # IMPORTANT: First cancel all existing orders and flatten positions
-        logging.info(f"Cancelling all existing orders for {symbol}")
+        # Cancel all previous orders and flatten positions for this symbol
         await cancel_all_orders(symbol)
-        
-        logging.info(f"Flattening any existing positions for {symbol}")
         await flatten_position(symbol)
-        
-        # Wait a moment to ensure cancellations are processed
-        await asyncio.sleep(1)
 
         order_plan = []
-        # Only place new orders if we have a specific PRICE for entry
         if "PRICE" in data:
-            logging.info(f"Planning new limit order at price: {data['PRICE']}")
-            # Add the ENTRY limit order
+            order_plan.append({"label": "ENTRY", "action": action, "orderType": "Limit", "price": data["PRICE"], "qty": 3})
+
+        for i in range(1, 4):
+            key = f"T{i}"
+            if key in data:
+                order_plan.append({
+                    "label": f"TP{i}",
+                    "action": "Sell" if action.lower() == "buy" else "Buy",
+                    "orderType": "Limit",
+                    "price": data[key],
+                    "qty": 1
+                })
+
+        if "STOP" in data:
             order_plan.append({
-                "label": "ENTRY", 
-                "action": action, 
-                "orderType": "Limit", 
-                "price": float(data["PRICE"]),  # Ensure this is a float
+                "label": "STOP",
+                "action": "Sell" if action.lower() == "buy" else "Buy",
+                "orderType": "Stop",
+                "stopPrice": data["STOP"],
                 "qty": 3
             })
-            
-            # Only add TP and SL orders if we have an entry point
-            for i in range(1, 4):
-                key = f"T{i}"
-                if key in data:
-                    order_plan.append({
-                        "label": f"TP{i}",
-                        "action": "Sell" if action.lower() == "buy" else "Buy",
-                        "orderType": "Limit",
-                        "price": float(data[key]),  # Ensure this is a float
-                        "qty": 1
-                    })
-
-            if "STOP" in data:
-                order_plan.append({
-                    "label": "STOP",
-                    "action": "Sell" if action.lower() == "buy" else "Buy",
-                    "orderType": "Stop",
-                    "stopPrice": float(data["STOP"]),  # Ensure this is a float
-                    "qty": 3
-                })
-        else:
-            logging.warning("No PRICE specified in the alert data. Cannot place limit order.")
-            return {"status": "error", "detail": "No PRICE specified for limit order"}
 
         sl_order_id = None
         tp_order_ids = []
@@ -272,12 +210,11 @@ async def webhook(req: Request):
                 "action": order["action"],
                 "orderQty": order["qty"],
                 "orderType": order["orderType"],
-                "timeInForce": "GTC",  # Good Till Cancelled
+                "timeInForce": "GTC",
                 "isAutomated": True
             }
 
             if order["orderType"] == "Limit":
-                # Ensure we're setting a limit price for limit orders
                 order_payload["price"] = order["price"]
             elif order["orderType"] == "StopLimit":
                 order_payload["price"] = order["price"]
@@ -289,25 +226,17 @@ async def webhook(req: Request):
             retry_count = 0
             while retry_count < 3:
                 try:
-                    # Use our custom place_order function to ensure proper order handling
-                    result = await place_order(
+                    result = await client.place_order(
                         symbol=symbol,
                         action=order["action"],
                         quantity=order["qty"],
                         order_data=order_payload
                     )
-                    
-                    # Check if the order was created as a limit order or if it was filled immediately
-                    # which would indicate a market order
-                    if result.get("status") == "Filled":
-                        logging.warning(f"Order {order['label']} was filled immediately, which indicates it might have been placed as a market order!")
-                    
+
                     if order["label"] == "STOP":
                         sl_order_id = result.get("id")
-                        logging.info(f"Stored SL order ID: {sl_order_id}")
                     elif order["label"].startswith("TP"):
                         tp_order_ids.append(result.get("id"))
-                        logging.info(f"Added TP order ID: {result.get('id')}")
 
                     order_results.append({order["label"]: result})
                     break
@@ -316,36 +245,17 @@ async def webhook(req: Request):
                     retry_count += 1
                     if retry_count == 3:
                         order_results.append({order["label"]: str(e)})
-                        
-        # Log our collected order IDs for monitoring
-        logging.info(f"SL order ID for monitoring: {sl_order_id}")
-        logging.info(f"TP order IDs for potential cancellation: {tp_order_ids}")
 
-        # Start monitoring the stop order in the background if we have both SL and TP orders
+        # Start monitoring the stop order in the background
         if sl_order_id and tp_order_ids:
-            logging.info(f"Starting background monitoring for SL order {sl_order_id}")
-            monitoring_task = asyncio.create_task(monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids))
+            asyncio.create_task(monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids))
 
         return {"status": "success", "order_responses": order_results}
 
     except Exception as e:
-        logging.error(f"Unexpected error in webhook: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-@app.on_event("startup")
-async def on_startup():
-    logging.info("Webhook service starting up")
-    logging.info("Authenticating with Tradovate API")
-    await client.authenticate()
-    logging.info("Authentication successful")
-    
-    # Print startup message with configuration details
-    logging.info("Webhook service is running with the following configuration:")
-    logging.info(f"- LOG_DIR: {LOG_DIR}")
-    logging.info(f"- MAX_HASHES: {MAX_HASHES}")
-    logging.info("Ready to receive TradingView alerts")
+        logging.error(f"Unexpected error in webhook: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
-    logging.info(f"Starting server on port {port}")
     uvicorn.run("main:app", host="0.0.0.0", port=port)
