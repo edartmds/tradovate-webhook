@@ -57,9 +57,7 @@ async def get_latest_price(symbol: str):
         data = response.json()
         return data.get("last") or data.get("price")
 
-# ------------------ WHAT YOU ADDED / MODIFIED ------------------
-
-# ✅ Updated logic for order creation: ENTRY (Stop), T1–T3 (Limit), STOP (Stop)
+# This block should be placed inside the webhook endpoint after deduplication and symbol normalization
 order_plan = []
 if "PRICE" in data:
     order_plan.append({
@@ -76,7 +74,7 @@ for i in range(1, 4):
         order_plan.append({
             "label": f"TP{i}",
             "action": "Sell" if action.lower() == "buy" else "Buy",
-            "orderType": "Limit",  # Changed to Limit order
+            "orderType": "Limit",
             "price": data[key],
             "qty": 1
         })
@@ -85,7 +83,9 @@ if "STOP" in data:
     order_plan.append({
         "label": "STOP",
         "action": "Sell" if action.lower() == "buy" else "Buy",
-        "orderType": "Stop",  # ✅ STOP LOSS = STOP
+        "orderType": "Stop",
         "stopPrice": data["STOP"],
         "qty": 3
     })
+
+# The rest of your logic (building order_payload, retries, monitoring, etc.) remains unchanged.
