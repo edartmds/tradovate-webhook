@@ -1,88 +1,91 @@
-from flask import Flask, request, jsonify
-from tradovate_client import TradovateClient
+import os
+import logging
+from datetime import datetime
+from fastapi import FastAPI, Request, HTTPException
+from tradovate_api import TradovateClient
+import uvicorn
+import httpx
+import json
+import hashlib
+import asyncio
 
-app = Flask(__name__)
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
+logging.info(f"Loaded WEBHOOK_SECRET: {WEBHOOK_SECRET}")
 
+LOG_DIR = "logs"
+os.makedirs(LOG_DIR, exist_ok=True)
+
+log_file = os.path.join(LOG_DIR, "webhook_trades.log")
+logging.basicConfig(
+    handlers=[
+        logging.FileHandler(log_file),
+        logging.StreamHandler()
+    ],
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
+app = FastAPI()
 client = TradovateClient()
-client.authenticate()  # Authenticate once on startup
+recent_alert_hashes = set()
+MAX_HASHES = 20  # Keep the last 20 unique alerts
 
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    data = request.json
-    print("Received webhook data:", data)
+@app.on_event("startup")
+async def startup_event():
+    await client.authenticate()
 
-    if not data or 'symbol' not in data or 'side' not in data or 'entry' not in data:
-        return jsonify({"error": "Missing required fields"}), 400
+async def ensure_authenticated():
+    if not client.access_token:
+        logging.warning("Access token is missing. Re-authenticating...")
+        await client.authenticate()
+    else:
+        logging.info("Access token is present.")
 
-    symbol = data['symbol']
-    side = data['side'].upper()
-    entry = float(data['entry'])
-    stop = float(data['stop'])
-    targets = [float(data.get(f't{i}')) for i in range(1, 4) if data.get(f't{i}')]
+async def get_latest_price(symbol: str):
+    await ensure_authenticated()
+    symbol_map = {
+        "CME_MINI:NQ1!": "NQH5",
+        "NQ1!": "NQH5",
+        "NQM5": "NQH5"
+    }
+    normalized_symbol = symbol_map.get(symbol, symbol)
+    url = f"https://demo-api.tradovate.com/v1/marketdata/quote/{normalized_symbol}"
+    headers = {"Authorization": f"Bearer {client.access_token}"}
+    async with httpx.AsyncClient() as http_client:
+        response = await http_client.get(url, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+        return data.get("last") or data.get("price")
 
-    qty = int(data.get('qty', 1))
-    long_trade = side == "BUY"
+# ------------------ WHAT YOU ADDED / MODIFIED ------------------
 
-    # Calculate individual quantities for T1, T2, T3
-    tp_qtys = [qty // 3] * 3
-    remainder = qty % 3
-    for i in range(remainder):
-        tp_qtys[i] += 1
-
-    order_plan = []
-
-    # Entry order (Stop)
+# ✅ Updated logic for order creation: ENTRY (Stop), T1–T3 (Limit), STOP (Stop)
+order_plan = []
+if "PRICE" in data:
     order_plan.append({
         "label": "ENTRY",
+        "action": action,
         "orderType": "Stop",
-        "action": "Buy" if long_trade else "Sell",
-        "stopPrice": entry,
-        "qty": qty
+        "price": data["PRICE"],
+        "qty": 3
     })
 
-    # Take Profits (Limit orders)
-    for i, target in enumerate(targets):
+for i in range(1, 4):
+    key = f"T{i}"
+    if key in data:
         order_plan.append({
-            "label": f"T{i+1}",
-            "orderType": "Limit",
-            "action": "Sell" if long_trade else "Buy",
-            "price": target,
-            "qty": tp_qtys[i]
+            "label": f"TP{i}",
+            "action": "Sell" if action.lower() == "buy" else "Buy",
+            "orderType": "Limit",  # Changed to Limit order
+            "price": data[key],
+            "qty": 1
         })
 
-    # Stop Loss (Stop order)
+if "STOP" in data:
     order_plan.append({
         "label": "STOP",
-        "orderType": "Stop",
-        "action": "Sell" if long_trade else "Buy",
-        "stopPrice": stop,
-        "qty": qty
+        "action": "Sell" if action.lower() == "buy" else "Buy",
+        "orderType": "Stop",  # ✅ STOP LOSS = STOP
+        "stopPrice": data["STOP"],
+        "qty": 3
     })
-
-    responses = []
-
-    for order in order_plan:
-        order_payload = {
-            "accountId": client.account_id,
-            "symbol": symbol,
-            "action": order["action"],
-            "orderQty": order["qty"],
-            "orderType": order["orderType"],
-            "timeInForce": "GTC",
-            "isAutomated": True
-        }
-
-        # Add correct price field
-        if order["orderType"] == "Limit":
-            order_payload["price"] = order["price"]
-        elif order["orderType"] == "Stop":
-            order_payload["stopPrice"] = order["stopPrice"]
-
-        print(f"Placing {order['label']} order: {order_payload}")
-        response = client.place_order(symbol, order["action"], order["qty"], order_payload)
-        responses.append({order["label"]: response})
-
-    return jsonify({"status": "orders placed", "details": responses}), 200
-
-if __name__ == '__main__':
-    app.run(port=5000)
