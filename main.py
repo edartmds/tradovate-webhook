@@ -76,7 +76,7 @@ for i in range(1, 4):
         order_plan.append({
             "label": f"TP{i}",
             "action": "Sell" if action.lower() == "buy" else "Buy",
-            "orderType": "Limit",  # Changed to Limit order
+            "orderType": "Limit",  # ✅ TAKE PROFIT = LIMIT
             "price": data[key],
             "qty": 1
         })
