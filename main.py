@@ -203,7 +203,6 @@ async def monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, symb
             logging.error(f"Error monitoring TP orders: {e}")
             await asyncio.sleep(5)
 
-# Ensure deduplication logic is robust
 @app.post("/webhook")
 async def webhook(req: Request):
     global recent_alert_hashes
@@ -230,7 +229,7 @@ async def webhook(req: Request):
         # Deduplication logic
         current_hash = hash_alert(data)
         if current_hash in recent_alert_hashes:
-            logging.warning("Duplicate alert received. Skipping execution.")
+            logging.warning(f"Duplicate alert detected with hash: {current_hash}. Skipping execution.")
             return {"status": "duplicate", "detail": "Duplicate alert skipped."}
         recent_alert_hashes.add(current_hash)
         if len(recent_alert_hashes) > MAX_HASHES:
@@ -348,6 +347,46 @@ async def webhook(req: Request):
         if sl_order_id and tp_order_ids:
             asyncio.create_task(monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids))
             asyncio.create_task(monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, symbol))
+        # Add detailed logging for debugging
+        logging.info(f"Webhook received data: {data}")
+
+        # Ensure deduplication logic is robust
+        if current_hash in recent_alert_hashes:
+            logging.warning(f"Duplicate alert detected with hash: {current_hash}. Skipping execution.")
+            return {"status": "duplicate", "detail": "Duplicate alert skipped."}
+
+        # Log the constructed order plan for debugging
+        logging.info(f"Constructed order plan: {json.dumps(order_plan, indent=2)}")
+
+        # Add error handling for order placement
+        for order in order_plan:
+            try:
+                order_payload = {
+                    "accountId": client.account_id,
+                    "symbol": symbol,
+                    "action": order["action"],
+                    "orderQty": order["qty"],
+                    "orderType": order["orderType"],
+                    "timeInForce": "GTC",
+                    "isAutomated": True
+                }
+                if "price" in order:
+                    order_payload["price"] = order["price"]
+                elif "stopPrice" in order:
+                    order_payload["stopPrice"] = order["stopPrice"]
+
+                logging.info(f"Placing order: {json.dumps(order_payload, indent=2)}")
+                result = await client.place_order(
+                    symbol=symbol,
+                    action=order["action"],
+                    quantity=order["qty"],
+                    order_data=order_payload
+                )
+                logging.info(f"Order placed successfully: {json.dumps(result, indent=2)}")
+            except Exception as e:
+                logging.error(f"Error placing order {order}: {e}")
+                continue
+
         return {"status": "success", "order_responses": order_results}
     except Exception as e:
         logging.error(f"Unexpected error in webhook: {e}")
