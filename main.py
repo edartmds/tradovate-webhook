@@ -27,8 +27,6 @@ logging.basicConfig(
 
 app = FastAPI()
 client = TradovateClient()
-recent_alert_hashes = set()
-MAX_HASHES = 20  # Keep the last 20 unique alerts
 
 @app.on_event("startup")
 async def startup_event():
@@ -113,10 +111,6 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price
     except Exception as e:
         logging.error(f"Error parsing alert: {e}")
         raise ValueError(f"Error parsing alert: {e}")
-
-def hash_alert(data: dict) -> str:
-    alert_string = json.dumps(data, sort_keys=True)
-    return hashlib.sha256(alert_string.encode()).hexdigest()
 
 async def monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids):
     """
@@ -205,7 +199,6 @@ async def monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, symb
 
 @app.post("/webhook")
 async def webhook(req: Request):
-    global recent_alert_hashes
     logging.info("Webhook endpoint hit.")
     try:
         content_type = req.headers.get("content-type")
@@ -225,15 +218,6 @@ async def webhook(req: Request):
 
         if WEBHOOK_SECRET is None:
             raise HTTPException(status_code=500, detail="Missing WEBHOOK_SECRET")
-
-        # Deduplication logic
-        current_hash = hash_alert(data)
-        if current_hash in recent_alert_hashes:
-            logging.warning(f"Duplicate alert detected with hash: {current_hash}. Skipping execution.")
-            return {"status": "duplicate", "detail": "Duplicate alert skipped."}
-        recent_alert_hashes.add(current_hash)
-        if len(recent_alert_hashes) > MAX_HASHES:
-            recent_alert_hashes = set(list(recent_alert_hashes)[-MAX_HASHES:])
 
         action = data["action"].capitalize()
         symbol = data["symbol"]
@@ -349,11 +333,6 @@ async def webhook(req: Request):
             asyncio.create_task(monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, symbol))
         # Add detailed logging for debugging
         logging.info(f"Webhook received data: {data}")
-
-        # Ensure deduplication logic is robust
-        if current_hash in recent_alert_hashes:
-            logging.warning(f"Duplicate alert detected with hash: {current_hash}. Skipping execution.")
-            return {"status": "duplicate", "detail": "Duplicate alert skipped."}
 
         # Log the constructed order plan for debugging
         logging.info(f"Constructed order plan: {json.dumps(order_plan, indent=2)}")
