@@ -286,24 +286,23 @@ async def webhook(req: Request):
         tp_order_ids = []
         sl_order_qty = 0
         order_results = []
+        # Update order payload construction to fix stop order issues
         for order in order_plan:
             order_payload = {
                 "accountId": client.account_id,
                 "symbol": symbol,
                 "action": order["action"],
                 "orderQty": order["qty"],
-                "orderType": "Stop",  # Ensure all orders are Stop orders
+                "orderType": order["orderType"],
                 "timeInForce": "GTC",
                 "isAutomated": True
             }
-            # Explicitly set stopPrice for all orders, including ENTRY
-            if "price" in order:
-                order_payload["stopPrice"] = order["price"]
-            elif "stopPrice" in order:
-                order_payload["stopPrice"] = order["stopPrice"]
-            else:
-                logging.error(f"Missing stopPrice for order: {order}")
-                continue  # Skip orders without a valid stopPrice
+            # Use stopPrice for stop orders and remove price field
+            if order["orderType"].lower() == "stop":
+                if "price" in order:
+                    order_payload["stopPrice"] = order.pop("price")
+            elif "price" in order:
+                order_payload["price"] = order["price"]
 
             logging.info(f"Placing {order['label']} order: {order_payload}")
             retry_count = 0
