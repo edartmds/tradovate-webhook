@@ -270,90 +270,50 @@ async def webhook(req: Request):
                 logging.warning(f"Open orders for {symbol} still exist after cancel. Skipping order placement.")
                 return {"status": "skipped", "detail": "Open orders still exist after cancel."}
 
-        # Check for existing orders to prevent duplicates
-        existing_order_labels = {o.get("label") for o in open_orders}
-
-        # Place entry, TP, and SL orders together (bracket/OCO style)
+        # Initialize the order plan
         order_plan = []
 
-        # Add three limit orders for take profits (T1, T2, T3)
-        logging.info("Processing T1, T2, T3 limit orders")
+        # Ensure no duplicate orders are added to the order plan
+        existing_order_labels = {o.get("label") for o in open_orders}
+
+        # Add limit orders for T1, T2, T3
         for i in range(1, 4):
             key = f"T{i}"
-            if key in data:
-                if f"TP{i}" in existing_order_labels:
-                    logging.info(f"TP{i} order already exists. Skipping placement.")
-                    continue
-
-                existing_order = next((o for o in open_orders if o.get("label") == f"TP{i}"), None)
-                if existing_order:
-                    # Adjust the price of the existing order if it has changed
-                    if existing_order.get("price") != data[key]:
-                        mod_url = f"https://demo-api.tradovate.com/v1/order/modify/{existing_order['id']}"
-                        payload = {"price": data[key]}
-                        async with httpx.AsyncClient() as http_client:
-                            response = await http_client.post(mod_url, headers=headers, json=payload)
-                            if response.status_code == 200:
-                                logging.info(f"Adjusted TP{i} order to new price: {data[key]}")
-                            else:
-                                logging.error(f"Failed to adjust TP{i} order: {response.text}")
-                else:
-                    # Place a new order if it doesn't exist
-                    order_plan.append({
-                        "label": f"TP{i}",
-                        "action": "Sell" if action.lower() == "buy" else "Buy",
-                        "orderType": "Limit",
-                        "price": data[key],
-                        "qty": 1
-                    })
-                    logging.info(f"Added limit order for TP{i}: {data[key]}")
-
-        # Debugging log for final order plan
-        logging.info(f"Final order plan: {order_plan}")
+            label = f"TP{i}"
+            if key in data and label not in existing_order_labels:
+                order_plan.append({
+                    "label": label,
+                    "action": "Sell" if action.lower() == "buy" else "Buy",
+                    "orderType": "Limit",
+                    "price": data[key],
+                    "qty": 1
+                })
+                existing_order_labels.add(label)  # Update the set to prevent duplicates
+                logging.info(f"Added limit order for {label}: {data[key]}")
 
         # Add stop order for entry
-        if "PRICE" in data:
-            existing_entry_order = next((o for o in open_orders if o.get("label") == "ENTRY"), None)
-            if existing_entry_order:
-                # Adjust the stop price of the existing entry order if it has changed
-                if existing_entry_order.get("stopPrice") != data["PRICE"]:
-                    mod_url = f"https://demo-api.tradovate.com/v1/order/modify/{existing_entry_order['id']}"
-                    payload = {"stopPrice": data["PRICE"]}
-                    async with httpx.AsyncClient() as http_client:
-                        await http_client.post(mod_url, headers=headers, json=payload)
-                    logging.info(f"Adjusted ENTRY order to new stop price: {data['PRICE']}")
-            else:
-                # Place a new entry order if it doesn't exist
-                order_plan.append({
-                    "label": "ENTRY",
-                    "action": action,
-                    "orderType": "Stop",
-                    "stopPrice": data["PRICE"],
-                    "qty": 3
-                })
-                logging.info(f"Added stop order for entry at price: {data['PRICE']}")
+        if "PRICE" in data and "ENTRY" not in existing_order_labels:
+            order_plan.append({
+                "label": "ENTRY",
+                "action": action,
+                "orderType": "Stop",
+                "stopPrice": data["PRICE"],
+                "qty": 3
+            })
+            existing_order_labels.add("ENTRY")  # Update the set to prevent duplicates
+            logging.info(f"Added stop order for entry at price: {data['PRICE']}")
 
-        # Add stop order for stop loss
-        if "STOP" in data:
-            existing_stop_order = next((o for o in open_orders if o.get("label") == "STOP"), None)
-            if existing_stop_order:
-                # Adjust the stop price of the existing stop loss order if it has changed
-                if existing_stop_order.get("stopPrice") != data["STOP"]:
-                    mod_url = f"https://demo-api.tradovate.com/v1/order/modify/{existing_stop_order['id']}"
-                    payload = {"stopPrice": data["STOP"]}
-                    async with httpx.AsyncClient() as http_client:
-                        await http_client.post(mod_url, headers=headers, json=payload)
-                    logging.info(f"Adjusted STOP order to new stop price: {data['STOP']}")
-            else:
-                # Place a new stop loss order if it doesn't exist
-                order_plan.append({
-                    "label": "STOP",
-                    "action": "Sell" if action.lower() == "buy" else "Buy",
-                    "orderType": "Stop",
-                    "stopPrice": data["STOP"],
-                    "qty": 3
-                })
-                logging.info(f"Added stop loss order at price: {data['STOP']}")
+        # Add stop loss order
+        if "STOP" in data and "STOP" not in existing_order_labels:
+            order_plan.append({
+                "label": "STOP",
+                "action": "Sell" if action.lower() == "buy" else "Buy",
+                "orderType": "Stop",
+                "stopPrice": data["STOP"],
+                "qty": 3
+            })
+            existing_order_labels.add("STOP")  # Update the set to prevent duplicates
+            logging.info(f"Added stop loss order at price: {data['STOP']}")
 
         # Initialize variables for tracking orders
         order_results = []
