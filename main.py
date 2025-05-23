@@ -293,7 +293,7 @@ async def webhook(req: Request):
                     "action": "Sell" if action.lower() == "buy" else "Buy",
                     "orderType": "Limit",
                     "price": data[key],
-                    "qty": 1,
+                    "orderQty": 1,  # Corrected field name from 'qty' to 'orderQty'
                     "accountId": client.account_id,
                     "symbol": symbol,
                     "timeInForce": "GTC",
@@ -305,7 +305,7 @@ async def webhook(req: Request):
                         result = await client.place_order(
                             symbol=symbol,
                             action=order_payload["action"],
-                            quantity=order_payload["qty"],
+                            quantity=order_payload["orderQty"],
                             order_data=order_payload
                         )
                         logging.info(f"Limit order placed successfully for {label}: {result}")
