@@ -318,14 +318,29 @@ async def webhook(req: Request):
 
         # Add stop order for entry
         if "PRICE" in data:
-            order_plan.append({
+            order_payload = {
                 "label": "ENTRY",
                 "action": action,
                 "orderType": "Stop",
                 "stopPrice": data["PRICE"],
-                "qty": 3
-            })
-            logging.info(f"Added stop order for entry at price: {data['PRICE']}")
+                "orderQty": 3,  # Corrected field name from 'qty' to 'orderQty'
+                "accountId": client.account_id,
+                "symbol": symbol,
+                "timeInForce": "GTC",
+                "isAutomated": True
+            }
+            logging.info(f"Placing stop order for entry at price: {data['PRICE']}")
+            try:
+                result = await client.place_order(
+                    symbol=symbol,
+                    action=order_payload["action"],
+                    quantity=order_payload["orderQty"],
+                    order_data=order_payload
+                )
+                logging.info(f"Stop order for entry placed successfully: {result}")
+                order_results.append({"ENTRY": result})
+            except Exception as e:
+                logging.error(f"Error placing stop order for entry: {e}")
 
         # Add stop loss order
         if "STOP" in data:
