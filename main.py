@@ -270,13 +270,16 @@ async def webhook(req: Request):
                 logging.warning(f"Open orders for {symbol} still exist after cancel. Skipping order placement.")
                 return {"status": "skipped", "detail": "Open orders still exist after cancel."}
 
+        # Check for existing orders to prevent duplicates
+        existing_order_labels = {o.get("label") for o in open_orders}
+
         # Place entry, TP, and SL orders together (bracket/OCO style)
         order_plan = []
 
         # Add three limit orders for take profits (T1, T2, T3)
         for i in range(1, 4):
             key = f"T{i}"
-            if key in data:
+            if key in data and f"TP{i}" not in existing_order_labels:
                 order_plan.append({
                     "label": f"TP{i}",
                     "action": "Sell" if action.lower() == "buy" else "Buy",
@@ -286,7 +289,7 @@ async def webhook(req: Request):
                 })
 
         # Add stop order for entry
-        if "PRICE" in data:
+        if "PRICE" in data and "ENTRY" not in existing_order_labels:
             order_plan.append({
                 "label": "ENTRY",
                 "action": action,
@@ -296,7 +299,7 @@ async def webhook(req: Request):
             })
 
         # Add stop order for stop loss
-        if "STOP" in data:
+        if "STOP" in data and "STOP" not in existing_order_labels:
             order_plan.append({
                 "label": "STOP",
                 "action": "Sell" if action.lower() == "buy" else "Buy",
