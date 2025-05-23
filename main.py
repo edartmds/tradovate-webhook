@@ -277,6 +277,8 @@ async def webhook(req: Request):
         order_plan = []
 
         # Add three limit orders for take profits (T1, T2, T3)
+        # Add debugging logs to ensure T1, T2, T3 orders are being processed
+        logging.info("Processing T1, T2, T3 limit orders")
         for i in range(1, 4):
             key = f"T{i}"
             if key in data:
@@ -287,8 +289,11 @@ async def webhook(req: Request):
                         mod_url = f"https://demo-api.tradovate.com/v1/order/modify/{existing_order['id']}"
                         payload = {"price": data[key]}
                         async with httpx.AsyncClient() as http_client:
-                            await http_client.post(mod_url, headers=headers, json=payload)
-                        logging.info(f"Adjusted TP{i} order to new price: {data[key]}")
+                            response = await http_client.post(mod_url, headers=headers, json=payload)
+                            if response.status_code == 200:
+                                logging.info(f"Adjusted TP{i} order to new price: {data[key]}")
+                            else:
+                                logging.error(f"Failed to adjust TP{i} order: {response.text}")
                 else:
                     # Place a new order if it doesn't exist
                     order_plan.append({
@@ -298,6 +303,10 @@ async def webhook(req: Request):
                         "price": data[key],
                         "qty": 1
                     })
+                    logging.info(f"Added TP{i} order to order plan: {order_plan[-1]}")
+
+        # Debugging log for final order plan
+        logging.info(f"Final order plan: {order_plan}")
 
         # Add stop order for entry
         if "PRICE" in data:
