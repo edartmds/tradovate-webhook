@@ -247,6 +247,13 @@ async def webhook(req: Request):
         await wait_until_no_open_orders(symbol, timeout=10)
         # ---
 
+        # Flatten all orders and positions at the beginning of each payload
+        logging.info(f"Flattening all orders and positions for symbol: {symbol}")
+        await cancel_all_orders(symbol)
+        await flatten_position(symbol)
+        await wait_until_no_open_orders(symbol, timeout=10)
+        logging.info("All orders and positions flattened successfully.")
+
         # Check for open position (should be flat)
         pos_url = f"https://demo-api.tradovate.com/v1/position/list"
         headers = {"Authorization": f"Bearer {client.access_token}"}
