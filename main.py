@@ -241,53 +241,53 @@ async def webhook(req: Request):
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
             symbol = "NQM5"
 
-        # --- Ensure all previous orders and positions are closed before new entry ---
-        await cancel_all_orders(symbol)
-        await flatten_position(symbol)
-        await wait_until_no_open_orders(symbol, timeout=10)
-        # ---
+        # --- Initialize variables for tracking orders
+        order_results = []
 
-        # Flatten all orders and positions at the beginning of each payload
+        # --- Ensure all previous orders and positions are closed before new entry ---
         logging.info(f"Flattening all orders and positions for symbol: {symbol}")
         await cancel_all_orders(symbol)
         await flatten_position(symbol)
         await wait_until_no_open_orders(symbol, timeout=10)
         logging.info("All orders and positions flattened successfully.")
 
-        # Check for open position (should be flat)
-        pos_url = f"https://demo-api.tradovate.com/v1/position/list"
-        headers = {"Authorization": f"Bearer {client.access_token}"}
-        async with httpx.AsyncClient() as http_client:
-            pos_resp = await http_client.get(pos_url, headers=headers)
-            pos_resp.raise_for_status()
-            positions = pos_resp.json()
-            for pos in positions:
-                if pos.get("symbol") == symbol and abs(pos.get("netPos", 0)) > 0:
-                    logging.warning(f"Position for {symbol} is not flat after flatten. Skipping order placement.")
-                    return {"status": "skipped", "detail": "Position not flat after flatten."}
-
-        # Check for open orders (should be none)
+        # --- Process the most recent alert ---
+        # Fetch existing orders
         order_url = f"https://demo-api.tradovate.com/v1/order/list"
+        headers = {"Authorization": f"Bearer {client.access_token}"}
         async with httpx.AsyncClient() as http_http_client:
             order_resp = await http_http_client.get(order_url, headers=headers)
             order_resp.raise_for_status()
             orders = order_resp.json()
-            open_orders = [o for o in orders if o.get("symbol") == symbol and o.get("status") in ("Working", "Accepted")]
-            if open_orders:
-                logging.warning(f"Open orders for {symbol} still exist after cancel. Skipping order placement.")
-                return {"status": "skipped", "detail": "Open orders still exist after cancel."}
+
+        # Identify current alert's order labels
+        current_labels = {f"TP{i}" for i in range(1, 4)} | {"ENTRY", "STOP"}
+
+        # Identify orders to delete
+        orders_to_delete = [
+            o for o in orders
+            if o.get("symbol") == symbol and o.get("label") not in current_labels
+        ]
+
+        # Delete unnecessary orders
+        for order in orders_to_delete:
+            delete_url = f"https://demo-api.tradovate.com/v1/order/{order['id']}"
+            try:
+                async with httpx.AsyncClient() as http_client:
+                    delete_resp = await http_client.delete(delete_url, headers=headers)
+                    delete_resp.raise_for_status()
+                    logging.info(f"Deleted order: {order['label']} (ID: {order['id']})")
+            except Exception as e:
+                logging.error(f"Error deleting order {order['label']} (ID: {order['id']}): {e}")
 
         # Initialize the order plan
         order_plan = []
-
-        # Ensure no duplicate orders are added to the order plan
-        existing_order_labels = {o.get("label") for o in open_orders}
 
         # Add limit orders for T1, T2, T3
         for i in range(1, 4):
             key = f"T{i}"
             label = f"TP{i}"
-            if key in data and label not in existing_order_labels:
+            if key in data:
                 order_plan.append({
                     "label": label,
                     "action": "Sell" if action.lower() == "buy" else "Buy",
@@ -295,54 +295,7 @@ async def webhook(req: Request):
                     "price": data[key],
                     "qty": 1
                 })
-                existing_order_labels.add(label)  # Update the set to prevent duplicates
                 logging.info(f"Added limit order for {label}: {data[key]}")
-
-        # Add stop order for entry
-        if "PRICE" in data and "ENTRY" not in existing_order_labels:
-            order_plan.append({
-                "label": "ENTRY",
-                "action": action,
-                "orderType": "Stop",
-                "stopPrice": data["PRICE"],
-                "qty": 3
-            })
-            existing_order_labels.add("ENTRY")  # Update the set to prevent duplicates
-            logging.info(f"Added stop order for entry at price: {data['PRICE']}")
-
-        # Add stop loss order
-        if "STOP" in data and "STOP" not in existing_order_labels:
-            order_plan.append({
-                "label": "STOP",
-                "action": "Sell" if action.lower() == "buy" else "Buy",
-                "orderType": "Stop",
-                "stopPrice": data["STOP"],
-                "qty": 3
-            })
-            existing_order_labels.add("STOP")  # Update the set to prevent duplicates
-            logging.info(f"Added stop loss order at price: {data['STOP']}")
-
-        # Initialize variables for tracking orders
-        order_results = []
-        sl_order_id = None
-        tp_order_ids = []
-        sl_order_qty = 0
-
-        # Process the alert and place orders
-        logging.info("Processing alert for order placement")
-
-        # Add limit orders for T1, T2, T3
-        for i in range(1, 4):
-            key = f"T{i}"
-            if key in data:
-                order_plan.append({
-                    "label": f"TP{i}",
-                    "action": "Sell" if action.lower() == "buy" else "Buy",
-                    "orderType": "Limit",
-                    "price": data[key],
-                    "qty": 1
-                })
-                logging.info(f"Added limit order for TP{i}: {data[key]}")
 
         # Add stop order for entry
         if "PRICE" in data:
@@ -390,22 +343,9 @@ async def webhook(req: Request):
                     order_data=order_payload
                 )
                 logging.info(f"Order placed successfully: {result}")
-
-                # Track stop-loss and take-profit orders
-                if order["label"] == "STOP":
-                    sl_order_id = result.get("id")
-                    sl_order_qty = order["qty"]
-                elif order["label"].startswith("TP"):
-                    tp_order_ids.append(result.get("id"))
-
                 order_results.append({order["label"]: result})
             except Exception as e:
                 logging.error(f"Error placing order {order['label']}: {e}")
-
-        # Monitor stop-loss and take-profit orders
-        if sl_order_id and tp_order_ids:
-            asyncio.create_task(monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids))
-            asyncio.create_task(monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, symbol))
 
         logging.info("Order plan execution completed")
         return {"status": "success", "order_responses": order_results}
