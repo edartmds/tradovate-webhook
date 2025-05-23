@@ -306,7 +306,7 @@ async def webhook(req: Request):
                         "price": data[key],
                         "qty": 1
                     })
-                    logging.info(f"Added TP{i} order to order plan: {order_plan[-1]}")
+                    logging.info(f"Added limit order for TP{i}: {data[key]}")
 
         # Debugging log for final order plan
         logging.info(f"Final order plan: {order_plan}")
@@ -331,6 +331,7 @@ async def webhook(req: Request):
                     "stopPrice": data["PRICE"],
                     "qty": 3
                 })
+                logging.info(f"Added stop order for entry at price: {data['PRICE']}")
 
         # Add stop order for stop loss
         if "STOP" in data:
@@ -352,55 +353,94 @@ async def webhook(req: Request):
                     "stopPrice": data["STOP"],
                     "qty": 3
                 })
+                logging.info(f"Added stop loss order at price: {data['STOP']}")
+
+        # Initialize variables for tracking orders
+        order_results = []
         sl_order_id = None
         tp_order_ids = []
         sl_order_qty = 0
-        order_results = []
+
+        # Process the alert and place orders
+        logging.info("Processing alert for order placement")
+
+        # Add limit orders for T1, T2, T3
+        for i in range(1, 4):
+            key = f"T{i}"
+            if key in data:
+                order_plan.append({
+                    "label": f"TP{i}",
+                    "action": "Sell" if action.lower() == "buy" else "Buy",
+                    "orderType": "Limit",
+                    "price": data[key],
+                    "qty": 1
+                })
+                logging.info(f"Added limit order for TP{i}: {data[key]}")
+
+        # Add stop order for entry
+        if "PRICE" in data:
+            order_plan.append({
+                "label": "ENTRY",
+                "action": action,
+                "orderType": "Stop",
+                "stopPrice": data["PRICE"],
+                "qty": 3
+            })
+            logging.info(f"Added stop order for entry at price: {data['PRICE']}")
+
+        # Add stop loss order
+        if "STOP" in data:
+            order_plan.append({
+                "label": "STOP",
+                "action": "Sell" if action.lower() == "buy" else "Buy",
+                "orderType": "Stop",
+                "stopPrice": data["STOP"],
+                "qty": 3
+            })
+            logging.info(f"Added stop loss order at price: {data['STOP']}")
+
+        # Execute the order plan
+        logging.info("Executing order plan")
         for order in order_plan:
             order_payload = {
                 "accountId": client.account_id,
                 "symbol": symbol,
                 "action": order["action"],
                 "orderQty": order["qty"],
-                "orderType": "Stop",  # Ensure all orders are Stop orders
+                "orderType": order["orderType"],
+                "price": order.get("price"),
+                "stopPrice": order.get("stopPrice"),
                 "timeInForce": "GTC",
                 "isAutomated": True
             }
-            # Explicitly set stopPrice for all orders
-            if "price" in order:
-                order_payload["stopPrice"] = order["price"]
-            elif "stopPrice" in order:
-                order_payload["stopPrice"] = order["stopPrice"]
-            else:
-                logging.error(f"Missing stopPrice for order: {order}")
-                continue  # Skip orders without a valid stopPrice
 
-            logging.info(f"Placing {order['label']} order: {order_payload}")
-            retry_count = 0
-            while retry_count < 3:
-                try:
-                    result = await client.place_order(
-                        symbol=symbol,
-                        action=order["action"],
-                        quantity=order["qty"],
-                        order_data=order_payload
-                    )
-                    if order["label"] == "STOP":
-                        sl_order_id = result.get("id")
-                        sl_order_qty = order["qty"]
-                    elif order["label"].startswith("TP") or order["label"] == "ENTRY":
-                        tp_order_ids.append(result.get("id"))
-                    order_results.append({order["label"]: result})
-                    break
-                except Exception as e:
-                    logging.error(f"Error placing {order['label']} order (attempt {retry_count + 1}): {e}")
-                    retry_count += 1
-                    if retry_count == 3:
-                        order_results.append({order["label"]: str(e)})
-        # Start monitoring the stop order in the background
+            logging.info(f"Placing order: {order_payload}")
+            try:
+                result = await client.place_order(
+                    symbol=symbol,
+                    action=order["action"],
+                    quantity=order["qty"],
+                    order_data=order_payload
+                )
+                logging.info(f"Order placed successfully: {result}")
+
+                # Track stop-loss and take-profit orders
+                if order["label"] == "STOP":
+                    sl_order_id = result.get("id")
+                    sl_order_qty = order["qty"]
+                elif order["label"].startswith("TP"):
+                    tp_order_ids.append(result.get("id"))
+
+                order_results.append({order["label"]: result})
+            except Exception as e:
+                logging.error(f"Error placing order {order['label']}: {e}")
+
+        # Monitor stop-loss and take-profit orders
         if sl_order_id and tp_order_ids:
             asyncio.create_task(monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids))
             asyncio.create_task(monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, symbol))
+
+        logging.info("Order plan execution completed")
         return {"status": "success", "order_responses": order_results}
     except Exception as e:
         logging.error(f"Unexpected error in webhook: {e}")
