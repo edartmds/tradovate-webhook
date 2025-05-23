@@ -246,10 +246,14 @@ async def webhook(req: Request):
 
         # --- Ensure all previous orders and positions are closed before processing the new alert ---
         logging.info(f"Flattening all orders and positions for symbol: {symbol}")
-        await cancel_all_orders(symbol)  # Cancel all active and pending orders
-        await flatten_position(symbol)  # Close any open positions
-        await wait_until_no_open_orders(symbol, timeout=10)  # Ensure no open orders remain
-        logging.info("All orders and positions flattened successfully.")
+        try:
+            await cancel_all_orders(symbol)  # Cancel all active and pending orders
+            await flatten_position(symbol)  # Close any open positions
+            await wait_until_no_open_orders(symbol, timeout=10)  # Ensure no open orders remain
+            logging.info("All orders and positions flattened successfully.")
+        except Exception as e:
+            logging.error(f"Error while flattening orders and positions: {e}")
+            raise HTTPException(status_code=500, detail="Failed to flatten orders and positions.")
 
         # --- Process the most recent alert ---
         # Fetch existing orders to confirm cleanup
@@ -269,6 +273,7 @@ async def webhook(req: Request):
                 logging.info("All previous orders successfully cleared.")
         except Exception as e:
             logging.error(f"Error fetching existing orders: {e}")
+            raise HTTPException(status_code=500, detail="Failed to fetch existing orders.")
 
         # Proceed to place new orders based on the latest alert
         # Add limit orders for T1, T2, T3
