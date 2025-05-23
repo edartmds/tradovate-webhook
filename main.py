@@ -277,11 +277,14 @@ async def webhook(req: Request):
         order_plan = []
 
         # Add three limit orders for take profits (T1, T2, T3)
-        # Add debugging logs to ensure T1, T2, T3 orders are being processed
         logging.info("Processing T1, T2, T3 limit orders")
         for i in range(1, 4):
             key = f"T{i}"
             if key in data:
+                if f"TP{i}" in existing_order_labels:
+                    logging.info(f"TP{i} order already exists. Skipping placement.")
+                    continue
+
                 existing_order = next((o for o in open_orders if o.get("label") == f"TP{i}"), None)
                 if existing_order:
                     # Adjust the price of the existing order if it has changed
