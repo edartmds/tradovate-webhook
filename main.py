@@ -27,6 +27,8 @@ logging.basicConfig(
 
 app = FastAPI()
 client = TradovateClient()
+recent_alert_hashes = set()
+MAX_HASHES = 20  # Keep the last 20 unique alerts
 
 @app.on_event("startup")
 async def startup_event():
@@ -111,6 +113,10 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price
     except Exception as e:
         logging.error(f"Error parsing alert: {e}")
         raise ValueError(f"Error parsing alert: {e}")
+
+def hash_alert(data: dict) -> str:
+    alert_string = json.dumps(data, sort_keys=True)
+    return hashlib.sha256(alert_string.encode()).hexdigest()
 
 async def monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids):
     """
@@ -197,8 +203,10 @@ async def monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, symb
             logging.error(f"Error monitoring TP orders: {e}")
             await asyncio.sleep(5)
 
+# Ensure deduplication logic is robust
 @app.post("/webhook")
 async def webhook(req: Request):
+    global recent_alert_hashes
     logging.info("Webhook endpoint hit.")
     try:
         content_type = req.headers.get("content-type")
@@ -218,6 +226,15 @@ async def webhook(req: Request):
 
         if WEBHOOK_SECRET is None:
             raise HTTPException(status_code=500, detail="Missing WEBHOOK_SECRET")
+
+        # Deduplication logic
+        current_hash = hash_alert(data)
+        if current_hash in recent_alert_hashes:
+            logging.warning("Duplicate alert received. Skipping execution.")
+            return {"status": "duplicate", "detail": "Duplicate alert skipped."}
+        recent_alert_hashes.add(current_hash)
+        if len(recent_alert_hashes) > MAX_HASHES:
+            recent_alert_hashes = set(list(recent_alert_hashes)[-MAX_HASHES:])
 
         action = data["action"].capitalize()
         symbol = data["symbol"]
@@ -260,7 +277,7 @@ async def webhook(req: Request):
             order_plan.append({
                 "label": "ENTRY",
                 "action": action,
-                "orderType": "Stop",  # Replacing Limit with Stop
+                "orderType": "Limit",
                 "price": data["PRICE"],
                 "qty": 3
             })
@@ -270,7 +287,7 @@ async def webhook(req: Request):
                 order_plan.append({
                     "label": f"TP{i}",
                     "action": "Sell" if action.lower() == "buy" else "Buy",
-                    "orderType": "Limit",  # Changed to Limit order
+                    "orderType": "Limit",
                     "price": data[key],
                     "qty": 1
                 })
@@ -286,7 +303,6 @@ async def webhook(req: Request):
         tp_order_ids = []
         sl_order_qty = 0
         order_results = []
-        # Update order payload construction to fix stop order issues
         for order in order_plan:
             order_payload = {
                 "accountId": client.account_id,
@@ -297,12 +313,14 @@ async def webhook(req: Request):
                 "timeInForce": "GTC",
                 "isAutomated": True
             }
-            # Use stopPrice for stop orders and remove price field
-            if order["orderType"].lower() == "stop":
-                if "price" in order:
-                    order_payload["stopPrice"] = order.pop("price")
-            elif "price" in order:
+            # Ensure entry is treated like T1, T2, T3
+            if order["orderType"] == "Limit":
                 order_payload["price"] = order["price"]
+            elif order["orderType"] == "StopLimit":
+                order_payload["price"] = order["price"]
+                order_payload["stopPrice"] = order["stopPrice"]
+            elif order["orderType"] == "Stop":
+                order_payload["stopPrice"] = order["stopPrice"]
 
             logging.info(f"Placing {order['label']} order: {order_payload}")
             retry_count = 0
@@ -330,41 +348,6 @@ async def webhook(req: Request):
         if sl_order_id and tp_order_ids:
             asyncio.create_task(monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids))
             asyncio.create_task(monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, symbol))
-        # Add detailed logging for debugging
-        logging.info(f"Webhook received data: {data}")
-
-        # Log the constructed order plan for debugging
-        logging.info(f"Constructed order plan: {json.dumps(order_plan, indent=2)}")
-
-        # Add error handling for order placement
-        for order in order_plan:
-            try:
-                order_payload = {
-                    "accountId": client.account_id,
-                    "symbol": symbol,
-                    "action": order["action"],
-                    "orderQty": order["qty"],
-                    "orderType": order["orderType"],
-                    "timeInForce": "GTC",
-                    "isAutomated": True
-                }
-                if "price" in order:
-                    order_payload["price"] = order["price"]
-                elif "stopPrice" in order:
-                    order_payload["stopPrice"] = order["stopPrice"]
-
-                logging.info(f"Placing order: {json.dumps(order_payload, indent=2)}")
-                result = await client.place_order(
-                    symbol=symbol,
-                    action=order["action"],
-                    quantity=order["qty"],
-                    order_data=order_payload
-                )
-                logging.info(f"Order placed successfully: {json.dumps(result, indent=2)}")
-            except Exception as e:
-                logging.error(f"Error placing order {order}: {e}")
-                continue
-
         return {"status": "success", "order_responses": order_results}
     except Exception as e:
         logging.error(f"Unexpected error in webhook: {e}")
