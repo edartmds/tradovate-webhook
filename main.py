@@ -277,7 +277,7 @@ async def webhook(req: Request):
             order_plan.append({
                 "label": "ENTRY",
                 "action": action,
-                "orderType": "Limit",
+                "orderType": "Stop",  # Replacing Limit with Stop
                 "price": data["PRICE"],
                 "qty": 3
             })
@@ -287,7 +287,7 @@ async def webhook(req: Request):
                 order_plan.append({
                     "label": f"TP{i}",
                     "action": "Sell" if action.lower() == "buy" else "Buy",
-                    "orderType": "Limit",
+                    "orderType": "Stop",  # Replacing Limit with Stop
                     "price": data[key],
                     "qty": 1
                 })
@@ -309,18 +309,18 @@ async def webhook(req: Request):
                 "symbol": symbol,
                 "action": order["action"],
                 "orderQty": order["qty"],
-                "orderType": order["orderType"],
+                "orderType": "Stop",  # Ensure all orders are Stop orders
                 "timeInForce": "GTC",
                 "isAutomated": True
             }
-            # Ensure entry is treated like T1, T2, T3
-            if order["orderType"] == "Limit":
-                order_payload["price"] = order["price"]
-            elif order["orderType"] == "StopLimit":
-                order_payload["price"] = order["price"]
+            # Explicitly set stopPrice for all orders
+            if "price" in order:
+                order_payload["stopPrice"] = order["price"]
+            elif "stopPrice" in order:
                 order_payload["stopPrice"] = order["stopPrice"]
-            elif order["orderType"] == "Stop":
-                order_payload["stopPrice"] = order["stopPrice"]
+            else:
+                logging.error(f"Missing stopPrice for order: {order}")
+                continue  # Skip orders without a valid stopPrice
 
             logging.info(f"Placing {order['label']} order: {order_payload}")
             retry_count = 0
