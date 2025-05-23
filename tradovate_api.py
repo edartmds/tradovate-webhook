@@ -86,28 +86,31 @@ class TradovateClient:
             "action": action.capitalize(),  # Ensure "Buy" or "Sell"
             "symbol": symbol,
             "orderQty": quantity,
-            "orderType": "limit",
+            "orderType": "Limit",  # Default to "Limit" if not provided
             "timeInForce": "GTC",
             "isAutomated": True  # Optional field for automation
         }
 
-        if not order_payload.get("accountId"):
-            logging.error("Missing accountId in order payload.")
-            raise HTTPException(status_code=400, detail="Missing accountId in order payload")
+        # Validate required fields in the payload
+        required_fields = ["accountId", "action", "symbol", "orderQty", "orderType"]
+        for field in required_fields:
+            if field not in order_payload or not order_payload[field]:
+                logging.error(f"Missing required field '{field}' in order payload: {order_payload}")
+                raise HTTPException(status_code=400, detail=f"Missing required field '{field}' in order payload")
 
         try:
             async with httpx.AsyncClient() as client:
-                logging.debug(f"Sending order payload: {json.dumps(order_payload, indent=2)}")
+                logging.debug(f"Sending order payload for {symbol} ({action}): {json.dumps(order_payload, indent=2)}")
                 r = await client.post(f"{BASE_URL}/order/placeorder", json=order_payload, headers=headers)
                 r.raise_for_status()
                 response_data = r.json()
-                logging.info(f"Order placement response: {json.dumps(response_data, indent=2)}")
+                logging.info(f"Order placement response for {symbol} ({action}): {json.dumps(response_data, indent=2)}")
                 return response_data
         except httpx.HTTPStatusError as e:
-            logging.error(f"Order placement failed: {e.response.text}")
+            logging.error(f"Order placement failed for {symbol} ({action}): {e.response.text}")
             raise HTTPException(status_code=e.response.status_code, detail=f"Order placement failed: {e.response.text}")
         except Exception as e:
-            logging.error(f"Unexpected error during order placement: {e}")
+            logging.error(f"Unexpected error during order placement for {symbol} ({action}): {e}")
             raise HTTPException(status_code=500, detail="Internal server error during order placement")
 
     async def place_oso_order(self, order_payload: dict):
@@ -131,40 +134,7 @@ class TradovateClient:
         try:
             async with httpx.AsyncClient() as client:
                 logging.debug(f"Sending OSO order payload: {json.dumps(order_payload, indent=2)}")
-                response = await client.post(f"{BASE_URL}/order/oso", json=order_payload, headers=headers)
-                response.raise_for_status()
-                response_data = response.json()
-                logging.info(f"OSO order response: {json.dumps(response_data, indent=2)}")
-                return response_data
-        except httpx.HTTPStatusError as e:
-            logging.error(f"OSO order placement failed: {e.response.text}")
-            raise HTTPException(status_code=e.response.status_code, detail=f"OSO order placement failed: {e.response.text}")
-        except Exception as e:
-            logging.error(f"Unexpected error during OSO order placement: {e}")
-            raise HTTPException(status_code=500, detail="Internal server error during OSO order placement")
-
-    async def place_oso_order(self, initial_order: dict):
-        """
-        Places an Order Sends Order (OSO) order on Tradovate.
-
-        Args:
-            initial_order (dict): The JSON payload for the initial order with brackets.
-
-        Returns:
-            dict: The response from the Tradovate API.
-        """
-        if not self.access_token:
-            await self.authenticate()
-
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json"
-        }
-
-        try:
-            async with httpx.AsyncClient() as client:
-                logging.debug(f"Sending OSO order payload: {json.dumps(initial_order, indent=2)}")
-                response = await client.post(f"{BASE_URL}/order/placeoso", json=initial_order, headers=headers)
+                response = await client.post(f"{BASE_URL}/order/placeoso", json=order_payload, headers=headers)
                 response.raise_for_status()
                 response_data = response.json()
                 logging.info(f"OSO order response: {json.dumps(response_data, indent=2)}")
