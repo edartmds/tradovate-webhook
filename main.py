@@ -408,6 +408,35 @@ async def webhook(req: Request):
             asyncio.create_task(monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, symbol))
 
         logging.info("Order plan execution completed")
+
+        # Identify current alert's order labels
+        current_labels = {f"TP{i}" for i in range(1, 4)} | {"ENTRY", "STOP"}
+
+        # Fetch existing orders
+        order_url = f"https://demo-api.tradovate.com/v1/order/list"
+        async with httpx.AsyncClient() as http_http_client:
+            order_resp = await http_http_client.get(order_url, headers=headers)
+            order_resp.raise_for_status()
+            orders = order_resp.json()
+
+        # Identify orders to delete
+        current_labels = {f"TP{i}" for i in range(1, 4)} | {"ENTRY", "STOP"}
+        orders_to_delete = [
+            o for o in orders
+            if o.get("symbol") == symbol and o.get("label") not in current_labels
+        ]
+
+        # Delete unnecessary orders
+        for order in orders_to_delete:
+            delete_url = f"https://demo-api.tradovate.com/v1/order/{order['id']}"
+            try:
+                async with httpx.AsyncClient() as http_client:
+                    delete_resp = await http_client.delete(delete_url, headers=headers)
+                    delete_resp.raise_for_status()
+                    logging.info(f"Deleted order: {order['label']} (ID: {order['id']})")
+            except Exception as e:
+                logging.error(f"Error deleting order {order['label']} (ID: {order['id']}): {e}")
+
         return {"status": "success", "order_responses": order_results}
     except Exception as e:
         logging.error(f"Unexpected error in webhook: {e}")
