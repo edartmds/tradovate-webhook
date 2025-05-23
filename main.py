@@ -272,25 +272,30 @@ async def webhook(req: Request):
 
         # Place entry, TP, and SL orders together (bracket/OCO style)
         order_plan = []
-        if "PRICE" in data:
-            # Always use a LIMIT order for entry at the specified price
-            order_plan.append({
-                "label": "ENTRY",
-                "action": action,
-                "orderType": "Stop",  # Replacing Limit with Stop
-                "price": data["PRICE"],
-                "qty": 3
-            })
+
+        # Add three limit orders for take profits (T1, T2, T3)
         for i in range(1, 4):
             key = f"T{i}"
             if key in data:
                 order_plan.append({
                     "label": f"TP{i}",
                     "action": "Sell" if action.lower() == "buy" else "Buy",
-                    "orderType": "Stop",  # Replacing Limit with Stop
+                    "orderType": "Limit",
                     "price": data[key],
                     "qty": 1
                 })
+
+        # Add stop order for entry
+        if "PRICE" in data:
+            order_plan.append({
+                "label": "ENTRY",
+                "action": action,
+                "orderType": "Stop",
+                "stopPrice": data["PRICE"],
+                "qty": 3
+            })
+
+        # Add stop order for stop loss
         if "STOP" in data:
             order_plan.append({
                 "label": "STOP",
