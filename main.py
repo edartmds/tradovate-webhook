@@ -241,47 +241,49 @@ async def webhook(req: Request):
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
             symbol = "NQM5"
 
-        # --- Ensure all previous orders and positions are closed before new entry ---
-        await cancel_all_orders(symbol)
-        await flatten_position(symbol)
-        await wait_until_no_open_orders(symbol, timeout=10)
-        # ---
+        # Initialize headers for API requests
+        headers = {"Authorization": f"Bearer {client.access_token}"}
 
-        # Flatten all orders and positions at the beginning of each payload
+        # Initialize the order plan
+        order_plan = []
+
+        # --- Ensure all previous orders and positions are closed before new entry ---
         logging.info(f"Flattening all orders and positions for symbol: {symbol}")
         await cancel_all_orders(symbol)
         await flatten_position(symbol)
         await wait_until_no_open_orders(symbol, timeout=10)
         logging.info("All orders and positions flattened successfully.")
 
-        # Check for open position (should be flat)
-        pos_url = f"https://demo-api.tradovate.com/v1/position/list"
-        headers = {"Authorization": f"Bearer {client.access_token}"}
-        async with httpx.AsyncClient() as http_client:
-            pos_resp = await http_client.get(pos_url, headers=headers)
-            pos_resp.raise_for_status()
-            positions = pos_resp.json()
-            for pos in positions:
-                if pos.get("symbol") == symbol and abs(pos.get("netPos", 0)) > 0:
-                    logging.warning(f"Position for {symbol} is not flat after flatten. Skipping order placement.")
-                    return {"status": "skipped", "detail": "Position not flat after flatten."}
-
-        # Check for open orders (should be none)
+        # --- Process the new alert ---
+        # Fetch existing orders
         order_url = f"https://demo-api.tradovate.com/v1/order/list"
         async with httpx.AsyncClient() as http_http_client:
             order_resp = await http_http_client.get(order_url, headers=headers)
             order_resp.raise_for_status()
             orders = order_resp.json()
-            open_orders = [o for o in orders if o.get("symbol") == symbol and o.get("status") in ("Working", "Accepted")]
-            if open_orders:
-                logging.warning(f"Open orders for {symbol} still exist after cancel. Skipping order placement.")
-                return {"status": "skipped", "detail": "Open orders still exist after cancel."}
 
-        # Initialize the order plan
-        order_plan = []
+        # Identify current alert's order labels
+        current_labels = {f"TP{i}" for i in range(1, 4)} | {"ENTRY", "STOP"}
+
+        # Identify orders to delete
+        orders_to_delete = [
+            o for o in orders
+            if o.get("symbol") == symbol and o.get("label") not in current_labels
+        ]
+
+        # Delete unnecessary orders
+        for order in orders_to_delete:
+            delete_url = f"https://demo-api.tradovate.com/v1/order/{order['id']}"
+            try:
+                async with httpx.AsyncClient() as http_client:
+                    delete_resp = await http_client.delete(delete_url, headers=headers)
+                    delete_resp.raise_for_status()
+                    logging.info(f"Deleted order: {order['label']} (ID: {order['id']})")
+            except Exception as e:
+                logging.error(f"Error deleting order {order['label']} (ID: {order['id']}): {e}")
 
         # Ensure no duplicate orders are added to the order plan
-        existing_order_labels = {o.get("label") for o in open_orders}
+        existing_order_labels = {o.get("label") for o in orders if o.get("symbol") == symbol}
 
         # Add limit orders for T1, T2, T3
         for i in range(1, 4):
