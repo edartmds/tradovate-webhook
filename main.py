@@ -285,36 +285,38 @@ async def webhook(req: Request):
 
         # Add limit orders for T1, T2, T3 with validation and retry logic
         for i in range(1, 4):
-            key = f"T{i}"
-            label = f"TP{i}"
-            if key in data and isinstance(data[key], (int, float)) and data[key] > 0:
-                order_payload = {
-                    "label": label,
-                    "action": "Sell" if action.lower() == "buy" else "Buy",
-                    "orderType": "Limit",
-                    "price": data[key],
-                    "orderQty": 1,  # Corrected field name from 'qty' to 'orderQty'
-                    "accountId": client.account_id,
-                    "symbol": symbol,
-                    "timeInForce": "GTC",
-                    "isAutomated": True
-                }
-                logging.info(f"Placing limit order for {label} at price: {data[key]}")
-                for attempt in range(3):  # Retry up to 3 times
-                    try:
-                        result = await client.place_order(
-                            symbol=symbol,
-                            action=order_payload["action"],
-                            quantity=order_payload["orderQty"],
-                            order_data=order_payload
-                        )
-                        logging.info(f"Limit order placed successfully for {label}: {result}")
-                        order_results.append({label: result})
-                        break
-                    except Exception as e:
-                        logging.error(f"Error placing limit order for {label} (Attempt {attempt + 1}): {e}")
-                        if attempt == 2:  # Log failure after final attempt
-                            logging.error(f"Failed to place limit order for {label} after 3 attempts.")
+            # Only place T1 (TP1) as limit order, skip T2/T3
+            if i == 1:
+                key = "T1"
+                label = "TP1"
+                if key in data and isinstance(data[key], (int, float)) and data[key] > 0:
+                    order_payload = {
+                        "label": label,
+                        "action": "Sell" if action.lower() == "buy" else "Buy",
+                        "orderType": "Limit",
+                        "price": data[key],
+                        "orderQty": 1,
+                        "accountId": client.account_id,
+                        "symbol": symbol,
+                        "timeInForce": "GTC",
+                        "isAutomated": True
+                    }
+                    logging.info(f"Placing limit order for {label} at price: {data[key]}")
+                    for attempt in range(3):
+                        try:
+                            result = await client.place_order(
+                                symbol=symbol,
+                                action=order_payload["action"],
+                                quantity=order_payload["orderQty"],
+                                order_data=order_payload
+                            )
+                            logging.info(f"Limit order placed successfully for {label}: {result}")
+                            order_results.append({label: result})
+                            break
+                        except Exception as e:
+                            logging.error(f"Error placing limit order for {label} (Attempt {attempt + 1}): {e}")
+                            if attempt == 2:
+                                logging.error(f"Failed to place limit order for {label} after 3 attempts.")
 
         # Add stop order for entry
         if "PRICE" in data:
@@ -323,7 +325,7 @@ async def webhook(req: Request):
                 "action": action,
                 "orderType": "Stop",
                 "stopPrice": data["PRICE"],
-                "orderQty": 3,  # Corrected field name from 'qty' to 'orderQty'
+                "orderQty": 1,
                 "accountId": client.account_id,
                 "symbol": symbol,
                 "timeInForce": "GTC",
@@ -349,7 +351,7 @@ async def webhook(req: Request):
                 "action": "Sell" if action.lower() == "buy" else "Buy",
                 "orderType": "Stop",
                 "stopPrice": data["STOP"],
-                "qty": 3
+                "qty": 1
             })
             logging.info(f"Added stop loss order at price: {data['STOP']}")
 
