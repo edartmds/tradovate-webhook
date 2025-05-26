@@ -261,7 +261,7 @@ async def webhook(req: Request):
             orders = order_resp.json()
 
         # Identify current alert's order labels
-        current_labels = {"TP1", "ENTRY", "STOP"}
+        current_labels = {f"TP{i}" for i in range(1, 4)} | {"ENTRY", "STOP"}
 
         # Identify orders to delete
         orders_to_delete = [
@@ -280,46 +280,50 @@ async def webhook(req: Request):
             except Exception as e:
                 logging.error(f"Error deleting order {order['label']} (ID: {order['id']}): {e}")
 
-        # --- Place only the T1 limit order (contract size = 1) ---
-        t1_order_id = None
-        stop_order_id = None
-        entry_order_id = None
+        # Initialize the order plan
+        order_plan = []
 
-        # Place T1 limit order if present
-        if "T1" in data and isinstance(data["T1"], (int, float)) and data["T1"] > 0:
-            order_payload = {
-                "label": "TP1",
-                "action": "Sell" if action.lower() == "buy" else "Buy",
-                "orderType": "Limit",
-                "price": data["T1"],
-                "orderQty": 1,
-                "accountId": client.account_id,
-                "symbol": symbol,
-                "timeInForce": "GTC",
-                "isAutomated": True
-            }
-            logging.info(f"Placing limit order for TP1 at price: {data['T1']}")
-            try:
-                result = await client.place_order(
-                    symbol=symbol,
-                    action=order_payload["action"],
-                    quantity=order_payload["orderQty"],
-                    order_data=order_payload
-                )
-                logging.info(f"Limit order placed successfully for TP1: {result}")
-                order_results.append({"TP1": result})
-                t1_order_id = result.get("orderId") or result.get("id")
-            except Exception as e:
-                logging.error(f"Error placing limit order for TP1: {e}")
+        # Add limit orders for T1, T2, T3 with validation and retry logic
+        for i in range(1, 4):
+            key = f"T{i}"
+            label = f"TP{i}"
+            if key in data and isinstance(data[key], (int, float)) and data[key] > 0:
+                order_payload = {
+                    "label": label,
+                    "action": "Sell" if action.lower() == "buy" else "Buy",
+                    "orderType": "Limit",
+                    "price": data[key],
+                    "orderQty": 1,  # Corrected field name from 'qty' to 'orderQty'
+                    "accountId": client.account_id,
+                    "symbol": symbol,
+                    "timeInForce": "GTC",
+                    "isAutomated": True
+                }
+                logging.info(f"Placing limit order for {label} at price: {data[key]}")
+                for attempt in range(3):  # Retry up to 3 times
+                    try:
+                        result = await client.place_order(
+                            symbol=symbol,
+                            action=order_payload["action"],
+                            quantity=order_payload["orderQty"],
+                            order_data=order_payload
+                        )
+                        logging.info(f"Limit order placed successfully for {label}: {result}")
+                        order_results.append({label: result})
+                        break
+                    except Exception as e:
+                        logging.error(f"Error placing limit order for {label} (Attempt {attempt + 1}): {e}")
+                        if attempt == 2:  # Log failure after final attempt
+                            logging.error(f"Failed to place limit order for {label} after 3 attempts.")
 
-        # Place ENTRY stop order (contract size = 1)
+        # Add stop order for entry
         if "PRICE" in data:
             order_payload = {
                 "label": "ENTRY",
                 "action": action,
                 "orderType": "Stop",
                 "stopPrice": data["PRICE"],
-                "orderQty": 1,
+                "orderQty": 3,  # Corrected field name from 'qty' to 'orderQty'
                 "accountId": client.account_id,
                 "symbol": symbol,
                 "timeInForce": "GTC",
@@ -335,78 +339,47 @@ async def webhook(req: Request):
                 )
                 logging.info(f"Stop order for entry placed successfully: {result}")
                 order_results.append({"ENTRY": result})
-                entry_order_id = result.get("orderId") or result.get("id")
             except Exception as e:
                 logging.error(f"Error placing stop order for entry: {e}")
 
-        # Place STOP loss order (contract size = 1)
+        # Add stop loss order
         if "STOP" in data:
-            order_payload = {
+            order_plan.append({
                 "label": "STOP",
                 "action": "Sell" if action.lower() == "buy" else "Buy",
                 "orderType": "Stop",
                 "stopPrice": data["STOP"],
-                "orderQty": 1,
+                "qty": 3
+            })
+            logging.info(f"Added stop loss order at price: {data['STOP']}")
+
+        # Execute the order plan
+        logging.info("Executing order plan")
+        for order in order_plan:
+            order_payload = {
                 "accountId": client.account_id,
                 "symbol": symbol,
+                "action": order["action"],
+                "orderQty": order["qty"],
+                "orderType": order["orderType"],
+                "price": order.get("price"),
+                "stopPrice": order.get("stopPrice"),
                 "timeInForce": "GTC",
                 "isAutomated": True
             }
-            logging.info(f"Placing stop loss order at price: {data['STOP']}")
+
+            logging.info(f"Placing order: {order_payload}")
             try:
                 result = await client.place_order(
                     symbol=symbol,
-                    action=order_payload["action"],
-                    quantity=order_payload["orderQty"],
+                    action=order["action"],
+                    quantity=order["qty"],
                     order_data=order_payload
                 )
-                logging.info(f"Stop loss order placed successfully: {result}")
-                order_results.append({"STOP": result})
-                stop_order_id = result.get("orderId") or result.get("id")
+                logging.info(f"Order placed successfully: {result}")
+                order_results.append({order["label"]: result})
             except Exception as e:
-                logging.error(f"Error placing stop loss order: {e}")
-
-        # --- Monitor TP1 and STOP orders, cancel the other if one is filled ---
-        async def monitor_and_cancel(tp1_id, stop_id):
-            if not tp1_id or not stop_id:
-                logging.warning("Cannot monitor/cancel TP1 and STOP orders: missing order IDs.")
-                return
-            logging.info(f"Starting monitor for TP1 order {tp1_id} and STOP order {stop_id}.")
-            while True:
-                try:
-                    # Check TP1 status
-                    url_tp1 = f"https://demo-api.tradovate.com/v1/order/{tp1_id}"
-                    url_stop = f"https://demo-api.tradovate.com/v1/order/{stop_id}"
-                    headers = {"Authorization": f"Bearer {client.access_token}"}
-                    async with httpx.AsyncClient() as http_client:
-                        resp_tp1 = await http_client.get(url_tp1, headers=headers)
-                        resp_tp1.raise_for_status()
-                        tp1_status = resp_tp1.json()
-                        resp_stop = await http_client.get(url_stop, headers=headers)
-                        resp_stop.raise_for_status()
-                        stop_status = resp_stop.json()
-                    if tp1_status.get("status") == "Filled":
-                        # Cancel STOP
-                        logging.info(f"TP1 order {tp1_id} filled. Cancelling STOP order {stop_id}.")
-                        cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{stop_id}"
-                        async with httpx.AsyncClient() as http_client:
-                            await http_client.post(cancel_url, headers=headers)
-                        break
-                    elif stop_status.get("status") == "Filled":
-                        # Cancel TP1
-                        logging.info(f"STOP order {stop_id} filled. Cancelling TP1 order {tp1_id}.")
-                        cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{tp1_id}"
-                        async with httpx.AsyncClient() as http_client:
-                            await http_client.post(cancel_url, headers=headers)
-                        break
-                    await asyncio.sleep(1)
-                except Exception as e:
-                    logging.error(f"Error monitoring/cancelling TP1 and STOP orders: {e}")
-                    await asyncio.sleep(5)
-
-        # Start monitor in background
-        if t1_order_id and stop_order_id:
-            asyncio.create_task(monitor_and_cancel(t1_order_id, stop_order_id))
+                logging.error(f"Error placing order {order['label']}: {e}")
 
         logging.info("Order plan execution completed")
         return {"status": "success", "order_responses": order_results}
@@ -416,4 +389,4 @@ async def webhook(req: Request):
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
