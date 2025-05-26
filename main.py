@@ -1,419 +1,147 @@
+import httpx
 import os
 import logging
-from datetime import datetime
-from fastapi import FastAPI, Request, HTTPException
-from tradovate_api import TradovateClient
-import uvicorn
-import httpx
-import json
-import hashlib
-import asyncio
+import json  # Added for pretty-printing JSON responses
+from dotenv import load_dotenv
+from fastapi import HTTPException
 
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
-logging.info(f"Loaded WEBHOOK_SECRET: {WEBHOOK_SECRET}")
+load_dotenv()
 
-LOG_DIR = "logs"
-os.makedirs(LOG_DIR, exist_ok=True)
+TRADOVATE_DEMO = os.getenv("TRADOVATE_DEMO", "true") == "true"
+BASE_URL = "https://demo-api.tradovate.com/v1" if TRADOVATE_DEMO else "https://live-api.tradovate.com/v1"
 
-log_file = os.path.join(LOG_DIR, "webhook_trades.log")
-logging.basicConfig(
-    handlers=[
-        logging.FileHandler(log_file),
-        logging.StreamHandler()
-    ],
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
+class TradovateClient:
+    def __init__(self):
+        self.access_token = None
+        self.account_id = None
+        self.account_spec = None
 
-app = FastAPI()
-client = TradovateClient()
-recent_alert_hashes = set()
-MAX_HASHES = 20  # Keep the last 20 unique alerts
+    async def authenticate(self):
+        url = f"{BASE_URL}/auth/accesstokenrequest"
+        auth_payload = {
+            "name": os.getenv("TRADOVATE_USERNAME"),
+            "password": os.getenv("TRADOVATE_PASSWORD"),
+            "appId": os.getenv("TRADOVATE_APP_ID"),
+            "appVersion": os.getenv("TRADOVATE_APP_VERSION"),
+            "cid": os.getenv("TRADOVATE_CLIENT_ID"),
+            "sec": os.getenv("TRADOVATE_CLIENT_SECRET"),
+            "deviceId": os.getenv("TRADOVATE_DEVICE_ID")
+        }
+        try:
+            async with httpx.AsyncClient() as client:
+                logging.debug(f"Sending authentication payload: {json.dumps(auth_payload, indent=2)}")
+                r = await client.post(url, json=auth_payload)
+                r.raise_for_status()
+                data = r.json()
+                logging.info(f"Authentication response: {json.dumps(data, indent=2)}")
+                self.access_token = data["accessToken"]
 
-@app.on_event("startup")
-async def startup_event():
-    await client.authenticate()
+                # Fetch account ID
+                headers = {"Authorization": f"Bearer {self.access_token}"}
+                acc_res = await client.get(f"{BASE_URL}/account/list", headers=headers)
+                acc_res.raise_for_status()
+                account_data = acc_res.json()
+                logging.info(f"Account list response: {json.dumps(account_data, indent=2)}")
+                self.account_id = account_data[0]["id"]
+                self.account_spec = account_data[0].get("name")
 
-async def get_latest_price(symbol: str):
-    url = f"https://demo-api.tradovate.com/v1/marketdata/quote/{symbol}"
-    headers = {"Authorization": f"Bearer {client.access_token}"}
-    async with httpx.AsyncClient() as http_client:
-        response = await http_client.get(url, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-        return data["last"]
+                # Use hardcoded values from .env if available
+                self.account_id = int(os.getenv("TRADOVATE_ACCOUNT_ID", self.account_id))
+                self.account_spec = os.getenv("TRADOVATE_ACCOUNT_SPEC", self.account_spec)
 
-async def cancel_all_orders(symbol):
-    url = f"https://demo-api.tradovate.com/v1/order/cancelallorders"
-    headers = {"Authorization": f"Bearer {client.access_token}"}
-    async with httpx.AsyncClient() as http_client:
-        await http_client.post(url, headers=headers, json={"symbol": symbol})
+                logging.info(f"Using account_id: {self.account_id} and account_spec: {self.account_spec} from environment variables.")
 
-async def flatten_position(symbol):
-    url = f"https://demo-api.tradovate.com/v1/position/closeposition"
-    headers = {"Authorization": f"Bearer {client.access_token}"}
-    async with httpx.AsyncClient() as http_client:
-        await http_client.post(url, headers=headers, json={"symbol": symbol})
+                if not self.account_spec:
+                    logging.error("Failed to retrieve accountSpec. accountSpec is None.")
+                    raise HTTPException(status_code=400, detail="Failed to retrieve accountSpec")
 
-async def wait_until_no_open_orders(symbol, timeout=10):
-    """
-    Poll Tradovate until there are no open orders for the symbol, or until timeout (seconds).
-    """
-    url = f"https://demo-api.tradovate.com/v1/order/list"
-    headers = {"Authorization": f"Bearer {client.access_token}"}
-    start = asyncio.get_event_loop().time()
-    while True:
-        async with httpx.AsyncClient() as http_client:
-            resp = await http_client.get(url, headers=headers)
-            resp.raise_for_status()
-            orders = resp.json()
-            open_orders = [o for o in orders if o.get("symbol") == symbol and o.get("status") in ("Working", "Accepted")]
-            if not open_orders:
-                return
-        if asyncio.get_event_loop().time() - start > timeout:
-            logging.warning(f"Timeout waiting for all open orders to clear for {symbol}.")
-            return
-        await asyncio.sleep(0.5)
+                # Log the retrieved accountSpec and accountId for debugging
+                logging.info(f"Retrieved accountSpec: {self.account_spec}")
+                logging.info(f"Retrieved accountId: {self.account_id}")
 
-def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price: float = None) -> dict:
-    logging.info(f"Raw alert text: {alert_text}")
-    try:
-        parsed_data = {}
-        if alert_text.startswith("="):
-            try:
-                json_part, remaining_text = alert_text[1:].split("\n", 1)
-                json_data = json.loads(json_part)
-                parsed_data.update(json_data)
-                alert_text = remaining_text
-            except (json.JSONDecodeError, ValueError) as e:
-                raise ValueError(f"Error parsing JSON-like structure: {e}")
+                if not self.account_id:
+                    logging.error("Failed to retrieve account ID. Account ID is None.")
+                    raise HTTPException(status_code=400, detail="Failed to retrieve account ID")
 
-        for line in alert_text.split("\n"):
-            if "=" in line:
-                key, value = line.split("=", 1)
-                key = key.strip()
-                value = value.strip()
-                parsed_data[key] = value
-            elif line.strip().upper() in ["BUY", "SELL"]:
-                parsed_data["action"] = line.strip().capitalize()
+                logging.info("Authentication successful. Access token, accountSpec, and account ID retrieved.")
+        except httpx.HTTPStatusError as e:
+            logging.error(f"Authentication failed: {e.response.text}")
+            raise HTTPException(status_code=e.response.status_code, detail="Authentication failed")
+        except Exception as e:
+            logging.error(f"Unexpected error during authentication: {e}")
+            raise HTTPException(status_code=500, detail="Internal server error during authentication")
 
-        logging.info(f"Parsed alert data: {parsed_data}")
+    async def place_order(self, symbol: str, action: str, quantity: int = 1, order_data: dict = None):
+        if not self.access_token:
+            await self.authenticate()
 
-        required_fields = ["symbol", "action"]
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json"
+        }
+
+        # Use the provided order_data if available, otherwise construct a default payload
+        order_payload = order_data or {
+            "accountId": self.account_id,
+            "action": action.capitalize(),  # Ensure "Buy" or "Sell"
+            "symbol": symbol,
+            "orderQty": quantity,
+            "orderType": "Limit",  # Default to "Limit" if not provided
+            "timeInForce": "GTC",
+            "isAutomated": True  # Optional field for automation
+        }
+
+        # Validate required fields in the payload
+        required_fields = ["accountId", "action", "symbol", "orderQty", "orderType"]
         for field in required_fields:
-            if field not in parsed_data or not parsed_data[field]:
-                raise ValueError(f"Missing or invalid field: {field}")
+            if field not in order_payload or not order_payload[field]:
+                logging.error(f"Missing required field '{field}' in order payload: {order_payload}")
+                raise HTTPException(status_code=400, detail=f"Missing required field '{field}' in order payload")
 
-        for target in ["T1", "T2", "T3", "STOP", "PRICE"]:
-            if target in parsed_data:
-                parsed_data[target] = float(parsed_data[target])
-
-        return parsed_data
-
-    except Exception as e:
-        logging.error(f"Error parsing alert: {e}")
-        raise ValueError(f"Error parsing alert: {e}")
-
-def hash_alert(data: dict) -> str:
-    alert_string = json.dumps(data, sort_keys=True)
-    return hashlib.sha256(alert_string.encode()).hexdigest()
-
-async def monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids):
-    """
-    Monitor the stop loss order and cancel associated take profit orders if the stop loss is hit.
-    """
-    logging.info(f"Monitoring SL order {sl_order_id} for execution.")
-    tp_cancelled = False
-    while True:
         try:
-            # Check the status of the SL order
-            url = f"https://demo-api.tradovate.com/v1/order/{sl_order_id}"
-            headers = {"Authorization": f"Bearer {client.access_token}"}
-            async with httpx.AsyncClient() as http_client:
-                response = await http_client.get(url, headers=headers)
+            async with httpx.AsyncClient() as client:
+                logging.debug(f"Sending order payload for {symbol} ({action}): {json.dumps(order_payload, indent=2)}")
+                r = await client.post(f"{BASE_URL}/order/placeorder", json=order_payload, headers=headers)
+                r.raise_for_status()
+                response_data = r.json()
+                logging.info(f"Order placement response for {symbol} ({action}): {json.dumps(response_data, indent=2)}")
+                return response_data
+        except httpx.HTTPStatusError as e:
+            logging.error(f"Order placement failed for {symbol} ({action}): {e.response.text}")
+            raise HTTPException(status_code=e.response.status_code, detail=f"Order placement failed: {e.response.text}")
+        except Exception as e:
+            logging.error(f"Unexpected error during order placement for {symbol} ({action}): {e}")
+            raise HTTPException(status_code=500, detail="Internal server error during order placement")
+
+    async def place_oso_order(self, order_payload: dict):
+        """
+        Places an OSO (Order Sends Order) order on Tradovate.
+
+        Args:
+            order_payload (dict): The JSON payload for the OSO order.
+
+        Returns:
+            dict: The response from the Tradovate API.
+        """
+        if not self.access_token:
+            await self.authenticate()
+
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json"
+        }
+
+        try:
+            async with httpx.AsyncClient() as client:
+                logging.debug(f"Sending OSO order payload: {json.dumps(order_payload, indent=2)}")
+                response = await client.post(f"{BASE_URL}/order/placeoso", json=order_payload, headers=headers)
                 response.raise_for_status()
-                order_status = response.json()
-
-            if order_status.get("status") == "Filled":
-                logging.info(f"SL order {sl_order_id} was filled. Cancelling TP orders: {tp_order_ids}")
-                # Cancel all TP orders
-                for tp_order_id in tp_order_ids:
-                    cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{tp_order_id}"
-                    async with httpx.AsyncClient() as http_client:
-                        await http_client.post(cancel_url, headers=headers)
-                tp_cancelled = True
-                break
-            elif order_status.get("status") in ["Cancelled", "Rejected"]:
-                logging.info(f"SL order {sl_order_id} was {order_status.get('status')}. Stopping monitoring.")
-                break
-            # If any TP orders are still open after SL is filled, force cancel
-            if tp_cancelled:
-                for tp_order_id in tp_order_ids:
-                    cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{tp_order_id}"
-                    async with httpx.AsyncClient() as http_client:
-                        await http_client.post(cancel_url, headers=headers)
-            await asyncio.sleep(1)  # Poll every second
+                response_data = response.json()
+                logging.info(f"OSO order response: {json.dumps(response_data, indent=2)}")
+                return response_data
+        except httpx.HTTPStatusError as e:
+            logging.error(f"OSO order placement failed: {e.response.text}")
+            raise HTTPException(status_code=e.response.status_code, detail=f"OSO order placement failed: {e.response.text}")
         except Exception as e:
-            logging.error(f"Error monitoring SL order {sl_order_id}: {e}")
-            await asyncio.sleep(5)  # Retry after a delay
-
-async def monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, symbol):
-    """
-    Monitor TP orders. As each TP is filled, reduce the SL order size. If all TPs are filled, cancel the SL order.
-    """
-    remaining_qty = sl_order_qty
-    filled_tp = set()
-    logging.info(f"Monitoring TP orders {tp_order_ids} to adjust SL order {sl_order_id}.")
-    while True:
-        try:
-            all_filled = True
-            for idx, tp_order_id in enumerate(tp_order_ids):
-                if tp_order_id in filled_tp:
-                    continue
-                url = f"https://demo-api.tradovate.com/v1/order/{tp_order_id}"
-                headers = {"Authorization": f"Bearer {client.access_token}"}
-                async with httpx.AsyncClient() as http_client:
-                    response = await http_client.get(url, headers=headers)
-                    response.raise_for_status()
-                    order_status = response.json()
-                if order_status.get("status") == "Filled":
-                    filled_tp.add(tp_order_id)
-                    remaining_qty -= 1
-                    logging.info(f"TP order {tp_order_id} filled. Adjusting SL order {sl_order_id} to qty {remaining_qty}.")
-                    # Modify SL order to new qty if contracts remain
-                    if remaining_qty > 0:
-                        mod_url = f"https://demo-api.tradovate.com/v1/order/modify/{sl_order_id}"
-                        payload = {"orderQty": remaining_qty}
-                        async with httpx.AsyncClient() as http_client:
-                            await http_client.post(mod_url, headers=headers, json=payload)
-                    else:
-                        # All TPs filled, cancel SL
-                        cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{sl_order_id}"
-                        async with httpx.AsyncClient() as http_client:
-                            await http_client.post(cancel_url, headers=headers)
-                        logging.info(f"All TPs filled, SL order {sl_order_id} cancelled.")
-                        return
-                elif order_status.get("status") not in ["Filled", "Working"]:
-                    all_filled = False
-            if len(filled_tp) == len(tp_order_ids):
-                # All TPs filled, SL should be cancelled already
-                return
-            await asyncio.sleep(1)
-        except Exception as e:
-            logging.error(f"Error monitoring TP orders: {e}")
-            await asyncio.sleep(5)
-
-# Ensure deduplication logic is robust
-@app.post("/webhook")
-async def webhook(req: Request):
-    global recent_alert_hashes
-    logging.info("Webhook endpoint hit.")
-    try:
-        content_type = req.headers.get("content-type")
-        raw_body = await req.body()
-
-        latest_price = None
-
-        if content_type == "application/json":
-            data = await req.json()
-        elif content_type.startswith("text/plain"):
-            text_data = raw_body.decode("utf-8")
-            if "symbol=" in text_data:
-                latest_price = await get_latest_price(text_data.split("symbol=")[1].split(",")[0])
-            data = parse_alert_to_tradovate_json(text_data, client.account_id, latest_price)
-        else:
-            raise HTTPException(status_code=400, detail="Unsupported content type")
-
-        if WEBHOOK_SECRET is None:
-            raise HTTPException(status_code=500, detail="Missing WEBHOOK_SECRET")
-
-        # Deduplication logic
-        current_hash = hash_alert(data)
-        if current_hash in recent_alert_hashes:
-            logging.warning("Duplicate alert received. Skipping execution.")
-            return {"status": "duplicate", "detail": "Duplicate alert skipped."}
-        recent_alert_hashes.add(current_hash)
-        if len(recent_alert_hashes) > MAX_HASHES:
-            recent_alert_hashes = set(list(recent_alert_hashes)[-MAX_HASHES:])
-
-        action = data["action"].capitalize()
-        symbol = data["symbol"]
-        if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
-            symbol = "NQM5"
-
-        # --- Initialize variables for tracking orders
-        order_results = []
-
-        # --- Ensure all previous orders and positions are closed before new entry ---
-        logging.info(f"Flattening all orders and positions for symbol: {symbol}")
-        await cancel_all_orders(symbol)
-        await flatten_position(symbol)
-        await wait_until_no_open_orders(symbol, timeout=10)
-        logging.info("All orders and positions flattened successfully.")
-
-        # --- Process the most recent alert ---
-        # Fetch existing orders
-        order_url = f"https://demo-api.tradovate.com/v1/order/list"
-        headers = {"Authorization": f"Bearer {client.access_token}"}
-        async with httpx.AsyncClient() as http_http_client:
-            order_resp = await http_http_client.get(order_url, headers=headers)
-            order_resp.raise_for_status()
-            orders = order_resp.json()
-
-        # Identify current alert's order labels
-        current_labels = {"TP1", "ENTRY", "STOP"}
-
-        # Identify orders to delete
-        orders_to_delete = [
-            o for o in orders
-            if o.get("symbol") == symbol and o.get("label") not in current_labels
-        ]
-
-        # Delete unnecessary orders
-        for order in orders_to_delete:
-            delete_url = f"https://demo-api.tradovate.com/v1/order/{order['id']}"
-            try:
-                async with httpx.AsyncClient() as http_client:
-                    delete_resp = await http_client.delete(delete_url, headers=headers)
-                    delete_resp.raise_for_status()
-                    logging.info(f"Deleted order: {order['label']} (ID: {order['id']})")
-            except Exception as e:
-                logging.error(f"Error deleting order {order['label']} (ID: {order['id']}): {e}")
-
-        # --- Place only the T1 limit order (contract size = 1) ---
-        t1_order_id = None
-        stop_order_id = None
-        entry_order_id = None
-
-        # Place T1 limit order if present
-        if "T1" in data and isinstance(data["T1"], (int, float)) and data["T1"] > 0:
-            order_payload = {
-                "label": "TP1",
-                "action": "Sell" if action.lower() == "buy" else "Buy",
-                "orderType": "Limit",
-                "price": data["T1"],
-                "orderQty": 1,
-                "accountId": client.account_id,
-                "symbol": symbol,
-                "timeInForce": "GTC",
-                "isAutomated": True
-            }
-            logging.info(f"Placing limit order for TP1 at price: {data['T1']}")
-            try:
-                result = await client.place_order(
-                    symbol=symbol,
-                    action=order_payload["action"],
-                    quantity=order_payload["orderQty"],
-                    order_data=order_payload
-                )
-                logging.info(f"Limit order placed successfully for TP1: {result}")
-                order_results.append({"TP1": result})
-                t1_order_id = result.get("orderId") or result.get("id")
-            except Exception as e:
-                logging.error(f"Error placing limit order for TP1: {e}")
-
-        # Place ENTRY stop order (contract size = 1)
-        if "PRICE" in data:
-            order_payload = {
-                "label": "ENTRY",
-                "action": action,
-                "orderType": "Stop",
-                "stopPrice": data["PRICE"],
-                "orderQty": 1,
-                "accountId": client.account_id,
-                "symbol": symbol,
-                "timeInForce": "GTC",
-                "isAutomated": True
-            }
-            logging.info(f"Placing stop order for entry at price: {data['PRICE']}")
-            try:
-                result = await client.place_order(
-                    symbol=symbol,
-                    action=order_payload["action"],
-                    quantity=order_payload["orderQty"],
-                    order_data=order_payload
-                )
-                logging.info(f"Stop order for entry placed successfully: {result}")
-                order_results.append({"ENTRY": result})
-                entry_order_id = result.get("orderId") or result.get("id")
-            except Exception as e:
-                logging.error(f"Error placing stop order for entry: {e}")
-
-        # Place STOP loss order (contract size = 1)
-        if "STOP" in data:
-            order_payload = {
-                "label": "STOP",
-                "action": "Sell" if action.lower() == "buy" else "Buy",
-                "orderType": "Stop",
-                "stopPrice": data["STOP"],
-                "orderQty": 1,
-                "accountId": client.account_id,
-                "symbol": symbol,
-                "timeInForce": "GTC",
-                "isAutomated": True
-            }
-            logging.info(f"Placing stop loss order at price: {data['STOP']}")
-            try:
-                result = await client.place_order(
-                    symbol=symbol,
-                    action=order_payload["action"],
-                    quantity=order_payload["orderQty"],
-                    order_data=order_payload
-                )
-                logging.info(f"Stop loss order placed successfully: {result}")
-                order_results.append({"STOP": result})
-                stop_order_id = result.get("orderId") or result.get("id")
-            except Exception as e:
-                logging.error(f"Error placing stop loss order: {e}")
-
-        # --- Monitor TP1 and STOP orders, cancel the other if one is filled ---
-        async def monitor_and_cancel(tp1_id, stop_id):
-            if not tp1_id or not stop_id:
-                logging.warning("Cannot monitor/cancel TP1 and STOP orders: missing order IDs.")
-                return
-            logging.info(f"Starting monitor for TP1 order {tp1_id} and STOP order {stop_id}.")
-            while True:
-                try:
-                    # Check TP1 status
-                    url_tp1 = f"https://demo-api.tradovate.com/v1/order/{tp1_id}"
-                    url_stop = f"https://demo-api.tradovate.com/v1/order/{stop_id}"
-                    headers = {"Authorization": f"Bearer {client.access_token}"}
-                    async with httpx.AsyncClient() as http_client:
-                        resp_tp1 = await http_client.get(url_tp1, headers=headers)
-                        resp_tp1.raise_for_status()
-                        tp1_status = resp_tp1.json()
-                        resp_stop = await http_client.get(url_stop, headers=headers)
-                        resp_stop.raise_for_status()
-                        stop_status = resp_stop.json()
-                    if tp1_status.get("status") == "Filled":
-                        # Cancel STOP
-                        logging.info(f"TP1 order {tp1_id} filled. Cancelling STOP order {stop_id}.")
-                        cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{stop_id}"
-                        async with httpx.AsyncClient() as http_client:
-                            await http_client.post(cancel_url, headers=headers)
-                        break
-                    elif stop_status.get("status") == "Filled":
-                        # Cancel TP1
-                        logging.info(f"STOP order {stop_id} filled. Cancelling TP1 order {tp1_id}.")
-                        cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{tp1_id}"
-                        async with httpx.AsyncClient() as http_client:
-                            await http_client.post(cancel_url, headers=headers)
-                        break
-                    await asyncio.sleep(1)
-                except Exception as e:
-                    logging.error(f"Error monitoring/cancelling TP1 and STOP orders: {e}")
-                    await asyncio.sleep(5)
-
-        # Start monitor in background
-        if t1_order_id and stop_order_id:
-            asyncio.create_task(monitor_and_cancel(t1_order_id, stop_order_id))
-
-        logging.info("Order plan execution completed")
-        return {"status": "success", "order_responses": order_results}
-    except Exception as e:
-        logging.error(f"Unexpected error in webhook: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-if __name__ == "__main__":
-    port = int(os.getenv("PORT", 10000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
+            logging.error(f"Unexpected error during OSO order placement: {e}")
+            raise HTTPException(status_code=500, detail="Internal server error during OSO order placement")
