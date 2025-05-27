@@ -509,7 +509,9 @@ async def webhook(req: Request):
                 except Exception as e:
                     logging.error(f"Error checking latest price for ENTRY fallback: {e}")
 
-            logging.info(f"Placing order: {order_payload}")
+            # Add detailed logging for order_payload
+            logging.info(f"Constructed order payload: {order_payload}")
+
             try:
                 result = await client.place_order(
                     symbol=symbol,
@@ -525,6 +527,7 @@ async def webhook(req: Request):
                 order_results.append({order["label"]: result})
             except Exception as e:
                 logging.error(f"Error placing order {order['label']}: {e}")
+                logging.error(f"Failed order payload: {order_payload}")
 
         logging.info("Order plan execution completed")
         return {"status": "success", "order_responses": order_results}
