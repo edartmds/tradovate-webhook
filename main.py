@@ -42,6 +42,39 @@ currently_processing_symbol = None
 async def startup_event():
     await client.authenticate()
 
+async def get_current_nq_symbol():
+    """
+    Get the current front month NASDAQ futures symbol from Tradovate.
+    Try common symbols and return the first one that works.
+    """
+    possible_symbols = [
+        "NQZ24",  # December 2024
+        "NQH25",  # March 2025
+        "NQM25",  # June 2025
+        "NQU25",  # September 2025
+        "NQZ25",  # December 2025
+    ]
+    
+    headers = {"Authorization": f"Bearer {client.access_token}"}
+    
+    for symbol in possible_symbols:
+        try:
+            url = f"https://demo-api.tradovate.com/v1/marketdata/quote/{symbol}"
+            async with httpx.AsyncClient() as http_client:
+                response = await http_client.get(url, headers=headers)
+                if response.status_code == 200:
+                    data = response.json()
+                    if data.get("last") is not None:
+                        logging.info(f"Found valid NQ symbol: {symbol} with price: {data.get('last')}")
+                        return symbol
+        except Exception as e:
+            logging.debug(f"Symbol {symbol} not valid: {e}")
+            continue
+    
+    # Fallback to most likely current symbol
+    logging.warning("Could not find valid NQ symbol, defaulting to NQZ24")
+    return "NQZ24"
+
 async def get_latest_price(symbol: str):
     url = f"https://demo-api.tradovate.com/v1/marketdata/quote/{symbol}"
     headers = {"Authorization": f"Bearer {client.access_token}"}
@@ -211,23 +244,24 @@ async def place_oco_order(symbol, action, entry_price, take_profit_price, stop_l
     # Determine the opposite action for TP and SL
     opposite_action = "Sell" if action.lower() == "buy" else "Buy"
     
+    # Build OCO payload according to Tradovate's format
     oco_payload = {
         "accountId": client.account_id,
         "symbol": symbol,
+        "action": opposite_action,
         "orderQty": quantity,
+        "orderType": "Limit",
+        "price": take_profit_price,
         "timeInForce": "GTC",
-        "orders": [
-            {
-                "action": opposite_action,
-                "orderType": "Limit",
-                "price": take_profit_price
-            },
-            {
-                "action": opposite_action,
-                "orderType": "Stop",
-                "stopPrice": stop_loss_price
-            }
-        ]
+        "other": {
+            "accountId": client.account_id,
+            "symbol": symbol,
+            "action": opposite_action,
+            "orderQty": quantity,
+            "orderType": "Stop",
+            "stopPrice": stop_loss_price,
+            "timeInForce": "GTC"
+        }
     }
     
     try:
@@ -267,51 +301,68 @@ async def place_oso_order(symbol, action, entry_price, take_profit_price, stop_l
     # Determine the opposite action for TP and SL
     opposite_action = "Sell" if is_buy else "Buy"
     
-    # Primary order (entry)
+    # Build the OSO payload according to Tradovate's format
     if use_market_entry:
-        primary_order = {
+        oso_payload = {
             "accountId": client.account_id,
             "symbol": symbol,
             "action": action,
             "orderQty": quantity,
             "orderType": "Market",
-            "timeInForce": "GTC"
+            "timeInForce": "GTC",
+            "other": [
+                {
+                    "accountId": client.account_id,
+                    "symbol": symbol,
+                    "action": opposite_action,
+                    "orderQty": quantity,
+                    "orderType": "Limit",
+                    "price": take_profit_price,
+                    "timeInForce": "GTC"
+                },
+                {
+                    "accountId": client.account_id,
+                    "symbol": symbol,
+                    "action": opposite_action,
+                    "orderQty": quantity,
+                    "orderType": "Stop",
+                    "stopPrice": stop_loss_price,
+                    "timeInForce": "GTC"
+                }
+            ]
         }
         logging.info(f"Using market order for entry (current: {current_price}, entry: {entry_price})")
     else:
-        primary_order = {
+        oso_payload = {
             "accountId": client.account_id,
             "symbol": symbol,
             "action": action,
             "orderQty": quantity,
             "orderType": "Stop",
             "stopPrice": entry_price,
-            "timeInForce": "GTC"
+            "timeInForce": "GTC",
+            "other": [
+                {
+                    "accountId": client.account_id,
+                    "symbol": symbol,
+                    "action": opposite_action,
+                    "orderQty": quantity,
+                    "orderType": "Limit",
+                    "price": take_profit_price,
+                    "timeInForce": "GTC"
+                },
+                {
+                    "accountId": client.account_id,
+                    "symbol": symbol,
+                    "action": opposite_action,
+                    "orderQty": quantity,
+                    "orderType": "Stop",
+                    "stopPrice": stop_loss_price,
+                    "timeInForce": "GTC"
+                }
+            ]
         }
         logging.info(f"Using stop order for entry at price: {entry_price}")
-    
-    # OCO orders to be placed when primary fills
-    oco_orders = [
-        {
-            "action": opposite_action,
-            "orderType": "Limit",
-            "price": take_profit_price,
-            "orderQty": quantity,
-            "timeInForce": "GTC"
-        },
-        {
-            "action": opposite_action,
-            "orderType": "Stop",
-            "stopPrice": stop_loss_price,
-            "orderQty": quantity,
-            "timeInForce": "GTC"
-        }
-    ]
-    
-    oso_payload = {
-        "primaryOrder": primary_order,
-        "ocoOrders": oco_orders
-    }
     
     try:
         async with httpx.AsyncClient() as http_client:
@@ -512,8 +563,7 @@ async def webhook(req: Request):
     global recent_alert_hashes
     global last_alert
     global currently_processing_symbol
-    
-    # Use global lock to ensure only one alert processes at a time
+      # Use global lock to ensure only one alert processes at a time
     async with processing_lock:
         logging.info("Webhook endpoint hit - acquired processing lock.")
         try:
@@ -540,14 +590,16 @@ async def webhook(req: Request):
             if current_hash in recent_alert_hashes:
                 logging.warning("Duplicate alert received. Skipping execution.")
                 return {"status": "duplicate", "detail": "Duplicate alert skipped."}
+            
             recent_alert_hashes.add(current_hash)
             if len(recent_alert_hashes) > MAX_HASHES:
                 recent_alert_hashes = set(list(recent_alert_hashes)[-MAX_HASHES:])
 
             action = data["action"].capitalize()
             symbol = data["symbol"]
-            if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
-                symbol = "NQM5"
+            # Convert to proper Tradovate symbol format
+            if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!" or symbol == "NQM5":
+                symbol = await get_current_nq_symbol()  # Get current front month contract
 
             # Check if another symbol is currently being processed
             if currently_processing_symbol is not None and currently_processing_symbol != symbol:
