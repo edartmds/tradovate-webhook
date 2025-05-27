@@ -509,6 +509,17 @@ async def webhook(req: Request):
                 except Exception as e:
                     logging.error(f"Error checking latest price for ENTRY fallback: {e}")
 
+            # Handle fallback when market data is unavailable
+            if latest_price is None:
+                logging.warning(f"Market data unavailable for {symbol}. Proceeding with default order logic.")
+                # Default logic for placing orders without market data
+                if order["label"] == "ENTRY" and order["orderType"] == "Stop":
+                    stop_price = order.get("stopPrice")
+                    if stop_price is not None:
+                        logging.info(f"Placing ENTRY stop order without market data (stop: {stop_price}).")
+                        order_payload["orderType"] = "Stop"
+                        order_payload["stopPrice"] = stop_price
+
             # Add detailed logging for order_payload
             logging.info(f"Constructed order payload: {order_payload}")
 
