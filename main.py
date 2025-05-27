@@ -1,3 +1,70 @@
+async def monitor_all_orders(order_tracking, symbol):
+    """
+    Monitor all orders and manage their relationships:
+    - If ENTRY is filled, cancel all other orders and place TP and STOP orders
+    - If TP is filled, cancel STOP
+    - If STOP is filled, cancel TP
+    """
+    logging.info(f"Starting comprehensive order monitoring for {symbol}")
+    entry_filled = False
+    
+    while True:
+        try:
+            headers = {"Authorization": f"Bearer {client.access_token}"}
+            active_orders = {}
+            
+            # Check status of all tracked orders
+            for label, order_id in order_tracking.items():
+                if order_id is None:
+                    continue
+                    
+                url = f"https://demo-api.tradovate.com/v1/order/{order_id}"
+                async with httpx.AsyncClient() as http_client:
+                    response = await http_client.get(url, headers=headers)
+                    response.raise_for_status()
+                    order_status = response.json()
+                    
+                status = order_status.get("status")
+                logging.info(f"Order {label} ({order_id}) status: {status}")
+                
+                if status == "Filled":
+                    if label == "ENTRY" and not entry_filled:
+                        logging.info(f"ENTRY order filled! Now we're in position.")
+                        entry_filled = True
+                        # Don't cancel TP and STOP orders since we want them active now
+                        
+                    elif label == "TP1" and entry_filled:
+                        logging.info(f"TP1 order filled! Cancelling STOP order.")
+                        if order_tracking.get("STOP"):
+                            cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{order_tracking['STOP']}"
+                            async with httpx.AsyncClient() as http_client:
+                                await http_client.post(cancel_url, headers=headers)
+                        return  # Exit monitoring
+                        
+                    elif label == "STOP" and entry_filled:
+                        logging.info(f"STOP order filled! Cancelling TP orders.")
+                        if order_tracking.get("TP1"):
+                            cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{order_tracking['TP1']}"
+                            async with httpx.AsyncClient() as http_client:
+                                await http_client.post(cancel_url, headers=headers)
+                        return  # Exit monitoring
+                        
+                elif status in ["Working", "Accepted"]:
+                    active_orders[label] = order_id
+                elif status in ["Cancelled", "Rejected"]:
+                    logging.info(f"Order {label} was {status}")
+                    
+            # If no active orders remain, stop monitoring
+            if not active_orders:
+                logging.info("No active orders remaining. Stopping monitoring.")
+                return
+                
+            await asyncio.sleep(1)
+            
+        except Exception as e:
+            logging.error(f"Error in comprehensive order monitoring: {e}")
+            await asyncio.sleep(5)
+
 async def monitor_single_tp_and_stop(tp_order_id, sl_order_id):
     """
     For single-contract trades: if TP is filled, cancel STOP; if STOP is filled, cancel TP.
@@ -132,10 +199,12 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price
                 key = key.strip()
                 value = value.strip()
                 parsed_data[key] = value
+                logging.info(f"Parsed {key} = {value}")
             elif line.strip().upper() in ["BUY", "SELL"]:
                 parsed_data["action"] = line.strip().capitalize()
+                logging.info(f"Parsed action = {parsed_data['action']}")
 
-        logging.info(f"Parsed alert data: {parsed_data}")
+        logging.info(f"Complete parsed alert data: {parsed_data}")
 
         required_fields = ["symbol", "action"]
         for field in required_fields:
@@ -145,6 +214,7 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price
         for target in ["T1", "STOP", "PRICE"]:
             if target in parsed_data:
                 parsed_data[target] = float(parsed_data[target])
+                logging.info(f"Converted {target} to float: {parsed_data[target]}")
 
         return parsed_data
 
@@ -302,9 +372,7 @@ async def webhook(req: Request):
             for pos in positions:
                 if pos.get("symbol") == symbol and abs(pos.get("netPos", 0)) > 0:
                     logging.warning(f"Position for {symbol} is not flat after flatten. Skipping order placement.")
-                    return {"status": "skipped", "detail": "Position not flat after flatten."}
-
-        # Check for open orders (should be none)
+                    return {"status": "skipped", "detail": "Position not flat after flatten."}        # Check for open orders (should be none)
         order_url = f"https://demo-api.tradovate.com/v1/order/list"
         async with httpx.AsyncClient() as http_http_client:
             order_resp = await http_http_client.get(order_url, headers=headers)
@@ -313,31 +381,25 @@ async def webhook(req: Request):
             open_orders = [o for o in orders if o.get("symbol") == symbol and o.get("status") in ("Working", "Accepted")]
             if open_orders:
                 logging.warning(f"Open orders for {symbol} still exist after cancel. Skipping order placement.")
-                return {"status": "skipped", "detail": "Open orders still exist after cancel."}
-
-        # Initialize the order plan
+                return {"status": "skipped", "detail": "Open orders still exist after cancel."}        # Initialize the order plan
         order_plan = []
+        logging.info("Creating order plan based on alert data")
 
-        # Ensure no duplicate orders are added to the order plan
-        existing_order_labels = {o.get("label") for o in open_orders}
-
-        # Add limit orders for T1, T2, T3
-        for i in range(1):
-            key = f"T{i}"
-            label = f"TP{i}"
-            if key in data and label not in existing_order_labels:
-                order_plan.append({
-                    "label": label,
-                    "action": "Sell" if action.lower() == "buy" else "Buy",
-                    "orderType": "Limit",
-                    "price": data[key],
-                    "qty": 1
-                })
-                existing_order_labels.add(label)  # Update the set to prevent duplicates
-                logging.info(f"Added limit order for {label}: {data[key]}")
+        # Add limit orders for T1 (Take Profit)
+        if "T1" in data:
+            order_plan.append({
+                "label": "TP1",
+                "action": "Sell" if action.lower() == "buy" else "Buy",
+                "orderType": "Limit",
+                "price": data["T1"],
+                "qty": 1
+            })
+            logging.info(f"Added limit order for TP1: {data['T1']}")
+        else:
+            logging.warning("T1 not found in alert data - no take profit order will be placed")
 
         # Add stop order for entry
-        if "PRICE" in data and "ENTRY" not in existing_order_labels:
+        if "PRICE" in data:
             order_plan.append({
                 "label": "ENTRY",
                 "action": action,
@@ -345,29 +407,31 @@ async def webhook(req: Request):
                 "stopPrice": data["PRICE"],
                 "qty": 1
             })
-            existing_order_labels.add("ENTRY")  # Update the set to prevent duplicates
             logging.info(f"Added stop order for entry at price: {data['PRICE']}")
+        else:
+            logging.warning("PRICE not found in alert data - no entry order will be placed")
 
         # Add stop loss order
-        if "STOP" in data and "STOP" not in existing_order_labels:
+        if "STOP" in data:
             order_plan.append({
                 "label": "STOP",
                 "action": "Sell" if action.lower() == "buy" else "Buy",
                 "orderType": "Stop",
                 "stopPrice": data["STOP"],
-                "qty": 1
-            })
-            existing_order_labels.add("STOP")  # Update the set to prevent duplicates
+                "qty": 1            })
             logging.info(f"Added stop loss order at price: {data['STOP']}")
+        else:
+            logging.warning("STOP not found in alert data - no stop loss order will be placed")
+
+        logging.info(f"Order plan created with {len(order_plan)} orders")
 
         # Initialize variables for tracking orders
         order_results = []
-        sl_order_id = None
-        tp_order_ids = []
-        sl_order_qty = 0
-
-        # Process the alert and place orders
-        logging.info("Processing alert for order placement")
+        order_tracking = {
+            "ENTRY": None,
+            "TP1": None, 
+            "STOP": None
+        }
 
         # Execute the order plan
         logging.info("Executing order plan")
@@ -394,25 +458,17 @@ async def webhook(req: Request):
                 )
                 logging.info(f"Order placed successfully: {result}")
 
-                # Track stop-loss and take-profit orders
-                if order["label"] == "STOP":
-                    sl_order_id = result.get("id")
-                    sl_order_qty = order["qty"]
-                elif order["label"].startswith("TP"):
-                    tp_order_ids.append(result.get("id"))
-
+                # Track the order ID
+                order_id = result.get("id")
+                order_tracking[order["label"]] = order_id
+                
                 order_results.append({order["label"]: result})
+                
             except Exception as e:
                 logging.error(f"Error placing order {order['label']}: {e}")
 
-
-        # Monitor for single-contract scenario: if only one TP and one STOP
-        if sl_order_id and len(tp_order_ids) == 1:
-            asyncio.create_task(monitor_single_tp_and_stop(tp_order_ids[0], sl_order_id))
-        # If more than one TP, use the old logic (for future multi-TP support)
-        elif sl_order_id and tp_order_ids:
-            asyncio.create_task(monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids))
-            asyncio.create_task(monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, symbol))
+        # Start comprehensive monitoring of all orders
+        asyncio.create_task(monitor_all_orders(order_tracking, symbol))
 
         logging.info("Order plan execution completed")
         return {"status": "success", "order_responses": order_results}
