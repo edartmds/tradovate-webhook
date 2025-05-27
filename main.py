@@ -227,8 +227,17 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                         logging.info(f"TP1 order filled! Cancelling STOP order.")
                         if order_tracking.get("STOP"):
                             cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{order_tracking['STOP']}"
-                            async with httpx.AsyncClient() as http_client:
-                                await http_client.post(cancel_url, headers=headers)
+                            try:
+                                async with httpx.AsyncClient() as http_client:
+                                    resp = await http_client.post(cancel_url, headers=headers)
+                                    if resp.status_code == 200:
+                                        logging.info(f"STOP order {order_tracking['STOP']} cancelled after TP1 fill.")
+                                    else:
+                                        logging.warning(f"Failed to cancel STOP order {order_tracking['STOP']} after TP1 fill. Status: {resp.status_code}")
+                            except Exception as e:
+                                logging.error(f"Exception while cancelling STOP order after TP1 fill: {e}")
+                        else:
+                            logging.info("No STOP order to cancel after TP1 fill.")
                         return  # Exit monitoring
                         
                     elif label == "STOP" and entry_filled:
