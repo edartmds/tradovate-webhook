@@ -392,9 +392,7 @@ async def webhook(req: Request):
 
         logging.info(f"Order plan created with {len(order_plan)} orders (STOP order placed at the same time as ENTRY)")
         
-        # Log opposite direction handling result
-        if is_opposite_direction:
-            logging.info("Successfully handled opposite direction alert by flattening existing position")
+        # Remove reference to is_opposite_direction (no longer used)
         
         # Initialize variables for tracking orders
         order_results = []
