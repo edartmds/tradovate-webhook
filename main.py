@@ -451,19 +451,23 @@ async def webhook(req: Request):
             logging.warning("PRICE not found in alert data - no entry order will be placed")
 
         # Add stop loss order (STOP) at the same time as ENTRY and TP1
+        # Prepare STOP LOSS order data (to be placed after ENTRY is filled)
         if "STOP" in data:
-            order_plan.append({
-                "label": "STOP",
+            stop_order_data = {
+                "accountId": client.account_id,
+                "symbol": symbol,
                 "action": "Sell" if action.lower() == "buy" else "Buy",
+                "orderQty": 1,
                 "orderType": "Stop",
                 "stopPrice": data["STOP"],
-                "qty": 1
-            })
-            logging.info(f"Added stop loss order for STOP at price: {data['STOP']}")
+                "timeInForce": "GTC",
+                "isAutomated": True
+            }
+            logging.info(f"Prepared STOP LOSS order data for after ENTRY fill: {stop_order_data}")
         else:
             logging.warning("STOP not found in alert data - no stop loss order will be placed")
 
-        logging.info(f"Order plan created with {len(order_plan)} orders (STOP order placed at the same time as ENTRY)")
+        logging.info(f"Order plan created with {len(order_plan)} orders (STOP LOSS will be placed after ENTRY fill)")
         
         # Remove reference to is_opposite_direction (no longer used)
         
@@ -539,6 +543,12 @@ async def webhook(req: Request):
             except Exception as e:
                 logging.error(f"Error placing order {order['label']}: {e}")
                 logging.error(f"Failed order payload: {order_payload}")
+
+        # Monitor orders: place STOP LOSS after ENTRY is filled, cancel opposite when one is filled
+        try:
+            await monitor_all_orders(order_tracking, symbol, stop_order_data)
+        except Exception as e:
+            logging.error(f"Error monitoring orders: {e}")
 
         logging.info("Order plan execution completed")
         return {"status": "success", "order_responses": order_results}
