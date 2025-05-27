@@ -100,6 +100,7 @@ async def wait_until_no_open_orders(symbol, timeout=10):
     Poll Tradovate until there are no open orders for the symbol, or until timeout (seconds).
     """
     url = f"https://demo-api.tradovate.com/v1/order/list"
+    cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel"
     headers = {"Authorization": f"Bearer {client.access_token}"}
     start = asyncio.get_event_loop().time()
     while True:
@@ -107,8 +108,22 @@ async def wait_until_no_open_orders(symbol, timeout=10):
             resp = await http_client.get(url, headers=headers)
             resp.raise_for_status()
             orders = resp.json()
-            open_orders = [o for o in orders if o.get("symbol") == symbol and o.get("status") in ("Working", "Accepted")]
-            if not open_orders:
+            # Cancel any open orders for this symbol that are not Filled/Cancelled/Rejected
+            open_orders = [o for o in orders if o.get("symbol") == symbol and o.get("status") not in ("Filled", "Cancelled", "Rejected")]
+            for order in open_orders:
+                oid = order.get("id")
+                if oid:
+                    try:
+                        await http_client.post(f"{cancel_url}/{oid}", headers=headers)
+                        logging.info(f"wait_until_no_open_orders: Cancelled lingering order {oid} for {symbol} (status: {order.get('status')})")
+                    except Exception as e:
+                        logging.error(f"wait_until_no_open_orders: Failed to cancel lingering order {oid} for {symbol}: {e}")
+            # After cancel attempts, check if any remain
+            resp2 = await http_client.get(url, headers=headers)
+            resp2.raise_for_status()
+            orders2 = resp2.json()
+            still_open = [o for o in orders2 if o.get("symbol") == symbol and o.get("status") not in ("Filled", "Cancelled", "Rejected")]
+            if not still_open:
                 return
         if asyncio.get_event_loop().time() - start > timeout:
             logging.warning(f"Timeout waiting for all open orders to clear for {symbol}.")
