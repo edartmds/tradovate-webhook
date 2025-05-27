@@ -343,16 +343,43 @@ async def webhook(req: Request):
         else:
             logging.warning("T1 not found in alert data - no take profit order will be placed")
 
-        # Add stop order for entry
+        # Add stop order for entry, but check if price is already at/through the stop level
         if "PRICE" in data:
-            order_plan.append({
-                "label": "ENTRY",
-                "action": action,
-                "orderType": "Stop",
-                "stopPrice": data["PRICE"],
-                "qty": 1
-            })
-            logging.info(f"Added stop order for entry at price: {data['PRICE']}")
+            try:
+                # Get latest price for the symbol
+                latest_price = await get_latest_price(symbol)
+                entry_price = float(data["PRICE"])
+                is_buy = action.lower() == "buy"
+                # For BUY: if market is at/above entry, use market order. For SELL: if at/below, use market order.
+                use_market = (is_buy and latest_price >= entry_price) or (not is_buy and latest_price <= entry_price)
+                if use_market:
+                    order_plan.append({
+                        "label": "ENTRY",
+                        "action": action,
+                        "orderType": "Market",
+                        "qty": 1
+                    })
+                    logging.info(f"Market is at/through entry stop level (latest: {latest_price}, entry: {entry_price}). Placing ENTRY as market order.")
+                else:
+                    order_plan.append({
+                        "label": "ENTRY",
+                        "action": action,
+                        "orderType": "Stop",
+                        "stopPrice": entry_price,
+                        "qty": 1
+                    })
+                    logging.info(f"Added stop order for entry at price: {entry_price}")
+            except Exception as e:
+                logging.error(f"Error checking market price for ENTRY order: {e}")
+                # Fallback: place stop order as before
+                order_plan.append({
+                    "label": "ENTRY",
+                    "action": action,
+                    "orderType": "Stop",
+                    "stopPrice": data["PRICE"],
+                    "qty": 1
+                })
+                logging.info(f"Fallback: Added stop order for entry at price: {data['PRICE']}")
         else:
             logging.warning("PRICE not found in alert data - no entry order will be placed")
 
@@ -383,8 +410,8 @@ async def webhook(req: Request):
             "STOP": None  # Will be set after ENTRY is filled
         }
 
-        # Execute the order plan
-        logging.info("Executing order plan")
+        # Execute the order plan with ENTRY fallback logic
+        logging.info("Executing order plan with ENTRY fallback logic")
         for order in order_plan:
             order_payload = {
                 "accountId": client.account_id,
@@ -398,6 +425,23 @@ async def webhook(req: Request):
                 "isAutomated": True
             }
 
+            # ENTRY fallback: If ENTRY is a stop order and price is already at/through stop, use market order
+            if order["label"] == "ENTRY" and order["orderType"] == "Stop":
+                try:
+                    # Get latest price
+                    latest_price = await get_latest_price(symbol)
+                    stop_price = order.get("stopPrice")
+                    if stop_price is not None:
+                        # For BUY, if price >= stop, for SELL, if price <= stop
+                        if (order["action"].lower() == "buy" and latest_price >= stop_price) or \
+                           (order["action"].lower() == "sell" and latest_price <= stop_price):
+                            logging.info(f"ENTRY stop order would be triggered immediately (latest: {latest_price}, stop: {stop_price}). Placing as MARKET order instead.")
+                            order_payload["orderType"] = "Market"
+                            order_payload.pop("stopPrice", None)
+                            order_payload.pop("price", None)
+                except Exception as e:
+                    logging.error(f"Error checking latest price for ENTRY fallback: {e}")
+
             logging.info(f"Placing order: {order_payload}")
             try:
                 result = await client.place_order(
@@ -407,17 +451,14 @@ async def webhook(req: Request):
                     order_data=order_payload
                 )
                 logging.info(f"Order placed successfully: {result}")
-                # Extra debug: print the full API response for ENTRY
                 if order['label'] == 'ENTRY':
                     logging.info(f"ENTRY order API response: {result}")
-                # Track the order ID
                 order_id = result.get("id")
                 order_tracking[order["label"]] = order_id
                 order_results.append({order["label"]: result})
             except Exception as e:
                 logging.error(f"Error placing order {order['label']}: {e}")
-        
-        # No need to monitor orders for STOP placement anymore
+
         logging.info("Order plan execution completed")
         return {"status": "success", "order_responses": order_results}
     except Exception as e:
