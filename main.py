@@ -308,6 +308,12 @@ async def webhook(req: Request):
         if WEBHOOK_SECRET is None:
             raise HTTPException(status_code=500, detail="Missing WEBHOOK_SECRET")
 
+        # Extract symbol and action from the alert data
+        symbol = data.get("symbol")
+        action = data.get("action")
+        if not symbol or not action:
+            raise HTTPException(status_code=400, detail="Missing required fields: symbol or action")
+
         # Reset order tracking for the new alert
         order_tracking = {
             "ENTRY": None,
@@ -326,7 +332,7 @@ async def webhook(req: Request):
 
         # Fuzzy deduplication: ignore new alert for same symbol+direction within 30 seconds
         dedup_window = timedelta(seconds=30)
-        alert_direction = data["action"].lower()
+        alert_direction = action.lower()
         now = datetime.utcnow()
         last = last_alert.get(symbol)
         if last and last["direction"] == alert_direction and (now - last["timestamp"]) < dedup_window:
@@ -503,7 +509,20 @@ async def webhook(req: Request):
                 except Exception as e:
                     logging.error(f"Error checking latest price for ENTRY fallback: {e}")
 
-            logging.info(f"Placing order: {order_payload}")
+            # Handle fallback when market data is unavailable
+            if latest_price is None:
+                logging.warning(f"Market data unavailable for {symbol}. Proceeding with default order logic.")
+                # Default logic for placing orders without market data
+                if order["label"] == "ENTRY" and order["orderType"] == "Stop":
+                    stop_price = order.get("stopPrice")
+                    if stop_price is not None:
+                        logging.info(f"Placing ENTRY stop order without market data (stop: {stop_price}).")
+                        order_payload["orderType"] = "Stop"
+                        order_payload["stopPrice"] = stop_price
+
+            # Add detailed logging for order_payload
+            logging.info(f"Constructed order payload: {order_payload}")
+
             try:
                 result = await client.place_order(
                     symbol=symbol,
@@ -519,6 +538,7 @@ async def webhook(req: Request):
                 order_results.append({order["label"]: result})
             except Exception as e:
                 logging.error(f"Error placing order {order['label']}: {e}")
+                logging.error(f"Failed order payload: {order_payload}")
 
         logging.info("Order plan execution completed")
         return {"status": "success", "order_responses": order_results}
