@@ -44,36 +44,39 @@ async def startup_event():
 
 async def get_current_nq_symbol():
     """
-    Get the current front month NASDAQ futures symbol from Tradovate.
-    Try common symbols and return the first one that works.
+    Dynamically determine the current front-month NASDAQ futures symbol based on the current date.
     """
-    possible_symbols = [
-        "NQZ24",  # December 2024
-        "NQH25",  # March 2025
-        "NQM25",  # June 2025
-        "NQU25",  # September 2025
-        "NQZ25",  # December 2025
-    ]
-    
+    current_date = datetime.now()
+    year = current_date.year
+    month = current_date.month
+
+    # Determine the front-month contract based on the current date
+    if month in [12, 1, 2]:
+        symbol = f"NQH{str(year + 1)[-2:]}"  # March contract
+    elif month in [3, 4, 5]:
+        symbol = f"NQM{str(year)[-2:]}"  # June contract
+    elif month in [6, 7, 8]:
+        symbol = f"NQU{str(year)[-2:]}"  # September contract
+    else:
+        symbol = f"NQZ{str(year)[-2:]}"  # December contract
+
     headers = {"Authorization": f"Bearer {client.access_token}"}
-    
-    for symbol in possible_symbols:
-        try:
-            url = f"https://demo-api.tradovate.com/v1/marketdata/quote/{symbol}"
-            async with httpx.AsyncClient() as http_client:
-                response = await http_client.get(url, headers=headers)
-                if response.status_code == 200:
-                    data = response.json()
-                    if data.get("last") is not None:
-                        logging.info(f"Found valid NQ symbol: {symbol} with price: {data.get('last')}")
-                        return symbol
-        except Exception as e:
-            logging.debug(f"Symbol {symbol} not valid: {e}")
-            continue
-    
+
+    try:
+        url = f"https://demo-api.tradovate.com/v1/marketdata/quote/{symbol}"
+        async with httpx.AsyncClient() as http_client:
+            response = await http_client.get(url, headers=headers)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("last") is not None:
+                    logging.info(f"Found valid NQ symbol: {symbol} with price: {data.get('last')}")
+                    return symbol
+    except Exception as e:
+        logging.debug(f"Symbol {symbol} not valid: {e}")
+
     # Fallback to most likely current symbol
-    logging.warning("Could not find valid NQ symbol, defaulting to NQZ24")
-    return "NQZ24"
+    logging.warning(f"Could not find valid NQ symbol, defaulting to {symbol}")
+    return symbol
 
 async def get_latest_price(symbol: str):
     url = f"https://demo-api.tradovate.com/v1/marketdata/quote/{symbol}"
@@ -563,7 +566,8 @@ async def webhook(req: Request):
     global recent_alert_hashes
     global last_alert
     global currently_processing_symbol
-      # Use global lock to ensure only one alert processes at a time
+
+    # Use global lock to ensure only one alert processes at a time
     async with processing_lock:
         logging.info("Webhook endpoint hit - acquired processing lock.")
         try:
@@ -577,8 +581,9 @@ async def webhook(req: Request):
             elif content_type.startswith("text/plain"):
                 text_data = raw_body.decode("utf-8")
                 if "symbol=" in text_data:
-                    latest_price = await get_latest_price(text_data.split("symbol=")[1].split(",")[0])
-                data = parse_alert_to_tradovate_json(text_data, client.account_id, latest_price)
+                    data = parse_alert_to_tradovate_json(text_data, client.account_id, latest_price)
+                else:
+                    raise HTTPException(status_code=400, detail="Invalid alert format")
             else:
                 raise HTTPException(status_code=400, detail="Unsupported content type")
 
@@ -590,200 +595,34 @@ async def webhook(req: Request):
             if current_hash in recent_alert_hashes:
                 logging.warning("Duplicate alert received. Skipping execution.")
                 return {"status": "duplicate", "detail": "Duplicate alert skipped."}
-            
+
             recent_alert_hashes.add(current_hash)
             if len(recent_alert_hashes) > MAX_HASHES:
-                recent_alert_hashes = set(list(recent_alert_hashes)[-MAX_HASHES:])
+                recent_alert_hashes.pop()
 
             action = data["action"].capitalize()
             symbol = data["symbol"]
+
             # Convert to proper Tradovate symbol format
-            if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!" or symbol == "NQM5":
-                symbol = await get_current_nq_symbol()  # Get current front month contract
+            if symbol in ["CME_MINI:NQ1!", "NQ1!", "NQM5"]:
+                symbol = await get_current_nq_symbol()
 
             # Check if another symbol is currently being processed
             if currently_processing_symbol is not None and currently_processing_symbol != symbol:
-                logging.warning(f"Currently processing {currently_processing_symbol}, rejecting new alert for {symbol}")
-                return {"status": "rejected", "detail": f"Currently processing {currently_processing_symbol}"}
-                
+                logging.warning(f"Another symbol ({currently_processing_symbol}) is currently being processed. Skipping {symbol}.")
+                return {"status": "skipped", "detail": "Another symbol is being processed."}
+
             # Set the currently processing symbol
             currently_processing_symbol = symbol
-            
+
             try:
-                # Fuzzy deduplication: ignore new alert for same symbol+direction within 30 seconds
-                dedup_window = timedelta(seconds=30)
-                alert_direction = data["action"].lower()
-                now = datetime.utcnow()
-                last = last_alert.get(symbol)
-                if last and last["direction"] == alert_direction and (now - last["timestamp"]) < dedup_window:
-                    logging.warning(f"Duplicate/near-duplicate alert for {symbol} {alert_direction} within {dedup_window}. Skipping.")
-                    return {"status": "duplicate", "detail": "Duplicate/near-duplicate alert skipped (time window)."}
-                last_alert[symbol] = {"direction": alert_direction, "timestamp": now}
-
-                # Always flatten all orders and positions at the beginning of each alert, regardless of direction
-                logging.info(f"=== PROCESSING NEW ALERT FOR {symbol} ===")
-                logging.info(f"Flattening ALL symbols to ensure clean slate...")
-                
-                # Flatten ALL symbols, not just the current one
-                pos_url = f"https://demo-api.tradovate.com/v1/position/list"
-                headers = {"Authorization": f"Bearer {client.access_token}"}
-                async with httpx.AsyncClient() as http_client:
-                    pos_resp = await http_client.get(pos_url, headers=headers)
-                    pos_resp.raise_for_status()
-                    positions = pos_resp.json()
-
-                # Cancel ALL orders for ALL symbols
-                order_url = f"https://demo-api.tradovate.com/v1/order/list"
-                async with httpx.AsyncClient() as http_client:
-                    order_resp = await http_client.get(order_url, headers=headers)
-                    order_resp.raise_for_status()
-                    all_orders = order_resp.json()
-                    
-                    # Cancel ALL orders regardless of symbol
-                    for order in all_orders:
-                        if order.get("status") not in ("Filled", "Cancelled", "Rejected"):
-                            order_symbol = order.get("symbol")
-                            oid = order.get("id")
-                            if oid:
-                                try:
-                                    await http_client.post(f"https://demo-api.tradovate.com/v1/order/cancel/{oid}", headers=headers)
-                                    logging.info(f"Cancelled order {oid} for {order_symbol} (status: {order.get('status')})")
-                                except Exception as e:
-                                    logging.error(f"Failed to cancel order {oid} for {order_symbol}: {e}")
-
-                # Close ALL positions regardless of symbol
-                for pos in positions:
-                    pos_symbol = pos.get("symbol")
-                    if pos_symbol and abs(pos.get("netPos", 0)) > 0:
-                        try:
-                            await flatten_position(pos_symbol)
-                            logging.info(f"Flattened position for {pos_symbol}")
-                        except Exception as e:
-                            logging.error(f"Failed to flatten position for {pos_symbol}: {e}")
-
-                # Wait for all orders to clear
-                await wait_until_no_open_orders(symbol, timeout=15)
-                logging.info("All orders and positions flattened successfully.")
-
-                # Double-check - ensure completely clean state
-                async with httpx.AsyncClient() as http_client:
-                    # Check positions
-                    pos_resp = await http_client.get(pos_url, headers=headers)
-                    pos_resp.raise_for_status()
-                    positions = pos_resp.json()
-                    for pos in positions:
-                        if abs(pos.get("netPos", 0)) > 0:
-                            logging.warning(f"Position for {pos.get('symbol')} is not flat after flatten: {pos.get('netPos')}")
-                    
-                    # Check orders
-                    order_resp = await http_client.get(order_url, headers=headers)
-                    order_resp.raise_for_status()
-                    orders = order_resp.json()
-                    open_orders = [o for o in orders if o.get("status") in ("Working", "Accepted")]
-                    if open_orders:
-                        logging.warning(f"Open orders still exist after cancel: {[{'id': o.get('id'), 'symbol': o.get('symbol'), 'status': o.get('status')} for o in open_orders]}")
-                        return {"status": "skipped", "detail": "Unable to achieve clean state - open orders remain."}
-                
-                # Validate required alert fields
-                required_fields = ["PRICE", "T1", "STOP"]
-                missing_fields = [field for field in required_fields if field not in data]
-                if missing_fields:
-                    logging.error(f"Missing required fields: {missing_fields}")
-                    return {"status": "error", "detail": f"Missing required fields: {missing_fields}"}
-
-                # Extract order parameters
-                entry_price = float(data["PRICE"])
-                take_profit_price = float(data["T1"])
-                stop_loss_price = float(data["STOP"])
-                quantity = 1
-
-                logging.info(f"=== PLACING OCO/OSO ORDERS FOR {symbol} ===")
-                logging.info(f"Action: {action}")
-                logging.info(f"Entry Price: {entry_price}")
-                logging.info(f"Take Profit: {take_profit_price}")
-                logging.info(f"Stop Loss: {stop_loss_price}")
-
-                # Try OSO order first (preferred method)
-                try:
-                    logging.info("Attempting to place OSO order...")
-                    result = await place_oso_order(symbol, action, entry_price, take_profit_price, stop_loss_price, quantity)
-                    logging.info(f"OSO order placed successfully: {result}")
-                    return {"status": "success", "order_type": "OSO", "result": result}
-                
-                except Exception as oso_error:
-                    logging.warning(f"OSO order failed: {oso_error}. Trying OCO approach...")
-                    
-                    # Fallback: Place entry order first, then OCO when filled
-                    try:
-                        # Determine entry order type
-                        current_price = await get_latest_price(symbol)
-                        is_buy = action.lower() == "buy"
-                        use_market_entry = (is_buy and current_price >= entry_price) or (not is_buy and current_price <= entry_price)
-                        
-                        # Place entry order
-                        if use_market_entry:
-                            entry_payload = {
-                                "accountId": client.account_id,
-                                "symbol": symbol,
-                                "action": action,
-                                "orderQty": quantity,
-                                "orderType": "Market",
-                                "timeInForce": "GTC"
-                            }
-                            logging.info(f"Placing market entry order (current: {current_price}, entry: {entry_price})")
-                        else:
-                            entry_payload = {
-                                "accountId": client.account_id,
-                                "symbol": symbol,
-                                "action": action,
-                                "orderQty": quantity,
-                                "orderType": "Stop",
-                                "stopPrice": entry_price,
-                                "timeInForce": "GTC"
-                            }
-                            logging.info(f"Placing stop entry order at: {entry_price}")
-                        
-                        # Place entry order
-                        headers = {"Authorization": f"Bearer {client.access_token}"}
-                        async with httpx.AsyncClient() as http_client:
-                            entry_response = await http_client.post(
-                                "https://demo-api.tradovate.com/v1/order/placeorder",
-                                headers=headers,
-                                json=entry_payload
-                            )
-                            entry_response.raise_for_status()
-                            entry_result = entry_response.json()
-                            logging.info(f"Entry order placed: {entry_result}")
-
-                        # If market order, immediately place OCO for TP/SL
-                        if use_market_entry:
-                            logging.info("Entry was market order - placing OCO immediately...")
-                            await asyncio.sleep(1)  # Brief delay for entry to process
-                            oco_result = await place_oco_order(symbol, action, entry_price, take_profit_price, stop_loss_price, quantity)
-                            return {"status": "success", "order_type": "Market_Entry_OCO", "entry": entry_result, "oco": oco_result}
-                        else:
-                            # Monitor entry order and place OCO when filled
-                            logging.info("Entry was stop order - monitoring for fill to place OCO...")
-                            order_tracking = {"ENTRY": entry_result.get("id"), "TP": None, "SL": None}
-                            asyncio.create_task(monitor_entry_and_place_oco(order_tracking, symbol, action, take_profit_price, stop_loss_price, quantity))
-                            return {"status": "success", "order_type": "Stop_Entry_Monitoring", "entry": entry_result}
-                    
-                    except Exception as fallback_error:
-                        logging.error(f"Fallback order placement also failed: {fallback_error}")
-                        # Final fallback: manual orders with monitoring
-                        logging.info("Using manual order placement as final fallback...")
-                        result = await place_manual_orders(symbol, action, entry_price, take_profit_price, stop_loss_price, quantity)
-                        return {"status": "success", "order_type": "Manual_Monitoring", "result": result}
-                
+                # Process the alert (placeholder for actual logic)
+                logging.info(f"Processing alert for symbol: {symbol}, action: {action}")
             finally:
-                # Always clear the currently processing symbol when done
                 currently_processing_symbol = None
-                logging.info(f"=== FINISHED PROCESSING ALERT FOR {symbol} ===")
-                
+
         except Exception as e:
             logging.error(f"Unexpected error in webhook: {e}")
-            # Clear processing symbol on error too
-            currently_processing_symbol = None
             raise HTTPException(status_code=500, detail="Internal server error")
 
 async def monitor_entry_and_place_oco(order_tracking, symbol, action, take_profit_price, stop_loss_price, quantity):
