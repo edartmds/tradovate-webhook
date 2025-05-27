@@ -38,10 +38,21 @@ async def get_latest_price(symbol: str):
     url = f"https://demo-api.tradovate.com/v1/marketdata/quote/{symbol}"
     headers = {"Authorization": f"Bearer {client.access_token}"}
     async with httpx.AsyncClient() as http_client:
-        response = await http_client.get(url, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-        return data["last"]
+        try:
+            response = await http_client.get(url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            return data["last"]
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                logging.warning(f"Market data not found for symbol {symbol} (404). Proceeding with fallback logic.")
+                raise ValueError(f"Market data not found for symbol {symbol}")
+            else:
+                logging.error(f"HTTP error getting market data for {symbol}: {e}")
+                raise
+        except Exception as e:
+            logging.error(f"Unexpected error getting market data for {symbol}: {e}")
+            raise
 
 async def cancel_all_orders(symbol):
     # Cancel all open orders for the symbol, regardless of status, and double-check after
@@ -376,11 +387,16 @@ async def webhook(req: Request):
         if "PRICE" in data:
             try:
                 # Get latest price for the symbol
-                latest_price = await get_latest_price(symbol)
+                try:
+                    latest_price = await get_latest_price(symbol)
+                except ValueError:
+                    latest_price = None
                 entry_price = float(data["PRICE"])
                 is_buy = action.lower() == "buy"
-                # For BUY: if market is at/above entry, use market order. For SELL: if at/below, use market order.
-                use_market = (is_buy and latest_price >= entry_price) or (not is_buy and latest_price <= entry_price)
+                use_market = False
+                if latest_price is not None:
+                    # For BUY: if market is at/above entry, use market order. For SELL: if at/below, use market order.
+                    use_market = (is_buy and latest_price >= entry_price) or (not is_buy and latest_price <= entry_price)
                 if use_market:
                     order_plan.append({
                         "label": "ENTRY",
@@ -455,10 +471,12 @@ async def webhook(req: Request):
             # ENTRY fallback: If ENTRY is a stop order and price is already at/through stop, use market order
             if order["label"] == "ENTRY" and order["orderType"] == "Stop":
                 try:
-                    # Get latest price
-                    latest_price = await get_latest_price(symbol)
+                    try:
+                        latest_price = await get_latest_price(symbol)
+                    except ValueError:
+                        latest_price = None
                     stop_price = order.get("stopPrice")
-                    if stop_price is not None:
+                    if stop_price is not None and latest_price is not None:
                         # For BUY, if price >= stop, for SELL, if price <= stop
                         if (order["action"].lower() == "buy" and latest_price >= stop_price) or \
                            (order["action"].lower() == "sell" and latest_price <= stop_price):
