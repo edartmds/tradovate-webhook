@@ -137,25 +137,25 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
         try:
             headers = {"Authorization": f"Bearer {client.access_token}"}
             active_orders = {}
+            logging.info(f"Order tracking state: {order_tracking}")
             # Check status of all tracked orders
             for label, order_id in order_tracking.items():
                 if order_id is None:
+                    logging.info(f"Order {label} is not yet placed (order_id=None)")
                     continue
-                    
                 url = f"https://demo-api.tradovate.com/v1/order/{order_id}"
                 async with httpx.AsyncClient() as http_client:
                     response = await http_client.get(url, headers=headers)
                     response.raise_for_status()
                     order_status = response.json()
-                    
                 status = order_status.get("status")
-                logging.info(f"Order {label} ({order_id}) status: {status}")
+                logging.info(f"Order {label} (ID: {order_id}) status: {status} | Full order_status: {order_status}")
                 
                 if status == "Filled":
                     if label == "ENTRY" and not entry_filled:
                         logging.info(f"ENTRY order filled! Now placing STOP order for protection.")
                         entry_filled = True
-                        
+                        logging.info(f"STOP order data to be used: {stop_order_data}")
                         # Now place the STOP order since we're in position
                         if stop_order_data:
                             try:
@@ -164,7 +164,6 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                                 for field in required_fields:
                                     if field not in stop_order_data:
                                         raise ValueError(f"Missing required field in stop_order_data: {field}")
-                                
                                 logging.info(f"Placing STOP order with data: {stop_order_data}")
                                 stop_result = await client.place_order(
                                     symbol=symbol,
@@ -172,6 +171,7 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                                     quantity=stop_order_data["orderQty"],
                                     order_data=stop_order_data
                                 )
+                                logging.info(f"STOP order placement API response: {stop_result}")
                                 order_tracking["STOP"] = stop_result.get("id")
                                 logging.info(f"STOP order placed successfully: {stop_result}")
                             except Exception as e:
@@ -188,6 +188,7 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                                         )
                                         response.raise_for_status()
                                         stop_result = response.json()
+                                        logging.info(f"STOP order placement fallback API response: {stop_result}")
                                         order_tracking["STOP"] = stop_result.get("id")
                                         logging.info(f"STOP order placed successfully (fallback): {stop_result}")
                                 except Exception as e2:
@@ -409,13 +410,13 @@ async def webhook(req: Request):
                     order_data=order_payload
                 )
                 logging.info(f"Order placed successfully: {result}")
-
+                # Extra debug: print the full API response for ENTRY
+                if order['label'] == 'ENTRY':
+                    logging.info(f"ENTRY order API response: {result}")
                 # Track the order ID
                 order_id = result.get("id")
                 order_tracking[order["label"]] = order_id
-                
                 order_results.append({order["label"]: result})
-                
             except Exception as e:
                 logging.error(f"Error placing order {order['label']}: {e}")
         
