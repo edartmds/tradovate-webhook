@@ -282,6 +282,8 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                                         logging.warning(f"Failed to cancel TP1 order {order_tracking['TP1']} after STOP fill. Status: {resp.status_code}")
                             except Exception as e:
                                 logging.error(f"Exception while cancelling TP1 order after STOP fill: {e}")
+                        else:
+                            logging.info("No TP1 order to cancel after STOP fill.")
                         return  # Exit monitoring
 
                 elif status in ["Working", "Accepted"]:
