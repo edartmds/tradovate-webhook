@@ -256,12 +256,17 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                             cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{order_tracking['STOP']}"
                             try:
                                 async with httpx.AsyncClient() as http_client:
-                                    resp = await http_client.post(cancel_url, headers=headers)
-                                    if resp.status_code == 200:
-                                        logging.info(f"STOP order {order_tracking['STOP']} cancelled after TP1 fill.")
-                                        order_tracking["STOP"] = None  # Clear STOP tracking
+                                    for attempt in range(3):  # Retry up to 3 times
+                                        resp = await http_client.post(cancel_url, headers=headers)
+                                        if resp.status_code == 200:
+                                            logging.info(f"STOP order {order_tracking['STOP']} cancelled after TP1 fill.")
+                                            order_tracking["STOP"] = None  # Clear STOP tracking
+                                            break
+                                        else:
+                                            logging.warning(f"Failed to cancel STOP order {order_tracking['STOP']} after TP1 fill. Status: {resp.status_code}. Retrying...")
+                                            await asyncio.sleep(1)
                                     else:
-                                        logging.warning(f"Failed to cancel STOP order {order_tracking['STOP']} after TP1 fill. Status: {resp.status_code}")
+                                        logging.error(f"Failed to cancel STOP order {order_tracking['STOP']} after multiple attempts.")
                             except Exception as e:
                                 logging.error(f"Exception while cancelling STOP order after TP1 fill: {e}")
                         else:
@@ -274,12 +279,17 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                             cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{order_tracking['TP1']}"
                             try:
                                 async with httpx.AsyncClient() as http_client:
-                                    resp = await http_client.post(cancel_url, headers=headers)
-                                    if resp.status_code == 200:
-                                        logging.info(f"TP1 order {order_tracking['TP1']} cancelled after STOP fill.")
-                                        order_tracking["TP1"] = None  # Clear TP1 tracking
+                                    for attempt in range(3):  # Retry up to 3 times
+                                        resp = await http_client.post(cancel_url, headers=headers)
+                                        if resp.status_code == 200:
+                                            logging.info(f"TP1 order {order_tracking['TP1']} cancelled after STOP fill.")
+                                            order_tracking["TP1"] = None  # Clear TP1 tracking
+                                            break
+                                        else:
+                                            logging.warning(f"Failed to cancel TP1 order {order_tracking['TP1']} after STOP fill. Status: {resp.status_code}. Retrying...")
+                                            await asyncio.sleep(1)
                                     else:
-                                        logging.warning(f"Failed to cancel TP1 order {order_tracking['TP1']} after STOP fill. Status: {resp.status_code}")
+                                        logging.error(f"Failed to cancel TP1 order {order_tracking['TP1']} after multiple attempts.")
                             except Exception as e:
                                 logging.error(f"Exception while cancelling TP1 order after STOP fill: {e}")
                         else:
@@ -295,7 +305,7 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
             if asyncio.get_event_loop().time() - monitoring_start_time > max_monitoring_time:
                 logging.warning(f"Order monitoring timeout reached for {symbol}. Stopping monitoring.")
                 return
-
+            
             # If no active orders remain, stop monitoring
             if not active_orders:
                 logging.info("No active orders remaining. Stopping monitoring.")
