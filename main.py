@@ -577,17 +577,28 @@ async def webhook(req: Request):
             latest_price = None
 
             if content_type == "application/json":
-                data = await req.json()
+                try:
+                    data = await req.json()
+                except json.JSONDecodeError as e:
+                    logging.error(f"Invalid JSON format: {e}")
+                    raise HTTPException(status_code=400, detail="Invalid JSON format")
             elif content_type.startswith("text/plain"):
                 text_data = raw_body.decode("utf-8")
                 if "symbol=" in text_data:
-                    data = parse_alert_to_tradovate_json(text_data, client.account_id, latest_price)
+                    try:
+                        data = parse_alert_to_tradovate_json(text_data, client.account_id, latest_price)
+                    except ValueError as e:
+                        logging.error(f"Error parsing plain text alert: {e}")
+                        raise HTTPException(status_code=400, detail="Invalid plain text alert format")
                 else:
-                    raise HTTPException(status_code=400, detail="Invalid alert format")
+                    logging.error("Plain text alert missing 'symbol=' key")
+                    raise HTTPException(status_code=400, detail="Invalid plain text alert format")
             else:
+                logging.error(f"Unsupported content type: {content_type}")
                 raise HTTPException(status_code=400, detail="Unsupported content type")
 
             if WEBHOOK_SECRET is None:
+                logging.error("Missing WEBHOOK_SECRET")
                 raise HTTPException(status_code=500, detail="Missing WEBHOOK_SECRET")
 
             # Deduplication logic
@@ -621,6 +632,9 @@ async def webhook(req: Request):
             finally:
                 currently_processing_symbol = None
 
+        except HTTPException as e:
+            logging.error(f"HTTPException: {e.detail}")
+            raise
         except Exception as e:
             logging.error(f"Unexpected error in webhook: {e}")
             raise HTTPException(status_code=500, detail="Internal server error")
