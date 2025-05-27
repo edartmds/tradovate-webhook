@@ -356,23 +356,20 @@ async def webhook(req: Request):
         else:
             logging.warning("PRICE not found in alert data - no entry order will be placed")
 
-        # Prepare stop loss order data (to be placed after entry is filled)
+        # Add stop loss order (STOP) at the same time as ENTRY and TP1
         if "STOP" in data:
-            stop_order_data = {
-                "accountId": client.account_id,
-                "symbol": symbol,
+            order_plan.append({
+                "label": "STOP",
                 "action": "Sell" if action.lower() == "buy" else "Buy",
-                "orderQty": 1,
                 "orderType": "Stop",
                 "stopPrice": data["STOP"],
-                "timeInForce": "GTC",
-                "isAutomated": True
-            }
-            logging.info(f"Prepared stop loss order data for placement after entry fill: {data['STOP']}")
+                "qty": 1
+            })
+            logging.info(f"Added stop loss order for STOP at price: {data['STOP']}")
         else:
-            logging.warning("STOP not found in alert data - no stop loss order will be prepared")
+            logging.warning("STOP not found in alert data - no stop loss order will be placed")
 
-        logging.info(f"Order plan created with {len(order_plan)} orders (STOP order will be placed after ENTRY fill)")
+        logging.info(f"Order plan created with {len(order_plan)} orders (STOP order placed at the same time as ENTRY)")
         
         # Log opposite direction handling result
         if is_opposite_direction:
@@ -420,10 +417,7 @@ async def webhook(req: Request):
             except Exception as e:
                 logging.error(f"Error placing order {order['label']}: {e}")
         
-        # Start comprehensive monitoring of all orders
-        # Await the monitoring function to ensure STOP is placed after ENTRY fill
-        await monitor_all_orders(order_tracking, symbol, stop_order_data)
-
+        # No need to monitor orders for STOP placement anymore
         logging.info("Order plan execution completed")
         return {"status": "success", "order_responses": order_results}
     except Exception as e:
