@@ -1,4 +1,6 @@
 import os
+from datetime import timedelta
+last_alert = {}  # {symbol: {"direction": "buy"/"sell", "timestamp": datetime}}
 import logging
 from datetime import datetime
 from fastapi import FastAPI, Request, HTTPException
@@ -285,6 +287,7 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
 @app.post("/webhook")
 async def webhook(req: Request):
     global recent_alert_hashes
+    global last_alert
     logging.info("Webhook endpoint hit.")
     try:
         content_type = req.headers.get("content-type")
@@ -314,10 +317,21 @@ async def webhook(req: Request):
         if len(recent_alert_hashes) > MAX_HASHES:
             recent_alert_hashes = set(list(recent_alert_hashes)[-MAX_HASHES:])
 
+
         action = data["action"].capitalize()
         symbol = data["symbol"]
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
             symbol = "NQM5"
+
+        # Fuzzy deduplication: ignore new alert for same symbol+direction within 30 seconds
+        dedup_window = timedelta(seconds=30)
+        alert_direction = data["action"].lower()
+        now = datetime.utcnow()
+        last = last_alert.get(symbol)
+        if last and last["direction"] == alert_direction and (now - last["timestamp"]) < dedup_window:
+            logging.warning(f"Duplicate/near-duplicate alert for {symbol} {alert_direction} within {dedup_window}. Skipping.")
+            return {"status": "duplicate", "detail": "Duplicate/near-duplicate alert skipped (time window)."}
+        last_alert[symbol] = {"direction": alert_direction, "timestamp": now}
 
         # Always flatten all orders and positions at the beginning of each alert, regardless of direction
         pos_url = f"https://demo-api.tradovate.com/v1/position/list"
