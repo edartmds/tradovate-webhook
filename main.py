@@ -420,7 +420,8 @@ async def webhook(req: Request):
                 logging.error(f"Error placing order {order['label']}: {e}")
         
         # Start comprehensive monitoring of all orders
-        asyncio.create_task(monitor_all_orders(order_tracking, symbol, stop_order_data))
+        # Await the monitoring function to ensure STOP is placed after ENTRY fill
+        await monitor_all_orders(order_tracking, symbol, stop_order_data)
 
         logging.info("Order plan execution completed")
         return {"status": "success", "order_responses": order_results}
