@@ -308,11 +308,16 @@ async def webhook(req: Request):
         if WEBHOOK_SECRET is None:
             raise HTTPException(status_code=500, detail="Missing WEBHOOK_SECRET")
 
+
         # Extract symbol and action from the alert data
         symbol = data.get("symbol")
         action = data.get("action")
         if not symbol or not action:
             raise HTTPException(status_code=400, detail="Missing required fields: symbol or action")
+
+        # Map TradingView symbol to Tradovate symbol for all API calls
+        if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
+            symbol = "NQM5"
 
         # Reset order tracking for the new alert
         order_tracking = {
