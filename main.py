@@ -137,7 +137,7 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
         try:
             headers = {"Authorization": f"Bearer {client.access_token}"}
             active_orders = {}
-              # Check status of all tracked orders
+            # Check status of all tracked orders
             for label, order_id in order_tracking.items():
                 if order_id is None:
                     continue
