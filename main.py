@@ -100,6 +100,7 @@ async def wait_until_no_open_orders(symbol, timeout=10):
     Poll Tradovate until there are no open orders for the symbol, or until timeout (seconds).
     """
     url = f"https://demo-api.tradovate.com/v1/order/list"
+    cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel"
     headers = {"Authorization": f"Bearer {client.access_token}"}
     start = asyncio.get_event_loop().time()
     while True:
@@ -107,8 +108,22 @@ async def wait_until_no_open_orders(symbol, timeout=10):
             resp = await http_client.get(url, headers=headers)
             resp.raise_for_status()
             orders = resp.json()
-            open_orders = [o for o in orders if o.get("symbol") == symbol and o.get("status") in ("Working", "Accepted")]
-            if not open_orders:
+            # Cancel any open orders for this symbol that are not Filled/Cancelled/Rejected
+            open_orders = [o for o in orders if o.get("symbol") == symbol and o.get("status") not in ("Filled", "Cancelled", "Rejected")]
+            for order in open_orders:
+                oid = order.get("id")
+                if oid:
+                    try:
+                        await http_client.post(f"{cancel_url}/{oid}", headers=headers)
+                        logging.info(f"wait_until_no_open_orders: Cancelled lingering order {oid} for {symbol} (status: {order.get('status')})")
+                    except Exception as e:
+                        logging.error(f"wait_until_no_open_orders: Failed to cancel lingering order {oid} for {symbol}: {e}")
+            # After cancel attempts, check if any remain
+            resp2 = await http_client.get(url, headers=headers)
+            resp2.raise_for_status()
+            orders2 = resp2.json()
+            still_open = [o for o in orders2 if o.get("symbol") == symbol and o.get("status") not in ("Filled", "Cancelled", "Rejected")]
+            if not still_open:
                 return
         if asyncio.get_event_loop().time() - start > timeout:
             logging.warning(f"Timeout waiting for all open orders to clear for {symbol}.")
@@ -308,20 +323,7 @@ async def webhook(req: Request):
         if WEBHOOK_SECRET is None:
             raise HTTPException(status_code=500, detail="Missing WEBHOOK_SECRET")
 
-        # Extract symbol and action from the alert data
-        symbol = data.get("symbol")
-        action = data.get("action")
-        if not symbol or not action:
-            raise HTTPException(status_code=400, detail="Missing required fields: symbol or action")
-
-        # Reset order tracking for the new alert
-        order_tracking = {
-            "ENTRY": None,
-            "TP1": None,
-            "STOP": None
-        }
-
-        # Ensure deduplication logic handles switching orders
+        # Deduplication logic
         current_hash = hash_alert(data)
         if current_hash in recent_alert_hashes:
             logging.warning("Duplicate alert received. Skipping execution.")
@@ -330,9 +332,15 @@ async def webhook(req: Request):
         if len(recent_alert_hashes) > MAX_HASHES:
             recent_alert_hashes = set(list(recent_alert_hashes)[-MAX_HASHES:])
 
+
+        action = data["action"].capitalize()
+        symbol = data["symbol"]
+        if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
+            symbol = "NQM5"
+
         # Fuzzy deduplication: ignore new alert for same symbol+direction within 30 seconds
         dedup_window = timedelta(seconds=30)
-        alert_direction = action.lower()
+        alert_direction = data["action"].lower()
         now = datetime.utcnow()
         last = last_alert.get(symbol)
         if last and last["direction"] == alert_direction and (now - last["timestamp"]) < dedup_window:
@@ -509,20 +517,7 @@ async def webhook(req: Request):
                 except Exception as e:
                     logging.error(f"Error checking latest price for ENTRY fallback: {e}")
 
-            # Handle fallback when market data is unavailable
-            if latest_price is None:
-                logging.warning(f"Market data unavailable for {symbol}. Proceeding with default order logic.")
-                # Default logic for placing orders without market data
-                if order["label"] == "ENTRY" and order["orderType"] == "Stop":
-                    stop_price = order.get("stopPrice")
-                    if stop_price is not None:
-                        logging.info(f"Placing ENTRY stop order without market data (stop: {stop_price}).")
-                        order_payload["orderType"] = "Stop"
-                        order_payload["stopPrice"] = stop_price
-
-            # Add detailed logging for order_payload
-            logging.info(f"Constructed order payload: {order_payload}")
-
+            logging.info(f"Placing order: {order_payload}")
             try:
                 result = await client.place_order(
                     symbol=symbol,
@@ -538,7 +533,6 @@ async def webhook(req: Request):
                 order_results.append({order["label"]: result})
             except Exception as e:
                 logging.error(f"Error placing order {order['label']}: {e}")
-                logging.error(f"Failed order payload: {order_payload}")
 
         logging.info("Order plan execution completed")
         return {"status": "success", "order_responses": order_results}
