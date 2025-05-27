@@ -435,7 +435,30 @@ async def webhook(req: Request):
                 stop_order_data = None
                 logging.info("Creating order plan based on alert data")
 
-                # Add limit orders for T1 (Take Profit)
+                # Add OCO order for ENTRY and STOP
+                if "PRICE" in data and "STOP" in data:
+                    order_plan.append({
+                        "label": "ENTRY_STOP_OCO",
+                        "action": action,
+                        "orderType": "OCO",
+                        "ocoOrders": [
+                            {
+                                "orderType": "Stop",
+                                "stopPrice": data["PRICE"],
+                                "qty": 1
+                            },
+                            {
+                                "orderType": "Stop",
+                                "stopPrice": data["STOP"],
+                                "qty": 1
+                            }
+                        ]
+                    })
+                    logging.info(f"Added OCO order for ENTRY and STOP: {data['PRICE']} and {data['STOP']}")
+                else:
+                    logging.warning("PRICE or STOP not found in alert data - no OCO order will be placed")
+
+                # Add limit order for T1 (Take Profit)
                 if "T1" in data:
                     order_plan.append({
                         "label": "TP1",
@@ -448,139 +471,69 @@ async def webhook(req: Request):
                 else:
                     logging.warning("T1 not found in alert data - no take profit order will be placed")
 
-                # Add stop order for entry, but check if price is already at/through the stop level
-                if "PRICE" in data:
-                    try:
-                        # Get latest price for the symbol
-                        try:
-                            latest_price = await get_latest_price(symbol)
-                        except ValueError:
-                            latest_price = None
-                        entry_price = float(data["PRICE"])
-                        is_buy = action.lower() == "buy"
-                        use_market = False
-                        if latest_price is not None:
-                            # For BUY: if market is at/above entry, use market order. For SELL: if at/below, use market order.
-                            use_market = (is_buy and latest_price >= entry_price) or (not is_buy and latest_price <= entry_price)
-                        if use_market:
-                            order_plan.append({
-                                "label": "ENTRY",
-                                "action": action,
-                                "orderType": "Market",
-                                "qty": 1
-                            })
-                            logging.info(f"Market is at/through entry stop level (latest: {latest_price}, entry: {entry_price}). Placing ENTRY as market order.")
-                        else:
-                            order_plan.append({
-                                "label": "ENTRY",
-                                "action": action,
-                                "orderType": "Stop",
-                                "stopPrice": entry_price,
-                                "qty": 1
-                            })
-                            logging.info(f"Added stop order for entry at price: {entry_price}")
-                    except Exception as e:
-                        logging.error(f"Error checking market price for ENTRY order: {e}")
-                        # Fallback: place stop order as before
-                        order_plan.append({
-                            "label": "ENTRY",
-                            "action": action,
-                            "orderType": "Stop",
-                            "stopPrice": data["PRICE"],
-                            "qty": 1
-                        })
-                        logging.info(f"Fallback: Added stop order for entry at price: {data['PRICE']}")
-                else:
-                    logging.warning("PRICE not found in alert data - no entry order will be placed")
-
-                # Add stop loss order (STOP) at the same time as ENTRY and TP1
-                if "STOP" in data:
-                    order_plan.append({
-                        "label": "STOP",
-                        "action": "Sell" if action.lower() == "buy" else "Buy",
-                        "orderType": "Stop",
-                        "stopPrice": data["STOP"],
-                        "qty": 1
-                    })
-                    logging.info(f"Added stop loss order for STOP at price: {data['STOP']}")
-                else:
-                    logging.warning("STOP not found in alert data - no stop loss order will be placed")
-
                 logging.info(f"Order plan created with {len(order_plan)} orders")
-                
+
                 # Initialize variables for tracking orders
                 order_results = []
                 order_tracking = {
-                    "ENTRY": None,
-                    "TP1": None, 
-                    "STOP": None
+                    "ENTRY_STOP_OCO": None,
+                    "TP1": None
                 }
 
-                # Execute the order plan with ENTRY fallback logic
-                logging.info("Executing order plan with ENTRY fallback logic")
-                for order in order_plan:
-                    order_payload = {
-                        "accountId": client.account_id,
-                        "symbol": symbol,
-                        "action": order["action"],
-                        "orderQty": order["qty"],
-                        "orderType": order["orderType"],
-                        "price": order.get("price"),
-                        "stopPrice": order.get("stopPrice"),
-                        "timeInForce": "GTC",
-                        "isAutomated": True
-                    }
+                try:
+                    # Flatten all positions and orders
+                    logging.info("Flattening all positions and orders")
+                    await flatten_position(symbol)
+                    await cancel_all_orders(symbol)
+                except Exception as e:
+                    logging.error(f"Error flattening positions or canceling orders: {e}")
 
-                    # ENTRY fallback: If ENTRY is a stop order and price is already at/through stop, use market order
-                    if order["label"] == "ENTRY" and order["orderType"] == "Stop":
+                try:
+                    # Execute the order plan
+                    logging.info("Executing order plan")
+                    for order in order_plan:
+                        order_payload = {
+                            "accountId": client.account_id,
+                            "symbol": symbol,
+                            "action": order["action"],
+                            "orderQty": order["qty"],
+                            "orderType": order["orderType"],
+                            "price": order.get("price"),
+                            "stopPrice": order.get("stopPrice"),
+                            "timeInForce": "GTC",
+                            "isAutomated": True
+                        }
+
+                        if order["orderType"] == "OCO":
+                            order_payload["ocoOrders"] = order["ocoOrders"]
+
+                        logging.info(f"Placing order: {order_payload}")
                         try:
-                            try:
-                                latest_price = await get_latest_price(symbol)
-                            except ValueError:
-                                latest_price = None
-                            stop_price = order.get("stopPrice")
-                            if stop_price is not None and latest_price is not None:
-                                # For BUY, if price >= stop, for SELL, if price <= stop
-                                if (order["action"].lower() == "buy" and latest_price >= stop_price) or \
-                                   (order["action"].lower() == "sell" and latest_price <= stop_price):
-                                    logging.info(f"ENTRY stop order would be triggered immediately (latest: {latest_price}, stop: {stop_price}). Placing as MARKET order instead.")
-                                    order_payload["orderType"] = "Market"
-                                    order_payload.pop("stopPrice", None)
-                                    order_payload.pop("price", None)
+                            result = await client.place_order(
+                                symbol=symbol,
+                                action=order["action"],
+                                quantity=order["qty"],
+                                order_data=order_payload
+                            )
+                            logging.info(f"Order placed successfully: {result}")
+                            order_id = result.get("id")
+                            order_tracking[order["label"]] = order_id
+                            order_results.append({order["label"]: result})
                         except Exception as e:
-                            logging.error(f"Error checking latest price for ENTRY fallback: {e}")
-
-                    logging.info(f"Placing order: {order_payload}")
-                    try:
-                        result = await client.place_order(
-                            symbol=symbol,
-                            action=order["action"],
-                            quantity=order["qty"],
-                            order_data=order_payload
-                        )
-                        logging.info(f"Order placed successfully: {result}")
-                        if order['label'] == 'ENTRY':
-                            logging.info(f"ENTRY order API response: {result}")
-                        order_id = result.get("id")
-                        order_tracking[order["label"]] = order_id
-                        order_results.append({order["label"]: result})
-                    except Exception as e:
-                        logging.error(f"Error placing order {order['label']}: {e}")
+                            logging.error(f"Error placing order {order['label']}: {e}")
+                except Exception as e:
+                    logging.error(f"Error executing order plan: {e}")
 
                 logging.info("Order plan execution completed")
                 return {"status": "success", "order_responses": order_results}
-                
-            finally:
-                # Always clear the currently processing symbol when done
-                currently_processing_symbol = None
-                logging.info(f"=== FINISHED PROCESSING ALERT FOR {symbol} ===")
-                
-        except Exception as e:
-            logging.error(f"Unexpected error in webhook: {e}")
-            # Clear processing symbol on error too
-            currently_processing_symbol = None
-            raise HTTPException(status_code=500, detail="Internal server error")
 
+                # Monitor orders and cancel opposite order when one is filled
+                try:
+                    await monitor_all_orders(order_tracking, symbol, stop_order_data)
+                except Exception as e:
+                    logging.error(f"Error monitoring orders: {e}")
+
+# ...existing code...
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     uvicorn.run("main:app", host="0.0.0.0", port=port)
