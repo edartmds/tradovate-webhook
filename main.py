@@ -104,7 +104,7 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price
             if field not in parsed_data or not parsed_data[field]:
                 raise ValueError(f"Missing or invalid field: {field}")
 
-        for target in ["T1", "T2", "T3", "STOP", "PRICE"]:
+        for target in ["T1", "STOP", "PRICE"]:
             if target in parsed_data:
                 parsed_data[target] = float(parsed_data[target])
 
@@ -284,7 +284,7 @@ async def webhook(req: Request):
         existing_order_labels = {o.get("label") for o in open_orders}
 
         # Add limit orders for T1, T2, T3
-        for i in range(1, 4):
+        for i in range(1):
             key = f"T{i}"
             label = f"TP{i}"
             if key in data and label not in existing_order_labels:
@@ -305,7 +305,7 @@ async def webhook(req: Request):
                 "action": action,
                 "orderType": "Stop",
                 "stopPrice": data["PRICE"],
-                "qty": 3
+                "qty": 1
             })
             existing_order_labels.add("ENTRY")  # Update the set to prevent duplicates
             logging.info(f"Added stop order for entry at price: {data['PRICE']}")
@@ -317,7 +317,7 @@ async def webhook(req: Request):
                 "action": "Sell" if action.lower() == "buy" else "Buy",
                 "orderType": "Stop",
                 "stopPrice": data["STOP"],
-                "qty": 3
+                "qty": 1
             })
             existing_order_labels.add("STOP")  # Update the set to prevent duplicates
             logging.info(f"Added stop loss order at price: {data['STOP']}")
