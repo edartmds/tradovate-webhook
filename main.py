@@ -1,7 +1,7 @@
-async def monitor_all_orders(order_tracking, symbol):
+async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
     """
     Monitor all orders and manage their relationships:
-    - If ENTRY is filled, cancel all other orders and place TP and STOP orders
+    - If ENTRY is filled, place the STOP order and keep TP active
     - If TP is filled, cancel STOP
     - If STOP is filled, cancel TP
     """
@@ -29,9 +29,22 @@ async def monitor_all_orders(order_tracking, symbol):
                 
                 if status == "Filled":
                     if label == "ENTRY" and not entry_filled:
-                        logging.info(f"ENTRY order filled! Now we're in position.")
+                        logging.info(f"ENTRY order filled! Now placing STOP order for protection.")
                         entry_filled = True
-                        # Don't cancel TP and STOP orders since we want them active now
+                        
+                        # Now place the STOP order since we're in position
+                        if stop_order_data:
+                            try:
+                                stop_result = await client.place_order(
+                                    symbol=symbol,
+                                    action=stop_order_data["action"],
+                                    quantity=stop_order_data["qty"],
+                                    order_data=stop_order_data
+                                )
+                                order_tracking["STOP"] = stop_result.get("id")
+                                logging.info(f"STOP order placed successfully: {stop_result}")
+                            except Exception as e:
+                                logging.error(f"Error placing STOP order after ENTRY fill: {e}")
                         
                     elif label == "TP1" and entry_filled:
                         logging.info(f"TP1 order filled! Cancelling STOP order.")
@@ -383,6 +396,7 @@ async def webhook(req: Request):
                 logging.warning(f"Open orders for {symbol} still exist after cancel. Skipping order placement.")
                 return {"status": "skipped", "detail": "Open orders still exist after cancel."}        # Initialize the order plan
         order_plan = []
+        stop_order_data = None
         logging.info("Creating order plan based on alert data")
 
         # Add limit orders for T1 (Take Profit)
@@ -411,26 +425,28 @@ async def webhook(req: Request):
         else:
             logging.warning("PRICE not found in alert data - no entry order will be placed")
 
-        # Add stop loss order
+        # Prepare stop loss order data (to be placed after entry is filled)
         if "STOP" in data:
-            order_plan.append({
-                "label": "STOP",
+            stop_order_data = {
+                "accountId": client.account_id,
+                "symbol": symbol,
                 "action": "Sell" if action.lower() == "buy" else "Buy",
+                "orderQty": 1,
                 "orderType": "Stop",
                 "stopPrice": data["STOP"],
-                "qty": 1            })
-            logging.info(f"Added stop loss order at price: {data['STOP']}")
+                "timeInForce": "GTC",
+                "isAutomated": True
+            }
+            logging.info(f"Prepared stop loss order data for placement after entry fill: {data['STOP']}")
         else:
-            logging.warning("STOP not found in alert data - no stop loss order will be placed")
+            logging.warning("STOP not found in alert data - no stop loss order will be prepared")
 
-        logging.info(f"Order plan created with {len(order_plan)} orders")
-
-        # Initialize variables for tracking orders
+        logging.info(f"Order plan created with {len(order_plan)} orders (STOP order will be placed after ENTRY fill)")        # Initialize variables for tracking orders
         order_results = []
         order_tracking = {
             "ENTRY": None,
             "TP1": None, 
-            "STOP": None
+            "STOP": None  # Will be set after ENTRY is filled
         }
 
         # Execute the order plan
@@ -465,10 +481,8 @@ async def webhook(req: Request):
                 order_results.append({order["label"]: result})
                 
             except Exception as e:
-                logging.error(f"Error placing order {order['label']}: {e}")
-
-        # Start comprehensive monitoring of all orders
-        asyncio.create_task(monitor_all_orders(order_tracking, symbol))
+                logging.error(f"Error placing order {order['label']}: {e}")        # Start comprehensive monitoring of all orders
+        asyncio.create_task(monitor_all_orders(order_tracking, symbol, stop_order_data))
 
         logging.info("Order plan execution completed")
         return {"status": "success", "order_responses": order_results}
