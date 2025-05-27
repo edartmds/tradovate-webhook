@@ -187,12 +187,13 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
     entry_filled = False
     monitoring_start_time = asyncio.get_event_loop().time()
     max_monitoring_time = 3600  # 1 hour timeout
-    
+
     while True:
         try:
             headers = {"Authorization": f"Bearer {client.access_token}"}
             active_orders = {}
             logging.info(f"Order tracking state: {order_tracking}")
+
             # Check status of all tracked orders
             for label, order_id in order_tracking.items():
                 if order_id is None:
@@ -205,7 +206,7 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                     order_status = response.json()
                 status = order_status.get("status")
                 logging.info(f"Order {label} (ID: {order_id}) status: {status} | Full order_status: {order_status}")
-                
+
                 if status == "Filled":
                     if label == "ENTRY" and not entry_filled:
                         logging.info(f"ENTRY order filled! Now placing STOP order for protection.")
@@ -214,7 +215,6 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                         # Now place the STOP order since we're in position
                         if stop_order_data:
                             try:
-                                # Validate stop order data before placing
                                 required_fields = ["accountId", "symbol", "action", "orderQty", "orderType", "stopPrice"]
                                 for field in required_fields:
                                     if field not in stop_order_data:
@@ -231,10 +231,8 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                                 logging.info(f"STOP order placed successfully: {stop_result}")
                             except Exception as e:
                                 logging.error(f"Error placing STOP order after ENTRY fill: {e}")
-                                # Try alternative approach if first attempt fails
                                 try:
                                     logging.info("Attempting fallback method for STOP order placement")
-                                    headers = {"Authorization": f"Bearer {client.access_token}"}
                                     async with httpx.AsyncClient() as http_client:
                                         response = await http_client.post(
                                             f"https://demo-api.tradovate.com/v1/order/placeorder",
@@ -251,7 +249,7 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                                     logging.error(f"Position will remain UNPROTECTED by stop loss!")
                         else:
                             logging.warning("No stop_order_data provided - position will remain UNPROTECTED!")
-                        
+
                     elif label == "TP1" and entry_filled:
                         logging.info(f"TP1 order filled! Cancelling STOP order.")
                         if order_tracking.get("STOP"):
@@ -268,7 +266,7 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                         else:
                             logging.info("No STOP order to cancel after TP1 fill.")
                         return  # Exit monitoring
-                        
+
                     elif label == "STOP" and entry_filled:
                         logging.info(f"STOP order filled! Cancelling TP orders.")
                         if order_tracking.get("TP1"):
@@ -276,24 +274,24 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                             async with httpx.AsyncClient() as http_client:
                                 await http_client.post(cancel_url, headers=headers)
                         return  # Exit monitoring
-                        
+
                 elif status in ["Working", "Accepted"]:
                     active_orders[label] = order_id
                 elif status in ["Cancelled", "Rejected"]:
                     logging.info(f"Order {label} was {status}")
-                    
+
             # Check if monitoring has been running too long
             if asyncio.get_event_loop().time() - monitoring_start_time > max_monitoring_time:
                 logging.warning(f"Order monitoring timeout reached for {symbol}. Stopping monitoring.")
                 return
-                
+
             # If no active orders remain, stop monitoring
             if not active_orders:
                 logging.info("No active orders remaining. Stopping monitoring.")
                 return
-                
+
             await asyncio.sleep(1)
-            
+
         except Exception as e:
             logging.error(f"Error in comprehensive order monitoring: {e}")
             await asyncio.sleep(5)
