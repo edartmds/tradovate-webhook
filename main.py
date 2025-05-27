@@ -308,7 +308,20 @@ async def webhook(req: Request):
         if WEBHOOK_SECRET is None:
             raise HTTPException(status_code=500, detail="Missing WEBHOOK_SECRET")
 
-        # Deduplication logic
+        # Extract symbol and action from the alert data
+        symbol = data.get("symbol")
+        action = data.get("action")
+        if not symbol or not action:
+            raise HTTPException(status_code=400, detail="Missing required fields: symbol or action")
+
+        # Reset order tracking for the new alert
+        order_tracking = {
+            "ENTRY": None,
+            "TP1": None,
+            "STOP": None
+        }
+
+        # Ensure deduplication logic handles switching orders
         current_hash = hash_alert(data)
         if current_hash in recent_alert_hashes:
             logging.warning("Duplicate alert received. Skipping execution.")
@@ -317,15 +330,9 @@ async def webhook(req: Request):
         if len(recent_alert_hashes) > MAX_HASHES:
             recent_alert_hashes = set(list(recent_alert_hashes)[-MAX_HASHES:])
 
-
-        action = data["action"].capitalize()
-        symbol = data["symbol"]
-        if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
-            symbol = "NQM5"
-
         # Fuzzy deduplication: ignore new alert for same symbol+direction within 30 seconds
         dedup_window = timedelta(seconds=30)
-        alert_direction = data["action"].lower()
+        alert_direction = action.lower()
         now = datetime.utcnow()
         last = last_alert.get(symbol)
         if last and last["direction"] == alert_direction and (now - last["timestamp"]) < dedup_window:
