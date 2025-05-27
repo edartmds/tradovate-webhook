@@ -1,3 +1,41 @@
+async def monitor_single_tp_and_stop(tp_order_id, sl_order_id):
+    """
+    For single-contract trades: if TP is filled, cancel STOP; if STOP is filled, cancel TP.
+    """
+    logging.info(f"Monitoring single TP ({tp_order_id}) and STOP ({sl_order_id}) for mutual cancellation.")
+    while True:
+        try:
+            # Check TP status
+            url_tp = f"https://demo-api.tradovate.com/v1/order/{tp_order_id}"
+            url_sl = f"https://demo-api.tradovate.com/v1/order/{sl_order_id}"
+            headers = {"Authorization": f"Bearer {client.access_token}"}
+            async with httpx.AsyncClient() as http_client:
+                resp_tp = await http_client.get(url_tp, headers=headers)
+                resp_tp.raise_for_status()
+                tp_status = resp_tp.json().get("status")
+                resp_sl = await http_client.get(url_sl, headers=headers)
+                resp_sl.raise_for_status()
+                sl_status = resp_sl.json().get("status")
+
+            if tp_status == "Filled":
+                logging.info(f"TP order {tp_order_id} filled. Cancelling SL order {sl_order_id}.")
+                cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{sl_order_id}"
+                async with httpx.AsyncClient() as http_client:
+                    await http_client.post(cancel_url, headers=headers)
+                return
+            elif sl_status == "Filled":
+                logging.info(f"SL order {sl_order_id} filled. Cancelling TP order {tp_order_id}.")
+                cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{tp_order_id}"
+                async with httpx.AsyncClient() as http_client:
+                    await http_client.post(cancel_url, headers=headers)
+                return
+            # If both are cancelled or rejected, stop monitoring
+            if tp_status in ["Cancelled", "Rejected"] and sl_status in ["Cancelled", "Rejected"]:
+                return
+            await asyncio.sleep(1)
+        except Exception as e:
+            logging.error(f"Error monitoring single TP/STOP: {e}")
+            await asyncio.sleep(5)
 import os
 import logging
 from datetime import datetime
@@ -367,8 +405,12 @@ async def webhook(req: Request):
             except Exception as e:
                 logging.error(f"Error placing order {order['label']}: {e}")
 
-        # Monitor stop-loss and take-profit orders
-        if sl_order_id and tp_order_ids:
+
+        # Monitor for single-contract scenario: if only one TP and one STOP
+        if sl_order_id and len(tp_order_ids) == 1:
+            asyncio.create_task(monitor_single_tp_and_stop(tp_order_ids[0], sl_order_id))
+        # If more than one TP, use the old logic (for future multi-TP support)
+        elif sl_order_id and tp_order_ids:
             asyncio.create_task(monitor_stop_order_and_cancel_tp(sl_order_id, tp_order_ids))
             asyncio.create_task(monitor_tp_and_adjust_sl(tp_order_ids, sl_order_id, sl_order_qty, symbol))
 
