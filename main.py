@@ -259,6 +259,7 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                                     resp = await http_client.post(cancel_url, headers=headers)
                                     if resp.status_code == 200:
                                         logging.info(f"STOP order {order_tracking['STOP']} cancelled after TP1 fill.")
+                                        order_tracking["STOP"] = None  # Clear STOP tracking
                                     else:
                                         logging.warning(f"Failed to cancel STOP order {order_tracking['STOP']} after TP1 fill. Status: {resp.status_code}")
                             except Exception as e:
@@ -271,8 +272,16 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                         logging.info(f"STOP order filled! Cancelling TP orders.")
                         if order_tracking.get("TP1"):
                             cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{order_tracking['TP1']}"
-                            async with httpx.AsyncClient() as http_client:
-                                await http_client.post(cancel_url, headers=headers)
+                            try:
+                                async with httpx.AsyncClient() as http_client:
+                                    resp = await http_client.post(cancel_url, headers=headers)
+                                    if resp.status_code == 200:
+                                        logging.info(f"TP1 order {order_tracking['TP1']} cancelled after STOP fill.")
+                                        order_tracking["TP1"] = None  # Clear TP1 tracking
+                                    else:
+                                        logging.warning(f"Failed to cancel TP1 order {order_tracking['TP1']} after STOP fill. Status: {resp.status_code}")
+                            except Exception as e:
+                                logging.error(f"Exception while cancelling TP1 order after STOP fill: {e}")
                         return  # Exit monitoring
 
                 elif status in ["Working", "Accepted"]:
