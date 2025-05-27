@@ -332,7 +332,7 @@ async def webhook(req: Request):
         logging.info("Processing alert for order placement")
 
         # Add limit orders for T1, T2, T3
-        for i in range(1, 4):
+        for i in range(1):
             key = f"T{i}"
             if key in data:
                 order_plan.append({
@@ -351,7 +351,7 @@ async def webhook(req: Request):
                 "action": action,
                 "orderType": "Stop",
                 "stopPrice": data["PRICE"],
-                "qty": 3
+                "qty": 1
             })
             logging.info(f"Added stop order for entry at price: {data['PRICE']}")
 
@@ -362,7 +362,7 @@ async def webhook(req: Request):
                 "action": "Sell" if action.lower() == "buy" else "Buy",
                 "orderType": "Stop",
                 "stopPrice": data["STOP"],
-                "qty": 3
+                "qty": 1
             })
             logging.info(f"Added stop loss order at price: {data['STOP']}")
 
