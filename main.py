@@ -44,23 +44,36 @@ async def get_latest_price(symbol: str):
         return data["last"]
 
 async def cancel_all_orders(symbol):
-    # Cancel all open orders for the symbol, regardless of status
+    # Cancel all open orders for the symbol, regardless of status, and double-check after
     list_url = f"https://demo-api.tradovate.com/v1/order/list"
     cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel"
     headers = {"Authorization": f"Bearer {client.access_token}"}
     async with httpx.AsyncClient() as http_client:
+        # Repeat cancel attempts until no open orders remain (with a max retry limit)
+        max_retries = 5
+        for attempt in range(max_retries):
+            resp = await http_client.get(list_url, headers=headers)
+            resp.raise_for_status()
+            orders = resp.json()
+            open_orders = [o for o in orders if o.get("symbol") == symbol and o.get("status") in ("Working", "Accepted", "Pending", "Received")]
+            if not open_orders:
+                break
+            for order in open_orders:
+                oid = order.get("id")
+                if oid:
+                    try:
+                        await http_client.post(f"{cancel_url}/{oid}", headers=headers)
+                        logging.info(f"Cancelled order {oid} for {symbol}")
+                    except Exception as e:
+                        logging.error(f"Failed to cancel order {oid} for {symbol}: {e}")
+            await asyncio.sleep(0.5)
+        # Final check and log if any remain
         resp = await http_client.get(list_url, headers=headers)
         resp.raise_for_status()
         orders = resp.json()
         open_orders = [o for o in orders if o.get("symbol") == symbol and o.get("status") in ("Working", "Accepted", "Pending", "Received")]
-        for order in open_orders:
-            oid = order.get("id")
-            if oid:
-                try:
-                    await http_client.post(f"{cancel_url}/{oid}", headers=headers)
-                    logging.info(f"Cancelled order {oid} for {symbol}")
-                except Exception as e:
-                    logging.error(f"Failed to cancel order {oid} for {symbol}: {e}")
+        if open_orders:
+            logging.error(f"After repeated cancel attempts, still found open orders for {symbol}: {[o.get('id') for o in open_orders]}")
 
 async def flatten_position(symbol):
     url = f"https://demo-api.tradovate.com/v1/position/closeposition"
