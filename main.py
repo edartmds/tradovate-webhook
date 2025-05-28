@@ -272,31 +272,6 @@ async def webhook(req: Request):
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
             symbol = "NQM5"
 
-        # Check if this is an opposite direction alert before flattening
-        current_direction = action.lower()
-        
-        # Get current position to check for opposite direction
-        pos_url = f"https://demo-api.tradovate.com/v1/position/list"
-        headers = {"Authorization": f"Bearer {client.access_token}"}
-        async with httpx.AsyncClient() as http_client:
-            pos_resp = await http_client.get(pos_url, headers=headers)
-            pos_resp.raise_for_status()
-            positions = pos_resp.json()
-            
-        existing_position = None
-        for pos in positions:
-            if pos.get("symbol") == symbol and abs(pos.get("netPos", 0)) > 0:
-                existing_position = pos
-                break
-        
-        # Determine if this is an opposite direction alert
-        is_opposite_direction = False
-        if existing_position:
-            current_pos_qty = existing_position.get("netPos", 0)
-            if (current_pos_qty > 0 and current_direction == "sell") or (current_pos_qty < 0 and current_direction == "buy"):
-                is_opposite_direction = True
-                logging.info(f"Opposite direction alert detected! Current position: {current_pos_qty}, new direction: {current_direction}")
-
         # Flatten all orders and positions at the beginning of each payload
         logging.info(f"Flattening all orders and positions for symbol: {symbol}")
         await cancel_all_orders(symbol)
@@ -305,6 +280,8 @@ async def webhook(req: Request):
         logging.info("All orders and positions flattened successfully.")
 
         # Check for open position (should be flat)
+        pos_url = f"https://demo-api.tradovate.com/v1/position/list"
+        headers = {"Authorization": f"Bearer {client.access_token}"}
         async with httpx.AsyncClient() as http_client:
             pos_resp = await http_client.get(pos_url, headers=headers)
             pos_resp.raise_for_status()
@@ -313,7 +290,7 @@ async def webhook(req: Request):
                 if pos.get("symbol") == symbol and abs(pos.get("netPos", 0)) > 0:
                     logging.warning(f"Position for {symbol} is not flat after flatten. Skipping order placement.")
                     return {"status": "skipped", "detail": "Position not flat after flatten."}
-        
+
         # Check for open orders (should be none)
         order_url = f"https://demo-api.tradovate.com/v1/order/list"
         async with httpx.AsyncClient() as http_client:
@@ -429,6 +406,29 @@ async def webhook(req: Request):
     except Exception as e:
         logging.error(f"Unexpected error in webhook: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+        # Determine if this is an opposite direction alert
+        current_direction = action.lower()
+        pos_url = f"https://demo-api.tradovate.com/v1/position/list"
+        headers = {"Authorization": f"Bearer {client.access_token}"}
+        async with httpx.AsyncClient() as http_client:
+            pos_resp = await http_client.get(pos_url, headers=headers)
+            pos_resp.raise_for_status()
+            positions = pos_resp.json()
+
+        existing_position = None
+        for pos in positions:
+            if pos.get("symbol") == symbol and abs(pos.get("netPos", 0)) > 0:
+                existing_position = pos
+                break
+
+        is_opposite_direction = False
+        if existing_position:
+            current_pos_qty = existing_position.get("netPos", 0)
+            if (current_pos_qty > 0 and current_direction == "sell") or (current_pos_qty < 0 and current_direction == "buy"):
+                is_opposite_direction = True
+                logging.info(f"Opposite direction alert detected! Current position: {current_pos_qty}, new direction: {current_direction}")
+
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
