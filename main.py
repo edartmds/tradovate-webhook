@@ -170,6 +170,19 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price
                 parsed_data[target] = float(parsed_data[target])
                 logging.info(f"Converted {target} to float: {parsed_data[target]}")
 
+        # Add stricter validation for parsed data and log hash for debugging
+        logging.info(f"Parsed alert data: {parsed_data}")
+        current_hash = hash_alert(parsed_data)
+        logging.info(f"Computed hash for alert: {current_hash}")
+
+        # Ensure deduplication logic is robust
+        if current_hash in recent_alert_hashes:
+            logging.warning("Duplicate alert received. Skipping execution.")
+            return {"status": "duplicate", "detail": "Duplicate alert skipped."}
+        recent_alert_hashes.add(current_hash)
+        if len(recent_alert_hashes) > MAX_HASHES:
+            recent_alert_hashes = set(list(recent_alert_hashes)[-MAX_HASHES:])
+
         return parsed_data
 
     except Exception as e:
@@ -578,6 +591,14 @@ async def webhook(req: Request):
             # Clear processing symbol on error too
             currently_processing_symbol = None
             raise HTTPException(status_code=500, detail="Internal server error")
+
+# Clear recent_alert_hashes periodically to avoid stale data
+@app.on_event("startup")
+async def clear_recent_alert_hashes_periodically():
+    while True:
+        await asyncio.sleep(3600)  # Clear every hour
+        recent_alert_hashes.clear()
+        logging.info("Cleared recent_alert_hashes to avoid stale data.")
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
