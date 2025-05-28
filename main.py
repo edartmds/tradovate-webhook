@@ -190,13 +190,16 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                     order_status = response.json()
                 status = order_status.get("status")
                 logging.info(f"Order {label} (ID: {order_id}) status: {status} | Full order_status: {order_status}")
+                # Extra logging for debugging order status
+                if label == "ENTRY":
+                    logging.info(f"ENTRY order current status: {status}")
                 
                 if status == "Filled":
                     if label == "ENTRY" and not entry_filled:
-                        logging.info(f"ENTRY order filled! Now placing STOP order for protection.")
+                        logging.info(f"ENTRY order filled! Now placing STOP LOSS order for protection.")
                         entry_filled = True
-                        logging.info(f"STOP order data to be used: {stop_order_data}")
-                        # Now place the STOP order since we're in position
+                        logging.info(f"STOP LOSS order data to be used: {stop_order_data}")
+                        # Now place the STOP LOSS order since we're in position
                         if stop_order_data:
                             try:
                                 # Validate stop order data before placing
@@ -204,21 +207,22 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                                 for field in required_fields:
                                     if field not in stop_order_data:
                                         raise ValueError(f"Missing required field in stop_order_data: {field}")
-                                logging.info(f"Placing STOP order with data: {stop_order_data}")
+                                logging.info(f"Placing STOP LOSS order with data: {json.dumps(stop_order_data)}")
                                 stop_result = await client.place_order(
                                     symbol=symbol,
                                     action=stop_order_data["action"],
                                     quantity=stop_order_data["orderQty"],
                                     order_data=stop_order_data
                                 )
-                                logging.info(f"STOP order placement API response: {stop_result}")
+                                logging.info(f"STOP LOSS order placement API response: {stop_result}")
                                 order_tracking["STOP"] = stop_result.get("id")
-                                logging.info(f"STOP order placed successfully: {stop_result}")
+                                logging.info(f"STOP LOSS order placed successfully: {stop_result}")
                             except Exception as e:
-                                logging.error(f"Error placing STOP order after ENTRY fill: {e}")
+                                logging.error(f"Error placing STOP LOSS order after ENTRY fill: {e}")
+                                logging.error(f"STOP LOSS order data: {json.dumps(stop_order_data)}")
                                 # Try alternative approach if first attempt fails
                                 try:
-                                    logging.info("Attempting fallback method for STOP order placement")
+                                    logging.info("Attempting fallback method for STOP LOSS order placement")
                                     headers = {"Authorization": f"Bearer {client.access_token}"}
                                     async with httpx.AsyncClient() as http_client:
                                         response = await http_client.post(
@@ -228,11 +232,12 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                                         )
                                         response.raise_for_status()
                                         stop_result = response.json()
-                                        logging.info(f"STOP order placement fallback API response: {stop_result}")
+                                        logging.info(f"STOP LOSS order placement fallback API response: {stop_result}")
                                         order_tracking["STOP"] = stop_result.get("id")
-                                        logging.info(f"STOP order placed successfully (fallback): {stop_result}")
+                                        logging.info(f"STOP LOSS order placed successfully (fallback): {stop_result}")
                                 except Exception as e2:
-                                    logging.error(f"Failed to place STOP order with fallback method: {e2}")
+                                    logging.error(f"Failed to place STOP LOSS order with fallback method: {e2}")
+                                    logging.error(f"STOP LOSS order data: {json.dumps(stop_order_data)}")
                                     logging.error(f"Position will remain UNPROTECTED by stop loss!")
                         else:
                             logging.warning("No stop_order_data provided - position will remain UNPROTECTED!")
