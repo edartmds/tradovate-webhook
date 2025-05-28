@@ -340,15 +340,8 @@ async def webhook(req: Request):
         if len(recent_alert_hashes) > MAX_HASHES:
             recent_alert_hashes = set(list(recent_alert_hashes)[-MAX_HASHES:])
 
-        # Fuzzy deduplication: ignore new alert for same symbol+direction within 30 seconds
-        dedup_window = timedelta(seconds=30)
-        alert_direction = action.lower()
-        now = datetime.utcnow()
-        last = last_alert.get(symbol)
-        if last and last["direction"] == alert_direction and (now - last["timestamp"]) < dedup_window:
-            logging.warning(f"Duplicate/near-duplicate alert for {symbol} {alert_direction} within {dedup_window}. Skipping.")
-            return {"status": "duplicate", "detail": "Duplicate/near-duplicate alert skipped (time window)."}
-        last_alert[symbol] = {"direction": alert_direction, "timestamp": now}
+        # Remove fuzzy deduplication: always process new alerts, even if rapid
+        # Always update/replace orders to match the most recent alert
 
         # --- REFACTORED LOGIC: Always flatten and cancel before placing new orders ---
         logging.info(f"Flattening all positions and cancelling all orders for {symbol} before placing new orders.")
