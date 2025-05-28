@@ -430,48 +430,17 @@ async def webhook(req: Request):
         else:
             logging.warning("T1 not found in alert data - no take profit order will be placed")
 
-        # Add stop order for entry, but check if price is already at/through the stop level
+        # Add stop order for entry, always use stop order (no market data fallback)
         if "PRICE" in data:
-            try:
-                # Get latest price for the symbol
-                try:
-                    latest_price = await get_latest_price(symbol)
-                except ValueError:
-                    latest_price = None
-                entry_price = float(data["PRICE"])
-                is_buy = action.lower() == "buy"
-                use_market = False
-                if latest_price is not None:
-                    # For BUY: if market is at/above entry, use market order. For SELL: if at/below, use market order.
-                    use_market = (is_buy and latest_price >= entry_price) or (not is_buy and latest_price <= entry_price)
-                if use_market:
-                    order_plan.append({
-                        "label": "ENTRY",
-                        "action": action,
-                        "orderType": "Market",
-                        "qty": 1
-                    })
-                    logging.info(f"Market is at/through entry stop level (latest: {latest_price}, entry: {entry_price}). Placing ENTRY as market order.")
-                else:
-                    order_plan.append({
-                        "label": "ENTRY",
-                        "action": action,
-                        "orderType": "Stop",
-                        "stopPrice": entry_price,
-                        "qty": 1
-                    })
-                    logging.info(f"Added stop order for entry at price: {entry_price}")
-            except Exception as e:
-                logging.error(f"Error checking market price for ENTRY order: {e}")
-                # Fallback: place stop order as before
-                order_plan.append({
-                    "label": "ENTRY",
-                    "action": action,
-                    "orderType": "Stop",
-                    "stopPrice": data["PRICE"],
-                    "qty": 1
-                })
-                logging.info(f"Fallback: Added stop order for entry at price: {data['PRICE']}")
+            entry_price = float(data["PRICE"])
+            order_plan.append({
+                "label": "ENTRY",
+                "action": action,
+                "orderType": "Stop",
+                "stopPrice": entry_price,
+                "qty": 1
+            })
+            logging.info(f"Added stop order for entry at price: {entry_price}")
         else:
             logging.warning("PRICE not found in alert data - no entry order will be placed")
 
