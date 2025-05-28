@@ -1,4 +1,6 @@
-import os
+cimport os
+from datetime import timedelta
+last_alert = {}  # {symbol: {"direction": "buy"/"sell", "timestamp": datetime}}
 import logging
 from datetime import datetime
 from fastapi import FastAPI, Request, HTTPException
@@ -38,16 +40,54 @@ async def get_latest_price(symbol: str):
     url = f"https://demo-api.tradovate.com/v1/marketdata/quote/{symbol}"
     headers = {"Authorization": f"Bearer {client.access_token}"}
     async with httpx.AsyncClient() as http_client:
-        response = await http_client.get(url, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-        return data["last"]
+        try:
+            response = await http_client.get(url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            return data["last"]
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                logging.warning(f"Market data not found for symbol {symbol} (404). Proceeding with fallback logic.")
+                raise ValueError(f"Market data not found for symbol {symbol}")
+            else:
+                logging.error(f"HTTP error getting market data for {symbol}: {e}")
+                raise
+        except Exception as e:
+            logging.error(f"Unexpected error getting market data for {symbol}: {e}")
+            raise
 
 async def cancel_all_orders(symbol):
-    url = f"https://demo-api.tradovate.com/v1/order/cancelallorders"
+    # Cancel all open orders for the symbol, regardless of status, and double-check after
+    list_url = f"https://demo-api.tradovate.com/v1/order/list"
+    cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel"
     headers = {"Authorization": f"Bearer {client.access_token}"}
     async with httpx.AsyncClient() as http_client:
-        await http_client.post(url, headers=headers, json={"symbol": symbol})
+        # Repeat cancel attempts until no open orders remain (with a max retry limit)
+        max_retries = 8
+        for attempt in range(max_retries):
+            resp = await http_client.get(list_url, headers=headers)
+            resp.raise_for_status()
+            orders = resp.json()
+            # Cancel ALL orders for the symbol, regardless of status (except Filled/Cancelled/Rejected)
+            open_orders = [o for o in orders if o.get("symbol") == symbol and o.get("status") not in ("Filled", "Cancelled", "Rejected")]
+            if not open_orders:
+                break
+            for order in open_orders:
+                oid = order.get("id")
+                if oid:
+                    try:
+                        await http_client.post(f"{cancel_url}/{oid}", headers=headers)
+                        logging.info(f"Cancelled order {oid} for {symbol} (status: {order.get('status')})")
+                    except Exception as e:
+                        logging.error(f"Failed to cancel order {oid} for {symbol}: {e}")
+            await asyncio.sleep(0.5)
+        # Final check and log if any remain
+        resp = await http_client.get(list_url, headers=headers)
+        resp.raise_for_status()
+        orders = resp.json()
+        open_orders = [o for o in orders if o.get("symbol") == symbol and o.get("status") not in ("Filled", "Cancelled", "Rejected")]
+        if open_orders:
+            logging.error(f"After repeated cancel attempts, still found open orders for {symbol}: {[o.get('id') for o in open_orders]} (statuses: {[o.get('status') for o in open_orders]})")
 
 async def flatten_position(symbol):
     url = f"https://demo-api.tradovate.com/v1/position/closeposition"
@@ -201,8 +241,17 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                         logging.info(f"TP1 order filled! Cancelling STOP order.")
                         if order_tracking.get("STOP"):
                             cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{order_tracking['STOP']}"
-                            async with httpx.AsyncClient() as http_client:
-                                await http_client.post(cancel_url, headers=headers)
+                            try:
+                                async with httpx.AsyncClient() as http_client:
+                                    resp = await http_client.post(cancel_url, headers=headers)
+                                    if resp.status_code == 200:
+                                        logging.info(f"STOP order {order_tracking['STOP']} cancelled after TP1 fill.")
+                                    else:
+                                        logging.warning(f"Failed to cancel STOP order {order_tracking['STOP']} after TP1 fill. Status: {resp.status_code}")
+                            except Exception as e:
+                                logging.error(f"Exception while cancelling STOP order after TP1 fill: {e}")
+                        else:
+                            logging.info("No STOP order to cancel after TP1 fill.")
                         return  # Exit monitoring
                         
                     elif label == "STOP" and entry_filled:
@@ -238,6 +287,7 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
 @app.post("/webhook")
 async def webhook(req: Request):
     global recent_alert_hashes
+    global last_alert
     logging.info("Webhook endpoint hit.")
     try:
         content_type = req.headers.get("content-type")
@@ -258,7 +308,14 @@ async def webhook(req: Request):
         if WEBHOOK_SECRET is None:
             raise HTTPException(status_code=500, detail="Missing WEBHOOK_SECRET")
 
-        # Deduplication logic
+        # Reset order tracking for the new alert
+        order_tracking = {
+            "ENTRY": None,
+            "TP1": None,
+            "STOP": None
+        }
+
+        # Ensure deduplication logic handles switching orders
         current_hash = hash_alert(data)
         if current_hash in recent_alert_hashes:
             logging.warning("Duplicate alert received. Skipping execution.")
@@ -267,12 +324,36 @@ async def webhook(req: Request):
         if len(recent_alert_hashes) > MAX_HASHES:
             recent_alert_hashes = set(list(recent_alert_hashes)[-MAX_HASHES:])
 
-        action = data["action"].capitalize()
-        symbol = data["symbol"]
-        if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
-            symbol = "NQM5"
+        # Fuzzy deduplication: ignore new alert for same symbol+direction within 30 seconds
+        dedup_window = timedelta(seconds=30)
+        alert_direction = data["action"].lower()
+        now = datetime.utcnow()
+        last = last_alert.get(symbol)
+        if last and last["direction"] == alert_direction and (now - last["timestamp"]) < dedup_window:
+            logging.warning(f"Duplicate/near-duplicate alert for {symbol} {alert_direction} within {dedup_window}. Skipping.")
+            return {"status": "duplicate", "detail": "Duplicate/near-duplicate alert skipped (time window)."}
+        last_alert[symbol] = {"direction": alert_direction, "timestamp": now}
 
-        # Flatten all orders and positions at the beginning of each payload
+        # Always flatten all orders and positions at the beginning of each alert, regardless of direction
+        pos_url = f"https://demo-api.tradovate.com/v1/position/list"
+        headers = {"Authorization": f"Bearer {client.access_token}"}
+        async with httpx.AsyncClient() as http_client:
+            pos_resp = await http_client.get(pos_url, headers=headers)
+            pos_resp.raise_for_status()
+            positions = pos_resp.json()
+
+        existing_position = None
+        for pos in positions:
+            if pos.get("symbol") == symbol and abs(pos.get("netPos", 0)) > 0:
+                existing_position = pos
+                break
+
+        if existing_position:
+            current_pos_qty = existing_position.get("netPos", 0)
+            logging.info(f"Existing open position detected for {symbol}: {current_pos_qty}. Flattening before placing new orders.")
+        else:
+            logging.info(f"No open position for {symbol}. Proceeding to place new orders.")
+
         logging.info(f"Flattening all orders and positions for symbol: {symbol}")
         await cancel_all_orders(symbol)
         await flatten_position(symbol)
@@ -280,8 +361,6 @@ async def webhook(req: Request):
         logging.info("All orders and positions flattened successfully.")
 
         # Check for open position (should be flat)
-        pos_url = f"https://demo-api.tradovate.com/v1/position/list"
-        headers = {"Authorization": f"Bearer {client.access_token}"}
         async with httpx.AsyncClient() as http_client:
             pos_resp = await http_client.get(pos_url, headers=headers)
             pos_resp.raise_for_status()
@@ -290,7 +369,7 @@ async def webhook(req: Request):
                 if pos.get("symbol") == symbol and abs(pos.get("netPos", 0)) > 0:
                     logging.warning(f"Position for {symbol} is not flat after flatten. Skipping order placement.")
                     return {"status": "skipped", "detail": "Position not flat after flatten."}
-
+        
         # Check for open orders (should be none)
         order_url = f"https://demo-api.tradovate.com/v1/order/list"
         async with httpx.AsyncClient() as http_client:
@@ -320,16 +399,48 @@ async def webhook(req: Request):
         else:
             logging.warning("T1 not found in alert data - no take profit order will be placed")
 
-        # Add stop order for entry
+        # Add stop order for entry, but check if price is already at/through the stop level
         if "PRICE" in data:
-            order_plan.append({
-                "label": "ENTRY",   
-                "action": action,
-                "orderType": "Stop",
-                "stopPrice": data["PRICE"],
-                "qty": 1
-            })
-            logging.info(f"Added stop order for entry at price: {data['PRICE']}")
+            try:
+                # Get latest price for the symbol
+                try:
+                    latest_price = await get_latest_price(symbol)
+                except ValueError:
+                    latest_price = None
+                entry_price = float(data["PRICE"])
+                is_buy = action.lower() == "buy"
+                use_market = False
+                if latest_price is not None:
+                    # For BUY: if market is at/above entry, use market order. For SELL: if at/below, use market order.
+                    use_market = (is_buy and latest_price >= entry_price) or (not is_buy and latest_price <= entry_price)
+                if use_market:
+                    order_plan.append({
+                        "label": "ENTRY",
+                        "action": action,
+                        "orderType": "Market",
+                        "qty": 1
+                    })
+                    logging.info(f"Market is at/through entry stop level (latest: {latest_price}, entry: {entry_price}). Placing ENTRY as market order.")
+                else:
+                    order_plan.append({
+                        "label": "ENTRY",
+                        "action": action,
+                        "orderType": "Stop",
+                        "stopPrice": entry_price,
+                        "qty": 1
+                    })
+                    logging.info(f"Added stop order for entry at price: {entry_price}")
+            except Exception as e:
+                logging.error(f"Error checking market price for ENTRY order: {e}")
+                # Fallback: place stop order as before
+                order_plan.append({
+                    "label": "ENTRY",
+                    "action": action,
+                    "orderType": "Stop",
+                    "stopPrice": data["PRICE"],
+                    "qty": 1
+                })
+                logging.info(f"Fallback: Added stop order for entry at price: {data['PRICE']}")
         else:
             logging.warning("PRICE not found in alert data - no entry order will be placed")
 
@@ -348,9 +459,7 @@ async def webhook(req: Request):
 
         logging.info(f"Order plan created with {len(order_plan)} orders (STOP order placed at the same time as ENTRY)")
         
-        # Log opposite direction handling result
-        if is_opposite_direction:
-            logging.info("Successfully handled opposite direction alert by flattening existing position")
+        # Remove reference to is_opposite_direction (no longer used)
         
         # Initialize variables for tracking orders
         order_results = []
@@ -360,8 +469,8 @@ async def webhook(req: Request):
             "STOP": None  # Will be set after ENTRY is filled
         }
 
-        # Execute the order plan
-        logging.info("Executing order plan")
+        # Execute the order plan with ENTRY fallback logic
+        logging.info("Executing order plan with ENTRY fallback logic")
         for order in order_plan:
             order_payload = {
                 "accountId": client.account_id,
@@ -375,13 +484,26 @@ async def webhook(req: Request):
                 "isAutomated": True
             }
 
-            # Ensure exact values are used for price and stopPrice
-            if "price" in order:
-                order_payload["price"] = order["price"]
-            if "stopPrice" in order:
-                order_payload["stopPrice"] = order["stopPrice"]
+            # ENTRY fallback: If ENTRY is a stop order and price is already at/through stop, use market order
+            if order["label"] == "ENTRY" and order["orderType"] == "Stop":
+                try:
+                    try:
+                        latest_price = await get_latest_price(symbol)
+                    except ValueError:
+                        latest_price = None
+                    stop_price = order.get("stopPrice")
+                    if stop_price is not None and latest_price is not None:
+                        # For BUY, if price >= stop, for SELL, if price <= stop
+                        if (order["action"].lower() == "buy" and latest_price >= stop_price) or \
+                           (order["action"].lower() == "sell" and latest_price <= stop_price):
+                            logging.info(f"ENTRY stop order would be triggered immediately (latest: {latest_price}, stop: {stop_price}). Placing as MARKET order instead.")
+                            order_payload["orderType"] = "Market"
+                            order_payload.pop("stopPrice", None)
+                            order_payload.pop("price", None)
+                except Exception as e:
+                    logging.error(f"Error checking latest price for ENTRY fallback: {e}")
 
-            logging.info(f"Placing order with exact values: {order_payload}")
+            logging.info(f"Placing order: {order_payload}")
             try:
                 result = await client.place_order(
                     symbol=symbol,
@@ -390,47 +512,19 @@ async def webhook(req: Request):
                     order_data=order_payload
                 )
                 logging.info(f"Order placed successfully: {result}")
-                # Extra debug: print the full API response for ENTRY
                 if order['label'] == 'ENTRY':
                     logging.info(f"ENTRY order API response: {result}")
-                # Track the order ID
                 order_id = result.get("id")
                 order_tracking[order["label"]] = order_id
                 order_results.append({order["label"]: result})
             except Exception as e:
                 logging.error(f"Error placing order {order['label']}: {e}")
-        
-        # No need to monitor orders for STOP placement anymore
+
         logging.info("Order plan execution completed")
         return {"status": "success", "order_responses": order_results}
     except Exception as e:
         logging.error(f"Unexpected error in webhook: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
-
-        # Initialize is_opposite_direction with a default value
-        is_opposite_direction = False
-
-        # Determine if this is an opposite direction alert
-        current_direction = action.lower()
-        pos_url = f"https://demo-api.tradovate.com/v1/position/list"
-        headers = {"Authorization": f"Bearer {client.access_token}"}
-        async with httpx.AsyncClient() as http_client:
-            pos_resp = await http_client.get(pos_url, headers=headers)
-            pos_resp.raise_for_status()
-            positions = pos_resp.json()
-
-        existing_position = None
-        for pos in positions:
-            if pos.get("symbol") == symbol and abs(pos.get("netPos", 0)) > 0:
-                existing_position = pos
-                break
-
-        if existing_position:
-            current_pos_qty = existing_position.get("netPos", 0)
-            if (current_pos_qty > 0 and current_direction == "sell") or (current_pos_qty < 0 and current_direction == "buy"):
-                is_opposite_direction = True
-                logging.info(f"Opposite direction alert detected! Current position: {current_pos_qty}, new direction: {current_direction}")
-
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
