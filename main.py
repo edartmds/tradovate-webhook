@@ -375,7 +375,11 @@ async def process_alert(data, symbol, action):
 
         # Place STOP order only after ENTRY is filled
         if stop_order_data and "ENTRY" in order_tracking:
-            entry_id = order_tracking["ENTRY"]
+            entry_id = order_tracking.get("ENTRY")
+            if not entry_id:
+                logging.error("ENTRY order ID is None. Cannot place STOP order.")
+                return order_results
+
             try:
                 headers = {"Authorization": f"Bearer {client.access_token}"}
                 async with httpx.AsyncClient() as http_client:
