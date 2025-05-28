@@ -29,32 +29,13 @@ logging.basicConfig(
 
 app = FastAPI()
 client = TradovateClient()
-recent_alert_hashes = set()
-MAX_HASHES = 20  # Keep the last 20 unique alerts
+
 
 @app.on_event("startup")
 async def startup_event():
     await client.authenticate()
 
-async def get_latest_price(symbol: str):
-    url = f"https://demo-api.tradovate.com/v1/marketdata/quote/{symbol}"
-    headers = {"Authorization": f"Bearer {client.access_token}"}
-    async with httpx.AsyncClient() as http_client:
-        try:
-            response = await http_client.get(url, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-            return data["last"]
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                logging.warning(f"Market data not found for symbol {symbol} (404). Proceeding with fallback logic.")
-                raise ValueError(f"Market data not found for symbol {symbol}")
-            else:
-                logging.error(f"HTTP error getting market data for {symbol}: {e}")
-                raise
-        except Exception as e:
-            logging.error(f"Unexpected error getting market data for {symbol}: {e}")
-            raise
+
 
 async def cancel_all_orders(symbol):
     # Cancel all open orders for the symbol, regardless of status, and double-check after
@@ -115,47 +96,42 @@ async def wait_until_no_open_orders(symbol, timeout=10):
             return
         await asyncio.sleep(0.5)
 
-def parse_alert_to_tradovate_json(alert_text: str, account_id: int, latest_price: float = None) -> dict:
+def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
     logging.info(f"Raw alert text: {alert_text}")
-    try:
-        parsed_data = {}
-        if alert_text.startswith("="):
-            try:
-                json_part, remaining_text = alert_text[1:].split("\n", 1)
-                json_data = json.loads(json_part)
-                parsed_data.update(json_data)
-                alert_text = remaining_text
-            except (json.JSONDecodeError, ValueError) as e:
-                raise ValueError(f"Error parsing JSON-like structure: {e}")
+    parsed_data = {}
+    if alert_text.startswith("="):
+        try:
+            json_part, remaining_text = alert_text[1:].split("\n", 1)
+            json_data = json.loads(json_part)
+            parsed_data.update(json_data)
+            alert_text = remaining_text
+        except (json.JSONDecodeError, ValueError) as e:
+            raise ValueError(f"Error parsing JSON-like structure: {e}")
 
-        for line in alert_text.split("\n"):
-            if "=" in line:
-                key, value = line.split("=", 1)
-                key = key.strip()
-                value = value.strip()
-                parsed_data[key] = value
-                logging.info(f"Parsed {key} = {value}")
-            elif line.strip().upper() in ["BUY", "SELL"]:
-                parsed_data["action"] = line.strip().capitalize()
-                logging.info(f"Parsed action = {parsed_data['action']}")
+    for line in alert_text.split("\n"):
+        if "=" in line:
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            parsed_data[key] = value
+            logging.info(f"Parsed {key} = {value}")
+        elif line.strip().upper() in ["BUY", "SELL"]:
+            parsed_data["action"] = line.strip().capitalize()
+            logging.info(f"Parsed action = {parsed_data['action']}")
 
-        logging.info(f"Complete parsed alert data: {parsed_data}")
+    logging.info(f"Complete parsed alert data: {parsed_data}")
 
-        required_fields = ["symbol", "action"]
-        for field in required_fields:
-            if field not in parsed_data or not parsed_data[field]:
-                raise ValueError(f"Missing or invalid field: {field}")
+    required_fields = ["symbol", "action"]
+    for field in required_fields:
+        if field not in parsed_data or not parsed_data[field]:
+            raise ValueError(f"Missing or invalid field: {field}")
 
-        for target in ["T1", "STOP", "PRICE"]:
-            if target in parsed_data:
-                parsed_data[target] = float(parsed_data[target])
-                logging.info(f"Converted {target} to float: {parsed_data[target]}")
+    for target in ["T1", "STOP", "PRICE"]:
+        if target in parsed_data:
+            parsed_data[target] = float(parsed_data[target])
+            logging.info(f"Converted {target} to float: {parsed_data[target]}")
 
-        return parsed_data
-
-    except Exception as e:
-        logging.error(f"Error parsing alert: {e}")
-        raise ValueError(f"Error parsing alert: {e}")
+    return parsed_data
 
 def hash_alert(data: dict) -> str:
     alert_string = json.dumps(data, sort_keys=True)
@@ -288,31 +264,25 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
             logging.error(f"Error in comprehensive order monitoring: {e}")
             await asyncio.sleep(5)
 
-# Ensure deduplication logic is robust
+
+# Webhook endpoint (cleaned up, no deduplication, no market data fallback, no legacy logic)
 @app.post("/webhook")
 async def webhook(req: Request):
-    global recent_alert_hashes
-    global last_alert
     logging.info("Webhook endpoint hit.")
     try:
         content_type = req.headers.get("content-type")
         raw_body = await req.body()
 
-        latest_price = None
-
         if content_type == "application/json":
             data = await req.json()
         elif content_type.startswith("text/plain"):
             text_data = raw_body.decode("utf-8")
-            if "symbol=" in text_data:
-                latest_price = await get_latest_price(text_data.split("symbol=")[1].split(",")[0])
-            data = parse_alert_to_tradovate_json(text_data, client.account_id, latest_price)
+            data = parse_alert_to_tradovate_json(text_data, client.account_id)
         else:
             raise HTTPException(status_code=400, detail="Unsupported content type")
 
         if WEBHOOK_SECRET is None:
             raise HTTPException(status_code=500, detail="Missing WEBHOOK_SECRET")
-
 
         # Extract symbol and action from the alert data
         symbol = data.get("symbol")
@@ -331,19 +301,7 @@ async def webhook(req: Request):
             "STOP": None
         }
 
-        # Ensure deduplication logic handles switching orders
-        current_hash = hash_alert(data)
-        if current_hash in recent_alert_hashes:
-            logging.warning("Duplicate alert received. Skipping execution.")
-            return {"status": "duplicate", "detail": "Duplicate alert skipped."}
-        recent_alert_hashes.add(current_hash)
-        if len(recent_alert_hashes) > MAX_HASHES:
-            recent_alert_hashes = set(list(recent_alert_hashes)[-MAX_HASHES:])
-
-        # Remove fuzzy deduplication: always process new alerts, even if rapid
-        # Always update/replace orders to match the most recent alert
-
-        # --- REFACTORED LOGIC: Always flatten and cancel before placing new orders ---
+        # Always flatten and cancel before placing new orders
         logging.info(f"Checking and modifying open orders for {symbol} to match the latest alert values.")
         pos_url = f"https://demo-api.tradovate.com/v1/position/list"
         order_url = f"https://demo-api.tradovate.com/v1/order/list"
@@ -411,7 +369,7 @@ async def webhook(req: Request):
             # If there are no open orders, proceed to place new ones as usual
             if not open_orders:
                 logging.info("No open orders found, will place new orders as usual.")
-        
+
         # Initialize the order plan
         order_plan = []
         stop_order_data = None
@@ -430,7 +388,7 @@ async def webhook(req: Request):
         else:
             logging.warning("T1 not found in alert data - no take profit order will be placed")
 
-        # Add stop order for entry, always use stop order (no market data fallback)
+        # Add stop order for entry, always use stop order
         if "PRICE" in data:
             entry_price = float(data["PRICE"])
             order_plan.append({
@@ -462,9 +420,7 @@ async def webhook(req: Request):
             logging.warning("STOP not found in alert data - no stop loss order will be placed")
 
         logging.info(f"Order plan created with {len(order_plan)} orders (STOP LOSS will be placed after ENTRY fill)")
-        
-        # Remove reference to is_opposite_direction (no longer used)
-        
+
         # Initialize variables for tracking orders
         order_results = []
         order_tracking = {
@@ -473,8 +429,8 @@ async def webhook(req: Request):
             "STOP": None  # Will be set after ENTRY is filled
         }
 
-        # Execute the order plan with ENTRY fallback logic
-        logging.info("Executing order plan with ENTRY fallback logic")
+        # Execute the order plan (no ENTRY fallback, no market data logic)
+        logging.info("Executing order plan")
         for order in order_plan:
             order_payload = {
                 "accountId": client.account_id,
@@ -488,37 +444,6 @@ async def webhook(req: Request):
                 "isAutomated": True
             }
 
-            # ENTRY fallback: If ENTRY is a stop order and price is already at/through stop, use market order
-            if order["label"] == "ENTRY" and order["orderType"] == "Stop":
-                try:
-                    try:
-                        latest_price = await get_latest_price(symbol)
-                    except ValueError:
-                        latest_price = None
-                    stop_price = order.get("stopPrice")
-                    if stop_price is not None and latest_price is not None:
-                        # For BUY, if price >= stop, for SELL, if price <= stop
-                        if (order["action"].lower() == "buy" and latest_price >= stop_price) or \
-                           (order["action"].lower() == "sell" and latest_price <= stop_price):
-                            logging.info(f"ENTRY stop order would be triggered immediately (latest: {latest_price}, stop: {stop_price}). Placing as MARKET order instead.")
-                            order_payload["orderType"] = "Market"
-                            order_payload.pop("stopPrice", None)
-                            order_payload.pop("price", None)
-                except Exception as e:
-                    logging.error(f"Error checking latest price for ENTRY fallback: {e}")
-
-            # Handle fallback when market data is unavailable
-            if latest_price is None:
-                logging.warning(f"Market data unavailable for {symbol}. Proceeding with default order logic.")
-                # Default logic for placing orders without market data
-                if order["label"] == "ENTRY" and order["orderType"] == "Stop":
-                    stop_price = order.get("stopPrice")
-                    if stop_price is not None:
-                        logging.info(f"Placing ENTRY stop order without market data (stop: {stop_price}).")
-                        order_payload["orderType"] = "Stop"
-                        order_payload["stopPrice"] = stop_price
-
-            # Add detailed logging for order_payload
             logging.info(f"Constructed order payload: {order_payload}")
 
             try:
