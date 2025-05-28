@@ -189,3 +189,51 @@ class TradovateClient:
         except Exception as e:
             logging.error(f"Unexpected error during OSO order placement: {e}")
             raise HTTPException(status_code=500, detail="Internal server error during OSO order placement")
+
+    async def place_stop_order(self, entry_order_id: int, stop_price: float):
+        """
+        Places a STOP order after the ENTRY order is filled.
+
+        Args:
+            entry_order_id (int): The ID of the ENTRY order.
+            stop_price (float): The price for the STOP order.
+
+        Returns:
+            dict: The response from the Tradovate API.
+        """
+        if not self.access_token:
+            await self.authenticate()
+
+        if not entry_order_id:
+            logging.error("Invalid ENTRY order ID. Cannot place STOP order.")
+            raise HTTPException(status_code=400, detail="Invalid ENTRY order ID")
+
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json"
+        }
+
+        stop_order_payload = {
+            "accountId": self.account_id,
+            "action": "Sell",  # Assuming STOP orders are for selling
+            "linkedOrderId": entry_order_id,
+            "orderType": "stop",
+            "price": stop_price,
+            "timeInForce": "GTC",
+            "isAutomated": True
+        }
+
+        try:
+            async with httpx.AsyncClient() as client:
+                logging.debug(f"Sending STOP order payload: {json.dumps(stop_order_payload, indent=2)}")
+                response = await client.post(f"{BASE_URL}/order/placeorder", json=stop_order_payload, headers=headers)
+                response.raise_for_status()
+                response_data = response.json()
+                logging.info(f"STOP order response: {json.dumps(response_data, indent=2)}")
+                return response_data
+        except httpx.HTTPStatusError as e:
+            logging.error(f"STOP order placement failed: {e.response.text}")
+            raise HTTPException(status_code=e.response.status_code, detail=f"STOP order placement failed: {e.response.text}")
+        except Exception as e:
+            logging.error(f"Unexpected error during STOP order placement: {e}")
+            raise HTTPException(status_code=500, detail="Internal server error during STOP order placement")
