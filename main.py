@@ -344,31 +344,73 @@ async def webhook(req: Request):
         # Always update/replace orders to match the most recent alert
 
         # --- REFACTORED LOGIC: Always flatten and cancel before placing new orders ---
-        logging.info(f"Flattening all positions and cancelling all orders for {symbol} before placing new orders.")
-        await cancel_all_orders(symbol)
-        await flatten_position(symbol)
-        await wait_until_no_open_orders(symbol, timeout=10)
-        logging.info("All orders and positions flattened successfully.")
-
-        # Confirm position is flat and no open orders remain
+        logging.info(f"Checking and modifying open orders for {symbol} to match the latest alert values.")
         pos_url = f"https://demo-api.tradovate.com/v1/position/list"
         order_url = f"https://demo-api.tradovate.com/v1/order/list"
         headers = {"Authorization": f"Bearer {client.access_token}"}
         async with httpx.AsyncClient() as http_client:
+            # Flatten position if needed
             pos_resp = await http_client.get(pos_url, headers=headers)
             pos_resp.raise_for_status()
             positions = pos_resp.json()
             for pos in positions:
                 if pos.get("symbol") == symbol and abs(pos.get("netPos", 0)) > 0:
-                    logging.warning(f"Position for {symbol} is not flat after flatten. Skipping order placement.")
-                    return {"status": "skipped", "detail": "Position not flat after flatten."}
+                    logging.info(f"Flattening open position for {symbol} before modifying orders.")
+                    await flatten_position(symbol)
+                    break
+            # Get open orders
             order_resp = await http_client.get(order_url, headers=headers)
             order_resp.raise_for_status()
             orders = order_resp.json()
             open_orders = [o for o in orders if o.get("symbol") == symbol and o.get("status") in ("Working", "Accepted")]
-            if open_orders:
-                logging.warning(f"Open orders for {symbol} still exist after cancel. Skipping order placement.")
-                return {"status": "skipped", "detail": "Open orders still exist after cancel."}
+            # Build a map of open orders by type (Limit, Stop, Market)
+            order_type_map = {o.get("orderType"): o for o in open_orders}
+            # Prepare new order values from alert
+            new_tp = data.get("T1")
+            new_stop = data.get("STOP")
+            new_entry = data.get("PRICE")
+            # Modify TP order if exists
+            if new_tp is not None and "Limit" in order_type_map:
+                tp_order = order_type_map["Limit"]
+                if float(tp_order.get("price")) != float(new_tp):
+                    logging.info(f"Modifying TP order {tp_order.get('id')} to new price {new_tp}")
+                    await http_client.post(
+                        f"https://demo-api.tradovate.com/v1/order/modifyorder",
+                        headers=headers,
+                        json={
+                            "orderId": tp_order.get("id"),
+                            "price": float(new_tp)
+                        }
+                    )
+            # Modify STOP order if exists
+            if new_stop is not None and "Stop" in order_type_map:
+                stop_order = order_type_map["Stop"]
+                if float(stop_order.get("stopPrice")) != float(new_stop):
+                    logging.info(f"Modifying STOP order {stop_order.get('id')} to new stopPrice {new_stop}")
+                    await http_client.post(
+                        f"https://demo-api.tradovate.com/v1/order/modifyorder",
+                        headers=headers,
+                        json={
+                            "orderId": stop_order.get("id"),
+                            "stopPrice": float(new_stop)
+                        }
+                    )
+            # Modify ENTRY order if exists and is a Stop order
+            if new_entry is not None and "Stop" in order_type_map:
+                entry_order = order_type_map["Stop"]
+                if float(entry_order.get("stopPrice")) != float(new_entry):
+                    logging.info(f"Modifying ENTRY stop order {entry_order.get('id')} to new stopPrice {new_entry}")
+                    await http_client.post(
+                        f"https://demo-api.tradovate.com/v1/order/modifyorder",
+                        headers=headers,
+                        json={
+                            "orderId": entry_order.get("id"),
+                            "stopPrice": float(new_entry)
+                        }
+                    )
+            # If there are no open orders, proceed to place new ones as usual
+            if not open_orders:
+                logging.info("No open orders found, will place new orders as usual.")
         
         # Initialize the order plan
         order_plan = []
