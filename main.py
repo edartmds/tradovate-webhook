@@ -870,41 +870,29 @@ async def monitor_tp_sl_oco(order_tracking, symbol):
 
 async def get_current_nq_symbol():
     """
-    Dynamically calculate the current front-month NASDAQ futures symbol based on today's date.
+    Fetch the current front-month NASDAQ futures symbol dynamically using Tradovate's API.
     """
-    today = date.today()
-    month = today.month
-    year = today.year
-
-    # Determine the contract month and year
-    if month in [1, 2, 3]:
-        contract_month = "H"  # March
-    elif month in [4, 5, 6]:
-        contract_month = "M"  # June
-    elif month in [7, 8, 9]:
-        contract_month = "U"  # September
-    else:
-        contract_month = "Z"  # December
-
-    contract_year = str(year)[-2:]  # Last two digits of the year
-
-    symbol = f"NQ{contract_month}{contract_year}"
-    logging.info(f"Calculated current NQ symbol: {symbol}")
-
-    # Validate the symbol with Tradovate's market data API
+    url = "https://demo-api.tradovate.com/v1/contract/list"
     headers = {"Authorization": f"Bearer {client.access_token}"}
-    url = f"https://demo-api.tradovate.com/v1/marketdata/quote/{symbol}"
 
     try:
         async with httpx.AsyncClient() as http_client:
             response = await http_client.get(url, headers=headers)
             response.raise_for_status()
-            data = response.json()
-            if data.get("last") is not None:
-                logging.info(f"Valid NQ symbol found: {symbol} with price: {data.get('last')}")
-                return symbol
+            contracts = response.json()
+
+            # Filter for NASDAQ futures contracts
+            nq_contracts = [c for c in contracts if c.get("symbol", "").startswith("NQ")]
+
+            # Sort contracts by expiration date and select the nearest one
+            nq_contracts.sort(key=lambda c: c.get("expirationDate"))
+            if nq_contracts:
+                current_symbol = nq_contracts[0]["symbol"]
+                logging.info(f"Dynamically fetched current NQ symbol: {current_symbol}")
+                return current_symbol
+
     except Exception as e:
-        logging.warning(f"Failed to validate symbol {symbol}: {e}")
+        logging.warning(f"Failed to fetch current NQ symbol dynamically: {e}")
 
     logging.warning("No valid NQ symbol found. Defaulting to NQZ25.")
     return "NQZ25"
