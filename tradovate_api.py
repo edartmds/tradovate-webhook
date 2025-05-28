@@ -2,6 +2,7 @@ import httpx
 import os
 import logging
 import json  # Added for pretty-printing JSON responses
+import asyncio  # Added for retry logic
 from dotenv import load_dotenv
 from fastapi import HTTPException
 
@@ -27,49 +28,62 @@ class TradovateClient:
             "sec": os.getenv("TRADOVATE_CLIENT_SECRET"),
             "deviceId": os.getenv("TRADOVATE_DEVICE_ID")
         }
-        try:
-            async with httpx.AsyncClient() as client:
-                logging.debug(f"Sending authentication payload: {json.dumps(auth_payload, indent=2)}")
-                r = await client.post(url, json=auth_payload)
-                r.raise_for_status()
-                data = r.json()
-                logging.info(f"Authentication response: {json.dumps(data, indent=2)}")
-                self.access_token = data["accessToken"]
+        max_retries = 5
+        backoff_factor = 2
 
-                # Fetch account ID
-                headers = {"Authorization": f"Bearer {self.access_token}"}
-                acc_res = await client.get(f"{BASE_URL}/account/list", headers=headers)
-                acc_res.raise_for_status()
-                account_data = acc_res.json()
-                logging.info(f"Account list response: {json.dumps(account_data, indent=2)}")
-                self.account_id = account_data[0]["id"]
-                self.account_spec = account_data[0].get("name")
+        for attempt in range(max_retries):
+            try:
+                async with httpx.AsyncClient() as client:
+                    logging.debug(f"Sending authentication payload: {json.dumps(auth_payload, indent=2)}")
+                    r = await client.post(url, json=auth_payload)
+                    r.raise_for_status()
+                    data = r.json()
+                    logging.info(f"Authentication response: {json.dumps(data, indent=2)}")
+                    self.access_token = data["accessToken"]
 
-                # Use hardcoded values from .env if available
-                self.account_id = int(os.getenv("TRADOVATE_ACCOUNT_ID", self.account_id))
-                self.account_spec = os.getenv("TRADOVATE_ACCOUNT_SPEC", self.account_spec)
+                    # Fetch account ID
+                    headers = {"Authorization": f"Bearer {self.access_token}"}
+                    acc_res = await client.get(f"{BASE_URL}/account/list", headers=headers)
+                    acc_res.raise_for_status()
+                    account_data = acc_res.json()
+                    logging.info(f"Account list response: {json.dumps(account_data, indent=2)}")
+                    self.account_id = account_data[0]["id"]
+                    self.account_spec = account_data[0].get("name")
 
-                logging.info(f"Using account_id: {self.account_id} and account_spec: {self.account_spec} from environment variables.")
+                    # Use hardcoded values from .env if available
+                    self.account_id = int(os.getenv("TRADOVATE_ACCOUNT_ID", self.account_id))
+                    self.account_spec = os.getenv("TRADOVATE_ACCOUNT_SPEC", self.account_spec)
 
-                if not self.account_spec:
-                    logging.error("Failed to retrieve accountSpec. accountSpec is None.")
-                    raise HTTPException(status_code=400, detail="Failed to retrieve accountSpec")
+                    logging.info(f"Using account_id: {self.account_id} and account_spec: {self.account_spec} from environment variables.")
 
-                # Log the retrieved accountSpec and accountId for debugging
-                logging.info(f"Retrieved accountSpec: {self.account_spec}")
-                logging.info(f"Retrieved accountId: {self.account_id}")
+                    if not self.account_spec:
+                        logging.error("Failed to retrieve accountSpec. accountSpec is None.")
+                        raise HTTPException(status_code=400, detail="Failed to retrieve accountSpec")
 
-                if not self.account_id:
-                    logging.error("Failed to retrieve account ID. Account ID is None.")
-                    raise HTTPException(status_code=400, detail="Failed to retrieve account ID")
+                    logging.info(f"Retrieved accountSpec: {self.account_spec}")
+                    logging.info(f"Retrieved accountId: {self.account_id}")
 
-                logging.info("Authentication successful. Access token, accountSpec, and account ID retrieved.")
-        except httpx.HTTPStatusError as e:
-            logging.error(f"Authentication failed: {e.response.text}")
-            raise HTTPException(status_code=e.response.status_code, detail="Authentication failed")
-        except Exception as e:
-            logging.error(f"Unexpected error during authentication: {e}")
-            raise HTTPException(status_code=500, detail="Internal server error during authentication")
+                    if not self.account_id:
+                        logging.error("Failed to retrieve account ID. Account ID is None.")
+                        raise HTTPException(status_code=400, detail="Failed to retrieve account ID")
+
+                    logging.info("Authentication successful. Access token, accountSpec, and account ID retrieved.")
+                    return  # Exit the retry loop on success
+
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429:  # Handle rate-limiting
+                    retry_after = int(e.response.headers.get("Retry-After", backoff_factor * (attempt + 1)))
+                    logging.warning(f"Rate-limited (429). Retrying after {retry_after} seconds...")
+                    await asyncio.sleep(retry_after)
+                else:
+                    logging.error(f"Authentication failed: {e.response.text}")
+                    raise HTTPException(status_code=e.response.status_code, detail="Authentication failed")
+            except Exception as e:
+                logging.error(f"Unexpected error during authentication: {e}")
+                raise HTTPException(status_code=500, detail="Internal server error during authentication")
+
+        logging.error("Max retries reached. Authentication failed.")
+        raise HTTPException(status_code=429, detail="Authentication failed after maximum retries")
 
     async def place_order(self, symbol: str, action: str, quantity: int = 1, order_data: dict = None):
         if not self.access_token:
