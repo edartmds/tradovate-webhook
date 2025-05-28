@@ -383,18 +383,31 @@ async def webhook(req: Request):
             content_type = req.headers.get("content-type")
             raw_body = await req.body()
 
+            logging.info(f"Received webhook with content type: {content_type}")
+
             if content_type == "application/json":
                 data = await req.json()
             elif content_type.startswith("text/plain"):
                 text_data = raw_body.decode("utf-8")
                 data = parse_alert_to_tradovate_json(text_data, client.account_id)
             else:
+                logging.error("Unsupported content type received")
                 raise HTTPException(status_code=400, detail="Unsupported content type")
+
+            logging.info(f"Parsed alert data: {data}")
+
+            # Validate required fields in alert data
+            required_fields = ["symbol", "action", "PRICE", "T1", "STOP"]
+            missing_fields = [field for field in required_fields if field not in data]
+            if missing_fields:
+                logging.error(f"Missing required fields in alert data: {missing_fields}")
+                raise HTTPException(status_code=400, detail=f"Missing required fields: {missing_fields}")
 
             action = data["action"].capitalize()
             symbol = data["symbol"]
 
             if currently_processing_symbol is not None and currently_processing_symbol != symbol:
+                logging.warning(f"Currently processing {currently_processing_symbol}, rejecting new alert for {symbol}")
                 return {"status": "rejected", "detail": f"Currently processing {currently_processing_symbol}"}
 
             currently_processing_symbol = symbol
