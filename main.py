@@ -398,7 +398,13 @@ async def webhook(req: Request):
                 "isAutomated": True
             }
 
-            logging.info(f"Placing order: {order_payload}")
+            # Ensure exact values are used for price and stopPrice
+            if "price" in order:
+                order_payload["price"] = order["price"]
+            if "stopPrice" in order:
+                order_payload["stopPrice"] = order["stopPrice"]
+
+            logging.info(f"Placing order with exact values: {order_payload}")
             try:
                 result = await client.place_order(
                     symbol=symbol,
