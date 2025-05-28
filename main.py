@@ -40,7 +40,6 @@ currently_processing_symbol = None
 async def startup_event():
     await client.authenticate()
 
-# Enhance error handling and logging for market data retrieval
 async def get_latest_price(symbol: str):
     url = f"https://demo-api.tradovate.com/v1/marketdata/quote/{symbol}"
     headers = {"Authorization": f"Bearer {client.access_token}"}
@@ -49,13 +48,13 @@ async def get_latest_price(symbol: str):
             response = await http_client.get(url, headers=headers)
             response.raise_for_status()
             data = response.json()
-            return data.get("last")
+            return data["last"]
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
                 logging.warning(f"Market data not found for symbol {symbol} (404). Proceeding with fallback logic.")
-                return None
+                raise ValueError(f"Market data not found for symbol {symbol}")
             else:
-                logging.error(f"HTTP error while fetching market data for {symbol}: {e}")
+                logging.error(f"HTTP error getting market data for {symbol}: {e}")
                 raise
         except Exception as e:
             logging.error(f"Unexpected error getting market data for {symbol}: {e}")
