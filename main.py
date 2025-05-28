@@ -316,118 +316,95 @@ async def process_alert(data, symbol, action):
     await flatten_all()
     logging.info("All orders and positions flattened successfully.")
 
-    # Create and execute order plan
-    order_plan = []
-    stop_order_data = None
-
-    if "T1" in data:
-        order_plan.append({
-            "label": "TP1",
-            "action": "Sell" if action.lower() == "buy" else "Buy",
-            "orderType": "Limit",
-            "price": data["T1"],
-            "qty": 1
-        })
+    # 1. Place ENTRY order (market or limit)
+    entry_order_payload = {
+        "accountId": client.account_id,
+        "symbol": symbol,
+        "action": action,
+        "orderQty": 1,
+        "orderType": "Market",  # or "Limit" if you want to use a limit price
+        "timeInForce": "GTC",
+        "isAutomated": True
+    }
     if "PRICE" in data:
-        order_plan.append({
-            "label": "ENTRY",
-            "action": action,
-            "orderType": "Stop",
-            "stopPrice": data["PRICE"],
-            "qty": 1
-        })
-    if "STOP" in data:
-        stop_order_data = {
-            "label": "STOP",
-            "action": "Sell" if action.lower() == "buy" else "Buy",
-            "orderType": "Stop",
-            "stopPrice": data["STOP"],
-            "qty": 1
-        }
+        entry_order_payload["orderType"] = "Limit"
+        entry_order_payload["price"] = data["PRICE"]
 
-    async def place_orders():
-        order_results = []
-        order_tracking = {}
+    entry_result = await client.place_order(
+        symbol=symbol,
+        action=action,
+        quantity=1,
+        order_data=entry_order_payload
+    )
+    logging.info(f"ENTRY order response: {json.dumps(entry_result, indent=2)}")
+    entry_id = entry_result.get("id")
+    if not entry_id:
+        logging.error("Failed to place ENTRY order or retrieve order ID.")
+        return {"status": "error", "detail": "Failed to place ENTRY order."}
 
-        for order in order_plan:
-            order_payload = {
-                "accountId": client.account_id,
-                "symbol": symbol,
-                "action": order["action"],
-                "orderQty": order["qty"],
-                "orderType": order["orderType"],
-                "price": order.get("price"),
-                "stopPrice": order.get("stopPrice"),
-                "timeInForce": "GTC",
-                "isAutomated": True
-            }
-            try:
-                result = await client.place_order(
-                    symbol=symbol,
-                    action=order["action"],
-                    quantity=order["qty"],
-                    order_data=order_payload
-                )
-                logging.info(f"Order placement response for {order['label']}: {json.dumps(result, indent=2)}")
-                order_results.append({order["label"]: result})
-                order_tracking[order["label"]] = result.get("id")
+    # 2. Place TP1 (limit) order immediately
+    tp1_order_payload = {
+        "accountId": client.account_id,
+        "symbol": symbol,
+        "action": "Sell" if action.lower() == "buy" else "Buy",
+        "orderQty": 1,
+        "orderType": "Limit",
+        "price": data["T1"],
+        "timeInForce": "GTC",
+        "isAutomated": True
+    }
+    tp1_result = await client.place_order(
+        symbol=symbol,
+        action=tp1_order_payload["action"],
+        quantity=1,
+        order_data=tp1_order_payload
+    )
+    logging.info(f"TP1 order response: {json.dumps(tp1_result, indent=2)}")
+    tp1_id = tp1_result.get("id")
 
-                # Fallback logic for ENTRY order ID
-                if order["label"] == "ENTRY" and not result.get("id"):
-                    logging.warning("ENTRY order ID is None. Attempting to retrieve from order list.")
-                    headers = {"Authorization": f"Bearer {client.access_token}"}
-                    async with httpx.AsyncClient() as http_client:
-                        list_response = await http_client.get(f"https://demo-api.tradovate.com/v1/order/list", headers=headers)
-                        list_response.raise_for_status()
-                        orders = list_response.json()
-                        for o in orders:
-                            if o.get("symbol") == symbol and o.get("orderType") == "Stop" and o.get("status") == "Working":
-                                order_tracking["ENTRY"] = o.get("id")
-                                logging.info(f"Retrieved ENTRY order ID from order list: {o.get('id')}")
-                                break
-            except Exception as e:
-                logging.error(f"Error placing order {order['label']}: {e}")
+    # 3. Wait for ENTRY to fill, then place STOP
+    headers = {"Authorization": f"Bearer {client.access_token}"}
+    entry_filled = False
+    for _ in range(60):  # Wait up to 60 seconds
+        async with httpx.AsyncClient() as http_client:
+            entry_status = await http_client.get(f"https://demo-api.tradovate.com/v1/order/{entry_id}", headers=headers)
+            entry_status.raise_for_status()
+            entry_data = entry_status.json()
+            if entry_data.get("status") == "Filled":
+                entry_filled = True
+                break
+        await asyncio.sleep(1)
+    if not entry_filled:
+        logging.error("ENTRY order was not filled in time. Aborting STOP placement.")
+        return {"status": "error", "detail": "ENTRY not filled in time."}
 
-        # Place STOP order only after ENTRY is filled
-        if stop_order_data and "ENTRY" in order_tracking:
-            entry_id = order_tracking.get("ENTRY")
-            if not entry_id:
-                logging.error("ENTRY order ID is None. Cannot place STOP order.")
-                return order_results
+    stop_order_payload = {
+        "accountId": client.account_id,
+        "symbol": symbol,
+        "action": "Sell" if action.lower() == "buy" else "Buy",
+        "orderQty": 1,
+        "orderType": "Stop",
+        "stopPrice": data["STOP"],
+        "timeInForce": "GTC",
+        "isAutomated": True
+    }
+    stop_result = await client.place_order(
+        symbol=symbol,
+        action=stop_order_payload["action"],
+        quantity=1,
+        order_data=stop_order_payload
+    )
+    logging.info(f"STOP order response: {json.dumps(stop_result, indent=2)}")
+    stop_id = stop_result.get("id")
 
-            try:
-                headers = {"Authorization": f"Bearer {client.access_token}"}
-                async with httpx.AsyncClient() as http_client:
-                    entry_status = await http_client.get(f"https://demo-api.tradovate.com/v1/order/{entry_id}", headers=headers)
-                    entry_status.raise_for_status()
-                    entry_data = entry_status.json()
-                    if entry_data.get("status") == "Filled":
-                        stop_payload = {
-                            "accountId": client.account_id,
-                            "symbol": symbol,
-                            "action": stop_order_data["action"],
-                            "orderQty": stop_order_data["qty"],
-                            "orderType": stop_order_data["orderType"],
-                            "stopPrice": stop_order_data["stopPrice"],
-                            "timeInForce": "GTC",
-                            "isAutomated": True
-                        }
-                        stop_result = await client.place_order(
-                            symbol=symbol,
-                            action=stop_order_data["action"],
-                            quantity=stop_order_data["qty"],
-                            order_data=stop_payload
-                        )
-                        order_results.append({"STOP": stop_result})
-                        logging.info(f"STOP order placed successfully after ENTRY fill: {stop_result}")
-            except Exception as e:
-                logging.error(f"Error placing STOP order after ENTRY fill: {e}")
+    # 4. Optionally: Monitor TP1/STOP and cancel the other when one is filled (not shown here for brevity)
 
-        return order_results
-
-    order_results = await place_orders()
-    logging.info("Order plan execution completed")
-    return {"status": "success", "order_responses": order_results}
+    return {
+        "status": "success",
+        "entry_order": entry_result,
+        "tp1_order": tp1_result,
+        "stop_order": stop_result
+    }
 
 # Update webhook to use optimized processing
 @app.post("/webhook")
