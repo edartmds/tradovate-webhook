@@ -471,6 +471,7 @@ async def webhook(req: Request):
         # Execute the order plan with ENTRY fallback logic
         logging.info("Executing order plan with ENTRY fallback logic")
         for order in order_plan:
+
             order_payload = {
                 "accountId": client.account_id,
                 "symbol": symbol,
@@ -483,26 +484,8 @@ async def webhook(req: Request):
                 "isAutomated": True
             }
 
-            # ENTRY fallback: If ENTRY is a stop order and price is already at/through stop, use market order
-            if order["label"] == "ENTRY" and order["orderType"] == "Stop":
-                try:
-                    try:
-                        latest_price = await get_latest_price(symbol)
-                    except ValueError:
-                        latest_price = None
-                    stop_price = order.get("stopPrice")
-                    if stop_price is not None and latest_price is not None:
-                        # For BUY, if price >= stop, for SELL, if price <= stop
-                        if (order["action"].lower() == "buy" and latest_price >= stop_price) or \
-                           (order["action"].lower() == "sell" and latest_price <= stop_price):
-                            logging.info(f"ENTRY stop order would be triggered immediately (latest: {latest_price}, stop: {stop_price}). Placing as MARKET order instead.")
-                            order_payload["orderType"] = "Market"
-                            order_payload.pop("stopPrice", None)
-                            order_payload.pop("price", None)
-                except Exception as e:
-                    logging.error(f"Error checking latest price for ENTRY fallback: {e}")
-
-            logging.info(f"Placing order: {order_payload}")
+            # Always use the alert's price for ENTRY, TP1, and STOP. Do not switch to market order.
+            logging.info(f"Placing order at alert price: {order_payload}")
             try:
                 result = await client.place_order(
                     symbol=symbol,
