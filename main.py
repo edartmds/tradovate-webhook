@@ -1,5 +1,5 @@
 import os
-from datetime import timedelta, datetime
+from datetime import timedelta, datetime, date
 import logging
 from fastapi import FastAPI, Request, HTTPException
 from tradovate_api import TradovateClient
@@ -870,30 +870,41 @@ async def monitor_tp_sl_oco(order_tracking, symbol):
 
 async def get_current_nq_symbol():
     """
-    Dynamically fetch the current front-month NASDAQ futures symbol.
+    Dynamically calculate the current front-month NASDAQ futures symbol based on today's date.
     """
-    possible_symbols = [
-        "NQZ25",  # December 2025
-        "NQH26",  # March 2026
-        "NQM26",  # June 2026
-        "NQU26",  # September 2026
-    ]
+    today = date.today()
+    month = today.month
+    year = today.year
 
+    # Determine the contract month and year
+    if month in [1, 2, 3]:
+        contract_month = "H"  # March
+    elif month in [4, 5, 6]:
+        contract_month = "M"  # June
+    elif month in [7, 8, 9]:
+        contract_month = "U"  # September
+    else:
+        contract_month = "Z"  # December
+
+    contract_year = str(year)[-2:]  # Last two digits of the year
+
+    symbol = f"NQ{contract_month}{contract_year}"
+    logging.info(f"Calculated current NQ symbol: {symbol}")
+
+    # Validate the symbol with Tradovate's market data API
     headers = {"Authorization": f"Bearer {client.access_token}"}
+    url = f"https://demo-api.tradovate.com/v1/marketdata/quote/{symbol}"
 
-    for symbol in possible_symbols:
-        try:
-            url = f"https://demo-api.tradovate.com/v1/marketdata/quote/{symbol}"
-            async with httpx.AsyncClient() as http_client:
-                response = await http_client.get(url, headers=headers)
-                if response.status_code == 200:
-                    data = response.json()
-                    if data.get("last") is not None:
-                        logging.info(f"Valid NQ symbol found: {symbol} with price: {data.get('last')}")
-                        return symbol
-        except Exception as e:
-            logging.debug(f"Symbol {symbol} not valid: {e}")
-            continue
+    try:
+        async with httpx.AsyncClient() as http_client:
+            response = await http_client.get(url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            if data.get("last") is not None:
+                logging.info(f"Valid NQ symbol found: {symbol} with price: {data.get('last')}")
+                return symbol
+    except Exception as e:
+        logging.warning(f"Failed to validate symbol {symbol}: {e}")
 
     logging.warning("No valid NQ symbol found. Defaulting to NQZ25.")
     return "NQZ25"
