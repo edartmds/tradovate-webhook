@@ -313,20 +313,21 @@ async def webhook(req: Request):
         stop_order_data = None
         logging.info("Creating order plan based on alert data")
 
-        # Add limit orders for T1 (Take Profit)
+        # Add limit order for T1 (Take Profit) at the exact alert value
         if "T1" in data:
+            tp_price = float(data["T1"])
             order_plan.append({
                 "label": "TP1",
                 "action": "Sell" if action.lower() == "buy" else "Buy",
                 "orderType": "Limit",
-                "price": data["T1"],
+                "price": tp_price,
                 "qty": 1
             })
-            logging.info(f"Added limit order for TP1: {data['T1']}")
+            logging.info(f"Added limit order for TP1 at exact alert price: {tp_price}")
         else:
             logging.warning("T1 not found in alert data - no take profit order will be placed")
 
-        # Add stop order for entry, always use stop order
+        # Add stop order for entry, always use stop order at the exact alert value
         if "PRICE" in data:
             entry_price = float(data["PRICE"])
             order_plan.append({
@@ -336,24 +337,24 @@ async def webhook(req: Request):
                 "stopPrice": entry_price,
                 "qty": 1
             })
-            logging.info(f"Added stop order for entry at price: {entry_price}")
+            logging.info(f"Added stop order for entry at exact alert price: {entry_price}")
         else:
             logging.warning("PRICE not found in alert data - no entry order will be placed")
 
-        # Add stop loss order (STOP) at the same time as ENTRY and TP1
-        # Prepare STOP LOSS order data (to be placed after ENTRY is filled)
+        # Add stop loss order (STOP) at the exact alert value (to be placed after ENTRY is filled)
         if "STOP" in data:
+            stop_price = float(data["STOP"])
             stop_order_data = {
                 "accountId": client.account_id,
                 "symbol": symbol,
                 "action": "Sell" if action.lower() == "buy" else "Buy",
                 "orderQty": 1,
                 "orderType": "Stop",
-                "stopPrice": data["STOP"],
+                "stopPrice": stop_price,
                 "timeInForce": "GTC",
                 "isAutomated": True
             }
-            logging.info(f"Prepared STOP LOSS order data for after ENTRY fill: {stop_order_data}")
+            logging.info(f"Prepared STOP LOSS order data for after ENTRY fill at exact alert price: {stop_price}")
         else:
             logging.warning("STOP not found in alert data - no stop loss order will be placed")
 
