@@ -318,6 +318,8 @@ async def process_alert(data, symbol, action):
 
     # Create and execute order plan
     order_plan = []
+    stop_order_data = None
+
     if "T1" in data:
         order_plan.append({
             "label": "TP1",
@@ -335,16 +337,18 @@ async def process_alert(data, symbol, action):
             "qty": 1
         })
     if "STOP" in data:
-        order_plan.append({
+        stop_order_data = {
             "label": "STOP",
             "action": "Sell" if action.lower() == "buy" else "Buy",
             "orderType": "Stop",
             "stopPrice": data["STOP"],
             "qty": 1
-        })
+        }
 
     async def place_orders():
         order_results = []
+        order_tracking = {}
+
         for order in order_plan:
             order_payload = {
                 "accountId": client.account_id,
@@ -365,8 +369,41 @@ async def process_alert(data, symbol, action):
                     order_data=order_payload
                 )
                 order_results.append({order["label"]: result})
+                order_tracking[order["label"]] = result.get("id")
             except Exception as e:
                 logging.error(f"Error placing order {order['label']}: {e}")
+
+        # Place STOP order only after ENTRY is filled
+        if stop_order_data and "ENTRY" in order_tracking:
+            entry_id = order_tracking["ENTRY"]
+            try:
+                headers = {"Authorization": f"Bearer {client.access_token}"}
+                async with httpx.AsyncClient() as http_client:
+                    entry_status = await http_client.get(f"https://demo-api.tradovate.com/v1/order/{entry_id}", headers=headers)
+                    entry_status.raise_for_status()
+                    entry_data = entry_status.json()
+                    if entry_data.get("status") == "Filled":
+                        stop_payload = {
+                            "accountId": client.account_id,
+                            "symbol": symbol,
+                            "action": stop_order_data["action"],
+                            "orderQty": stop_order_data["qty"],
+                            "orderType": stop_order_data["orderType"],
+                            "stopPrice": stop_order_data["stopPrice"],
+                            "timeInForce": "GTC",
+                            "isAutomated": True
+                        }
+                        stop_result = await client.place_order(
+                            symbol=symbol,
+                            action=stop_order_data["action"],
+                            quantity=stop_order_data["qty"],
+                            order_data=stop_payload
+                        )
+                        order_results.append({"STOP": stop_result})
+                        logging.info(f"STOP order placed successfully after ENTRY fill: {stop_result}")
+            except Exception as e:
+                logging.error(f"Error placing STOP order after ENTRY fill: {e}")
+
         return order_results
 
     order_results = await place_orders()
