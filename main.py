@@ -322,20 +322,23 @@ async def webhook(req: Request):
             orders = order_resp.json()
             open_orders = [o for o in orders if o.get("symbol") == symbol and o.get("status") in ("Working", "Accepted")]
 
-            # Strictly enforce: max 2 stop orders, max 1 limit order
+            # ENFORCE: Only 1 ENTRY stop order, 1 STOP LOSS stop order (placed after entry fill), 1 LIMIT TP order
+            # Cancel all but 1 stop order (ENTRY) and 1 limit order (TP1) before entry is filled
+            # After entry is filled, cancel ENTRY stop and only keep STOP LOSS and TP1
+
+            # Identify stop and limit orders
             stop_orders = [o for o in open_orders if o.get("orderType") == "Stop"]
             limit_orders = [o for o in open_orders if o.get("orderType") == "Limit"]
 
-            # Cancel extra stop orders (keep the most recent 2 by time or id)
-            if len(stop_orders) > 2:
-                # Sort by id (assuming higher id is newer)
+            # Cancel all but the most recent stop order (ENTRY)
+            if len(stop_orders) > 1:
                 stop_orders_sorted = sorted(stop_orders, key=lambda o: o.get("id"), reverse=True)
-                for o in stop_orders_sorted[2:]:
+                for o in stop_orders_sorted[1:]:
                     logging.info(f"Cancelling extra stop order {o.get('id')}")
                     await http_client.post(f"https://demo-api.tradovate.com/v1/order/cancel/{o.get('id')}", headers=headers)
-                stop_orders = stop_orders_sorted[:2]
+                stop_orders = stop_orders_sorted[:1]
 
-            # Cancel extra limit orders (keep the most recent 1 by time or id)
+            # Cancel all but the most recent limit order (TP1)
             if len(limit_orders) > 1:
                 limit_orders_sorted = sorted(limit_orders, key=lambda o: o.get("id"), reverse=True)
                 for o in limit_orders_sorted[1:]:
@@ -348,7 +351,6 @@ async def webhook(req: Request):
 
             # Prepare new order values from alert
             new_tp = data.get("T1")
-            new_stop = data.get("STOP")
             new_entry = data.get("PRICE")
 
             # Update TP order if exists
@@ -365,21 +367,7 @@ async def webhook(req: Request):
                         }
                     )
 
-            # Update STOP orders (max 2)
-            if new_stop is not None:
-                for stop_order in stop_orders:
-                    if float(stop_order.get("stopPrice")) != float(new_stop):
-                        logging.info(f"Modifying STOP order {stop_order.get('id')} to new stopPrice {new_stop}")
-                        await http_client.post(
-                            f"https://demo-api.tradovate.com/v1/order/modifyorder",
-                            headers=headers,
-                            json={
-                                "orderId": stop_order.get("id"),
-                                "stopPrice": float(new_stop)
-                            }
-                        )
-
-            # Update ENTRY order if exists and is a Stop order (use first stop order)
+            # Update ENTRY stop order if exists (before entry is filled)
             if new_entry is not None and stop_orders:
                 entry_order = stop_orders[0]
                 if float(entry_order.get("stopPrice")) != float(new_entry):
