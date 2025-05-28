@@ -350,33 +350,17 @@ async def webhook(req: Request):
             return {"status": "duplicate", "detail": "Duplicate/near-duplicate alert skipped (time window)."}
         last_alert[symbol] = {"direction": alert_direction, "timestamp": now}
 
-        # Always flatten all orders and positions at the beginning of each alert, regardless of direction
-        pos_url = f"https://demo-api.tradovate.com/v1/position/list"
-        headers = {"Authorization": f"Bearer {client.access_token}"}
-        async with httpx.AsyncClient() as http_client:
-            pos_resp = await http_client.get(pos_url, headers=headers)
-            pos_resp.raise_for_status()
-            positions = pos_resp.json()
-
-        existing_position = None
-        for pos in positions:
-            if pos.get("symbol") == symbol and abs(pos.get("netPos", 0)) > 0:
-                existing_position = pos
-                break
-
-        if existing_position:
-            current_pos_qty = existing_position.get("netPos", 0)
-            logging.info(f"Existing open position detected for {symbol}: {current_pos_qty}. Flattening before placing new orders.")
-        else:
-            logging.info(f"No open position for {symbol}. Proceeding to place new orders.")
-
-        logging.info(f"Flattening all orders and positions for symbol: {symbol}")
+        # --- REFACTORED LOGIC: Always flatten and cancel before placing new orders ---
+        logging.info(f"Flattening all positions and cancelling all orders for {symbol} before placing new orders.")
         await cancel_all_orders(symbol)
         await flatten_position(symbol)
         await wait_until_no_open_orders(symbol, timeout=10)
         logging.info("All orders and positions flattened successfully.")
 
-        # Check for open position (should be flat)
+        # Confirm position is flat and no open orders remain
+        pos_url = f"https://demo-api.tradovate.com/v1/position/list"
+        order_url = f"https://demo-api.tradovate.com/v1/order/list"
+        headers = {"Authorization": f"Bearer {client.access_token}"}
         async with httpx.AsyncClient() as http_client:
             pos_resp = await http_client.get(pos_url, headers=headers)
             pos_resp.raise_for_status()
@@ -385,10 +369,6 @@ async def webhook(req: Request):
                 if pos.get("symbol") == symbol and abs(pos.get("netPos", 0)) > 0:
                     logging.warning(f"Position for {symbol} is not flat after flatten. Skipping order placement.")
                     return {"status": "skipped", "detail": "Position not flat after flatten."}
-        
-        # Check for open orders (should be none)
-        order_url = f"https://demo-api.tradovate.com/v1/order/list"
-        async with httpx.AsyncClient() as http_client:
             order_resp = await http_client.get(order_url, headers=headers)
             order_resp.raise_for_status()
             orders = order_resp.json()
