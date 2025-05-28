@@ -184,37 +184,23 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                                     if field not in stop_order_data:
                                         raise ValueError(f"Missing required field in stop_order_data: {field}")
                                 logging.info(f"Placing STOP LOSS order with data: {json.dumps(stop_order_data)}")
-                                stop_result = await client.place_order(
-                                    symbol=symbol,
-                                    action=stop_order_data["action"],
-                                    quantity=stop_order_data["orderQty"],
-                                    order_data=stop_order_data
-                                )
-                                logging.info(f"STOP LOSS order placement API response: {stop_result}")
-                                order_tracking["STOP"] = stop_result.get("id")
-                                logging.info(f"STOP LOSS order placed successfully: {stop_result}")
+                                # Place STOP LOSS order using Tradovate API
+                                headers = {"Authorization": f"Bearer {client.access_token}"}
+                                async with httpx.AsyncClient() as http_client:
+                                    response = await http_client.post(
+                                        f"https://demo-api.tradovate.com/v1/order/placeorder",
+                                        headers=headers,
+                                        json=stop_order_data
+                                    )
+                                    response.raise_for_status()
+                                    stop_result = response.json()
+                                    logging.info(f"STOP LOSS order placement API response: {stop_result}")
+                                    order_tracking["STOP"] = stop_result.get("id")
+                                    logging.info(f"STOP LOSS order placed successfully: {stop_result}")
                             except Exception as e:
                                 logging.error(f"Error placing STOP LOSS order after ENTRY fill: {e}")
                                 logging.error(f"STOP LOSS order data: {json.dumps(stop_order_data)}")
-                                # Try alternative approach if first attempt fails
-                                try:
-                                    logging.info("Attempting fallback method for STOP LOSS order placement")
-                                    headers = {"Authorization": f"Bearer {client.access_token}"}
-                                    async with httpx.AsyncClient() as http_client:
-                                        response = await http_client.post(
-                                            f"https://demo-api.tradovate.com/v1/order/placeorder",
-                                            headers=headers,
-                                            json=stop_order_data
-                                        )
-                                        response.raise_for_status()
-                                        stop_result = response.json()
-                                        logging.info(f"STOP LOSS order placement fallback API response: {stop_result}")
-                                        order_tracking["STOP"] = stop_result.get("id")
-                                        logging.info(f"STOP LOSS order placed successfully (fallback): {stop_result}")
-                                except Exception as e2:
-                                    logging.error(f"Failed to place STOP LOSS order with fallback method: {e2}")
-                                    logging.error(f"STOP LOSS order data: {json.dumps(stop_order_data)}")
-                                    logging.error(f"Position will remain UNPROTECTED by stop loss!")
+                                logging.error(f"Position will remain UNPROTECTED by stop loss!")
                         else:
                             logging.warning("No stop_order_data provided - position will remain UNPROTECTED!")
                         
