@@ -1,6 +1,8 @@
 import os
-from datetime import timedelta, datetime, date
+from datetime import timedelta
+last_alert = {}  # {symbol: {"direction": "buy"/"sell", "timestamp": datetime}}
 import logging
+from datetime import datetime
 from fastapi import FastAPI, Request, HTTPException
 from tradovate_api import TradovateClient
 import uvicorn
@@ -9,12 +11,9 @@ import json
 import hashlib
 import asyncio
 
-# Global variables
-last_alert = {}  # {symbol: {"direction": "buy"/"sell", "timestamp": datetime}}
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 logging.info(f"Loaded WEBHOOK_SECRET: {WEBHOOK_SECRET}")
 
-# Setup logging
 LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
 
@@ -28,7 +27,6 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-# FastAPI setup
 app = FastAPI()
 client = TradovateClient()
 recent_alert_hashes = set()
@@ -96,29 +94,10 @@ async def cancel_all_orders(symbol):
             logging.error(f"After repeated cancel attempts, still found open orders for {symbol}: {[o.get('id') for o in open_orders]} (statuses: {[o.get('status') for o in open_orders]})")
 
 async def flatten_position(symbol):
-    url = f"https://demo-api.tradovate.com/v1/order/liquidateposition"
+    url = f"https://demo-api.tradovate.com/v1/position/closeposition"
     headers = {"Authorization": f"Bearer {client.access_token}"}
-    payload = {"symbol": symbol}
     async with httpx.AsyncClient() as http_client:
-        try:
-            response = await http_client.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            result = response.json()
-            logging.info(f"Position flattened for {symbol}: {result}")
-            return result
-        except Exception as e:
-            logging.error(f"Error flattening position for {symbol}: {e}")
-            # Try alternative liquidation endpoint
-            try:
-                alt_url = f"https://demo-api.tradovate.com/v1/position/closeposition"
-                response = await http_client.post(alt_url, headers=headers, json=payload)
-                response.raise_for_status()
-                result = response.json()
-                logging.info(f"Position closed via alternative endpoint for {symbol}: {result}")
-                return result
-            except Exception as e2:
-                logging.error(f"Alternative position close also failed for {symbol}: {e2}")
-                raise
+        await http_client.post(url, headers=headers, json={"symbol": symbol})
 
 async def wait_until_no_open_orders(symbol, timeout=10):
     """
@@ -201,291 +180,126 @@ def hash_alert(data: dict) -> str:
     alert_string = json.dumps(data, sort_keys=True)
     return hashlib.sha256(alert_string.encode()).hexdigest()
 
-async def place_oco_order(symbol, action, entry_price, take_profit_price, stop_loss_price, quantity=1):
+async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
     """
-    Place an OCO (One-Cancels-Other) order using Tradovate's OCO functionality.
-    This places a take profit and stop loss that automatically cancel each other when one fills.
+    Monitor all orders and manage their relationships:
+    - If ENTRY is filled, place the STOP order and keep TP active
+    - If TP is filled, cancel STOP
+    - If STOP is filled, cancel TP
     """
-    headers = {"Authorization": f"Bearer {client.access_token}"}
-    
-    # Determine the opposite action for TP and SL
-    opposite_action = "Sell" if action.lower() == "buy" else "Buy"
-    
-    oco_payload = {
-        "accountId": client.account_id,
-        "symbol": symbol,
-        "orderQty": quantity,
-        "timeInForce": "GTC",
-        "orders": [
-            {
-                "action": opposite_action,
-                "orderType": "Limit",
-                "price": take_profit_price
-            },
-            {
-                "action": opposite_action,
-                "orderType": "Stop",
-                "stopPrice": stop_loss_price
-            }
-        ]
-    }
-    
-    try:
-        async with httpx.AsyncClient() as http_client:
-            response = await http_client.post(
-                "https://demo-api.tradovate.com/v1/order/placeoco",
-                headers=headers,
-                json=oco_payload
-            )
-            response.raise_for_status()
-            result = response.json()
-            logging.info(f"OCO order placed successfully: {result}")
-            return result
-    except Exception as e:
-        logging.error(f"Error placing OCO order: {e}")
-        raise
-
-async def place_oso_order(symbol, action, entry_price, take_profit_price, stop_loss_price, quantity=1):
-    """
-    Place an OSO (One-Sends-Other) order using Tradovate's OSO functionality.
-    """
-    headers = {"Authorization": f"Bearer {client.access_token}"}
-
-    is_buy = action.lower() == "buy"
-
-    try:
-        current_price = await get_latest_price(symbol)
-        use_market_entry = (is_buy and current_price >= entry_price) or (not is_buy and current_price <= entry_price)
-    except:
-        use_market_entry = False
-        current_price = None
-
-    opposite_action = "Sell" if is_buy else "Buy"
-
-    primary_order = {
-        "accountId": client.account_id,
-        "symbol": symbol,
-        "action": action,
-        "orderQty": quantity,
-        "orderType": "Market" if use_market_entry else "Stop",
-        "stopPrice": entry_price if not use_market_entry else None,
-        "timeInForce": "GTC"
-    }
-
-    oso_payload = {
-        "primaryOrder": primary_order,
-        "other": [
-            {
-                "accountId": client.account_id,
-                "symbol": symbol,
-                "action": opposite_action,
-                "orderQty": quantity,
-                "orderType": "Limit",
-                "price": take_profit_price,
-                "timeInForce": "GTC"
-            },
-            {
-                "accountId": client.account_id,
-                "symbol": symbol,
-                "action": opposite_action,
-                "orderQty": quantity,
-                "orderType": "Stop",
-                "stopPrice": stop_loss_price,
-                "timeInForce": "GTC"
-            }
-        ]
-    }
-
-    try:
-        async with httpx.AsyncClient() as http_client:
-            response = await http_client.post(
-                "https://demo-api.tradovate.com/v1/order/placeoso",
-                headers=headers,
-                json=oso_payload
-            )
-            response.raise_for_status()
-            result = response.json()
-            logging.info(f"OSO order placed successfully: {result}")
-            return result
-    except Exception as e:
-        logging.error(f"Error placing OSO order: {e}")
-        logging.info("Falling back to manual order placement...")
-        return await place_manual_orders(symbol, action, entry_price, take_profit_price, stop_loss_price, quantity)
-
-async def place_manual_orders(symbol, action, entry_price, take_profit_price, stop_loss_price, quantity=1):
-    """
-    Fallback method: Place orders manually and monitor them.
-    """
-    headers = {"Authorization": f"Bearer {client.access_token}"}
-    order_tracking = {"ENTRY": None, "TP": None, "SL": None}
-    
-    # Determine if we need market or stop order for entry
-    is_buy = action.lower() == "buy"
-    
-    try:
-        current_price = await get_latest_price(symbol)
-        use_market_entry = (is_buy and current_price >= entry_price) or (not is_buy and current_price <= entry_price)
-    except:
-        use_market_entry = False
-    
-    # Place entry order
-    if use_market_entry:
-        entry_payload = {
-            "accountId": client.account_id,
-            "symbol": symbol,
-            "action": action,
-            "orderQty": quantity,
-            "orderType": "Market",
-            "timeInForce": "GTC"
-        }
-    else:
-        entry_payload = {
-            "accountId": client.account_id,
-            "symbol": symbol,
-            "action": action,
-            "orderQty": quantity,
-            "orderType": "Stop",
-            "stopPrice": entry_price,
-            "timeInForce": "GTC"
-        }
-    
-    try:
-        async with httpx.AsyncClient() as http_client:
-            response = await http_client.post(
-                "https://demo-api.tradovate.com/v1/order/placeorder",
-                headers=headers,
-                json=entry_payload
-            )
-            response.raise_for_status()
-            entry_result = response.json()
-            order_tracking["ENTRY"] = entry_result.get("id")
-            logging.info(f"Entry order placed: {entry_result}")
-    except Exception as e:
-        logging.error(f"Error placing entry order: {e}")
-        return {"error": f"Failed to place entry order: {e}"}
-    
-    # Start monitoring to place TP and SL after entry fills
-    asyncio.create_task(monitor_manual_orders(order_tracking, symbol, action, take_profit_price, stop_loss_price, quantity))
-    
-    return {"entry_order": entry_result, "monitoring": "started"}
-
-async def monitor_manual_orders(order_tracking, symbol, action, take_profit_price, stop_loss_price, quantity):
-    """
-    Monitor manual orders and place TP/SL after entry fills, then monitor for completion.
-    """
-    headers = {"Authorization": f"Bearer {client.access_token}"}
+    logging.info(f"Starting comprehensive order monitoring for {symbol}")
     entry_filled = False
-    opposite_action = "Sell" if action.lower() == "buy" else "Buy"
-    
-    logging.info(f"Starting manual order monitoring for {symbol}")
+    monitoring_start_time = asyncio.get_event_loop().time()
+    max_monitoring_time = 3600  # 1 hour timeout
     
     while True:
         try:
-            # Check entry order status
-            if order_tracking["ENTRY"] and not entry_filled:
-                url = f"https://demo-api.tradovate.com/v1/order/{order_tracking['ENTRY']}"
+            headers = {"Authorization": f"Bearer {client.access_token}"}
+            active_orders = {}
+            logging.info(f"Order tracking state: {order_tracking}")
+            # Check status of all tracked orders
+            for label, order_id in order_tracking.items():
+                if order_id is None:
+                    logging.info(f"Order {label} is not yet placed (order_id=None)")
+                    continue
+                url = f"https://demo-api.tradovate.com/v1/order/{order_id}"
                 async with httpx.AsyncClient() as http_client:
                     response = await http_client.get(url, headers=headers)
                     response.raise_for_status()
                     order_status = response.json()
+                status = order_status.get("status")
+                logging.info(f"Order {label} (ID: {order_id}) status: {status} | Full order_status: {order_status}")
                 
-                if order_status.get("status") == "Filled":
-                    logging.info("Entry order filled! Placing TP and SL orders...")
-                    entry_filled = True
+                if status == "Filled":
+                    if label == "ENTRY" and not entry_filled:
+                        logging.info(f"ENTRY order filled! Now placing STOP order for protection.")
+                        entry_filled = True
+                        logging.info(f"STOP order data to be used: {stop_order_data}")
+                        # Now place the STOP order since we're in position
+                        if stop_order_data:
+                            try:
+                                # Validate stop order data before placing
+                                required_fields = ["accountId", "symbol", "action", "orderQty", "orderType", "stopPrice"]
+                                for field in required_fields:
+                                    if field not in stop_order_data:
+                                        raise ValueError(f"Missing required field in stop_order_data: {field}")
+                                logging.info(f"Placing STOP order with data: {stop_order_data}")
+                                stop_result = await client.place_order(
+                                    symbol=symbol,
+                                    action=stop_order_data["action"],
+                                    quantity=stop_order_data["orderQty"],
+                                    order_data=stop_order_data
+                                )
+                                logging.info(f"STOP order placement API response: {stop_result}")
+                                order_tracking["STOP"] = stop_result.get("id")
+                                logging.info(f"STOP order placed successfully: {stop_result}")
+                            except Exception as e:
+                                logging.error(f"Error placing STOP order after ENTRY fill: {e}")
+                                # Try alternative approach if first attempt fails
+                                try:
+                                    logging.info("Attempting fallback method for STOP order placement")
+                                    headers = {"Authorization": f"Bearer {client.access_token}"}
+                                    async with httpx.AsyncClient() as http_client:
+                                        response = await http_client.post(
+                                            f"https://demo-api.tradovate.com/v1/order/placeorder",
+                                            headers=headers,
+                                            json=stop_order_data
+                                        )
+                                        response.raise_for_status()
+                                        stop_result = response.json()
+                                        logging.info(f"STOP order placement fallback API response: {stop_result}")
+                                        order_tracking["STOP"] = stop_result.get("id")
+                                        logging.info(f"STOP order placed successfully (fallback): {stop_result}")
+                                except Exception as e2:
+                                    logging.error(f"Failed to place STOP order with fallback method: {e2}")
+                                    logging.error(f"Position will remain UNPROTECTED by stop loss!")
+                        else:
+                            logging.warning("No stop_order_data provided - position will remain UNPROTECTED!")
+                        
+                    elif label == "TP1" and entry_filled:
+                        logging.info(f"TP1 order filled! Cancelling STOP order.")
+                        if order_tracking.get("STOP"):
+                            cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{order_tracking['STOP']}"
+                            try:
+                                async with httpx.AsyncClient() as http_client:
+                                    resp = await http_client.post(cancel_url, headers=headers)
+                                    if resp.status_code == 200:
+                                        logging.info(f"STOP order {order_tracking['STOP']} cancelled after TP1 fill.")
+                                    else:
+                                        logging.warning(f"Failed to cancel STOP order {order_tracking['STOP']} after TP1 fill. Status: {resp.status_code}")
+                            except Exception as e:
+                                logging.error(f"Exception while cancelling STOP order after TP1 fill: {e}")
+                        else:
+                            logging.info("No STOP order to cancel after TP1 fill.")
+                        return  # Exit monitoring
+                        
+                    elif label == "STOP" and entry_filled:
+                        logging.info(f"STOP order filled! Cancelling TP orders.")
+                        if order_tracking.get("TP1"):
+                            cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{order_tracking['TP1']}"
+                            async with httpx.AsyncClient() as http_client:
+                                await http_client.post(cancel_url, headers=headers)
+                        return  # Exit monitoring
+                        
+                elif status in ["Working", "Accepted"]:
+                    active_orders[label] = order_id
+                elif status in ["Cancelled", "Rejected"]:
+                    logging.info(f"Order {label} was {status}")
                     
-                    # Place Take Profit order
-                    tp_payload = {
-                        "accountId": client.account_id,
-                        "symbol": symbol,
-                        "action": opposite_action,
-                        "orderQty": quantity,
-                        "orderType": "Limit",
-                        "price": take_profit_price,
-                        "timeInForce": "GTC"
-                    }
-                    
-                    # Place Stop Loss order
-                    sl_payload = {
-                        "accountId": client.account_id,
-                        "symbol": symbol,
-                        "action": opposite_action,
-                        "orderQty": quantity,
-                        "orderType": "Stop",
-                        "stopPrice": stop_loss_price,
-                        "timeInForce": "GTC"
-                    }
-                    
-                    try:
-                        async with httpx.AsyncClient() as http_client:
-                            # Place TP order
-                            tp_response = await http_client.post(
-                                "https://demo-api.tradovate.com/v1/order/placeorder",
-                                headers=headers,
-                                json=tp_payload
-                            )
-                            tp_response.raise_for_status()
-                            tp_result = tp_response.json()
-                            order_tracking["TP"] = tp_result.get("id")
-                            logging.info(f"Take Profit order placed: {tp_result}")
-                            
-                            # Place SL order
-                            sl_response = await http_client.post(
-                                "https://demo-api.tradovate.com/v1/order/placeorder",
-                                headers=headers,
-                                json=sl_payload
-                            )
-                            sl_response.raise_for_status()
-                            sl_result = sl_response.json()
-                            order_tracking["SL"] = sl_result.get("id")
-                            logging.info(f"Stop Loss order placed: {sl_result}")
-                            
-                    except Exception as e:
-                        logging.error(f"Error placing TP/SL orders: {e}")
-                        return
-            
-            # Monitor TP and SL orders if entry is filled
-            if entry_filled and order_tracking["TP"] and order_tracking["SL"]:
-                # Check TP order
-                tp_url = f"https://demo-api.tradovate.com/v1/order/{order_tracking['TP']}"
-                sl_url = f"https://demo-api.tradovate.com/v1/order/{order_tracking['SL']}"
+            # Check if monitoring has been running too long
+            if asyncio.get_event_loop().time() - monitoring_start_time > max_monitoring_time:
+                logging.warning(f"Order monitoring timeout reached for {symbol}. Stopping monitoring.")
+                return
                 
-                async with httpx.AsyncClient() as http_client:
-                    tp_response = await http_client.get(tp_url, headers=headers)
-                    sl_response = await http_client.get(sl_url, headers=headers)
-                    
-                    tp_status = tp_response.json() if tp_response.status_code == 200 else {}
-                    sl_status = sl_response.json() if sl_response.status_code == 200 else {}
-                    
-                    # If TP filled, cancel SL
-                    if tp_status.get("status") == "Filled":
-                        logging.info("Take Profit filled! Cancelling Stop Loss...")
-                        try:
-                            cancel_response = await http_client.post(
-                                f"https://demo-api.tradovate.com/v1/order/cancel/{order_tracking['SL']}",
-                                headers=headers
-                            )
-                            logging.info(f"Stop Loss cancelled after TP fill")
-                        except Exception as e:
-                            logging.error(f"Error cancelling SL after TP fill: {e}")
-                        return
-                    
-                    # If SL filled, cancel TP
-                    if sl_status.get("status") == "Filled":
-                        logging.info("Stop Loss filled! Cancelling Take Profit...")
-                        try:
-                            cancel_response = await http_client.post(
-                                f"https://demo-api.tradovate.com/v1/order/cancel/{order_tracking['TP']}",
-                                headers=headers
-                            )
-                            logging.info(f"Take Profit cancelled after SL fill")
-                        except Exception as e:
-                            logging.error(f"Error cancelling TP after SL fill: {e}")
-                        return
-            
-            await asyncio.sleep(2)  # Check every 2 seconds
+            # If no active orders remain, stop monitoring
+            if not active_orders:
+                logging.info("No active orders remaining. Stopping monitoring.")
+                return
+                
+            await asyncio.sleep(1)
             
         except Exception as e:
-            logging.error(f"Error in manual order monitoring: {e}")
+            logging.error(f"Error in comprehensive order monitoring: {e}")
             await asyncio.sleep(5)
 
 # Ensure deduplication logic is robust
@@ -528,7 +342,8 @@ async def webhook(req: Request):
 
             action = data["action"].capitalize()
             symbol = data["symbol"]
-            symbol = await get_current_nq_symbol() if symbol in ["CME_MINI:NQ1!", "NQ1!", "NQM5"] else symbol
+            if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
+                symbol = "NQM5"
 
             # Check if another symbol is currently being processed
             if currently_processing_symbol is not None and currently_processing_symbol != symbol:
@@ -613,96 +428,145 @@ async def webhook(req: Request):
                         logging.warning(f"Open orders still exist after cancel: {[{'id': o.get('id'), 'symbol': o.get('symbol'), 'status': o.get('status')} for o in open_orders]}")
                         return {"status": "skipped", "detail": "Unable to achieve clean state - open orders remain."}
                 
-                # Validate required alert fields
-                required_fields = ["PRICE", "T1", "STOP"]
-                missing_fields = [field for field in required_fields if field not in data]
-                if missing_fields:
-                    logging.error(f"Missing required fields: {missing_fields}")
-                    return {"status": "error", "detail": f"Missing required fields: {missing_fields}"}
+                # Initialize the order plan
+                order_plan = []
+                stop_order_data = None
+                logging.info("Creating order plan based on alert data")
 
-                # Extract order parameters
-                entry_price = float(data["PRICE"])
-                take_profit_price = float(data["T1"])
-                stop_loss_price = float(data["STOP"])
-                quantity = 1
+                # Add limit orders for T1 (Take Profit)
+                if "T1" in data:
+                    order_plan.append({
+                        "label": "TP1",
+                        "action": "Sell" if action.lower() == "buy" else "Buy",
+                        "orderType": "Limit",
+                        "price": data["T1"],
+                        "qty": 1
+                    })
+                    logging.info(f"Added limit order for TP1: {data['T1']}")
+                else:
+                    logging.warning("T1 not found in alert data - no take profit order will be placed")
 
-                logging.info(f"=== PLACING OCO/OSO ORDERS FOR {symbol} ===")
-                logging.info(f"Action: {action}")
-                logging.info(f"Entry Price: {entry_price}")
-                logging.info(f"Take Profit: {take_profit_price}")
-                logging.info(f"Stop Loss: {stop_loss_price}")
-
-                # Try OSO order first (preferred method)
-                try:
-                    logging.info("Attempting to place OSO order...")
-                    result = await place_oso_order(symbol, action, entry_price, take_profit_price, stop_loss_price, quantity)
-                    logging.info(f"OSO order placed successfully: {result}")
-                    return {"status": "success", "order_type": "OSO", "result": result}
-                
-                except Exception as oso_error:
-                    logging.warning(f"OSO order failed: {oso_error}. Trying OCO approach...")
-                    
-                    # Fallback: Place entry order first, then OCO when filled
+                # Add stop order for entry, but check if price is already at/through the stop level
+                if "PRICE" in data:
                     try:
-                        # Determine entry order type
-                        current_price = await get_latest_price(symbol)
+                        # Get latest price for the symbol
+                        try:
+                            latest_price = await get_latest_price(symbol)
+                        except ValueError:
+                            latest_price = None
+                        entry_price = float(data["PRICE"])
                         is_buy = action.lower() == "buy"
-                        use_market_entry = (is_buy and current_price >= entry_price) or (not is_buy and current_price <= entry_price)
-                        
-                        # Place entry order
-                        if use_market_entry:
-                            entry_payload = {
-                                "accountId": client.account_id,
-                                "symbol": symbol,
+                        use_market = False
+                        if latest_price is not None:
+                            # For BUY: if market is at/above entry, use market order. For SELL: if at/below, use market order.
+                            use_market = (is_buy and latest_price >= entry_price) or (not is_buy and latest_price <= entry_price)
+                        if use_market:
+                            order_plan.append({
+                                "label": "ENTRY",
                                 "action": action,
-                                "orderQty": quantity,
                                 "orderType": "Market",
-                                "timeInForce": "GTC"
-                            }
-                            logging.info(f"Placing market entry order (current: {current_price}, entry: {entry_price})")
+                                "qty": 1
+                            })
+                            logging.info(f"Market is at/through entry stop level (latest: {latest_price}, entry: {entry_price}). Placing ENTRY as market order.")
                         else:
-                            entry_payload = {
-                                "accountId": client.account_id,
-                                "symbol": symbol,
+                            order_plan.append({
+                                "label": "ENTRY",
                                 "action": action,
-                                "orderQty": quantity,
                                 "orderType": "Stop",
                                 "stopPrice": entry_price,
-                                "timeInForce": "GTC"
-                            }
-                            logging.info(f"Placing stop entry order at: {entry_price}")
-                        
-                        # Place entry order
-                        headers = {"Authorization": f"Bearer {client.access_token}"}
-                        async with httpx.AsyncClient() as http_client:
-                            entry_response = await http_client.post(
-                                "https://demo-api.tradovate.com/v1/order/placeorder",
-                                headers=headers,
-                                json=entry_payload
-                            )
-                            entry_response.raise_for_status()
-                            entry_result = entry_response.json()
-                            logging.info(f"Entry order placed: {entry_result}")
+                                "qty": 1
+                            })
+                            logging.info(f"Added stop order for entry at price: {entry_price}")
+                    except Exception as e:
+                        logging.error(f"Error checking market price for ENTRY order: {e}")
+                        # Fallback: place stop order as before
+                        order_plan.append({
+                            "label": "ENTRY",
+                            "action": action,
+                            "orderType": "Stop",
+                            "stopPrice": data["PRICE"],
+                            "qty": 1
+                        })
+                        logging.info(f"Fallback: Added stop order for entry at price: {data['PRICE']}")
+                else:
+                    logging.warning("PRICE not found in alert data - no entry order will be placed")
 
-                        # If market order, immediately place OCO for TP/SL
-                        if use_market_entry:
-                            logging.info("Entry was market order - placing OCO immediately...")
-                            await asyncio.sleep(1)  # Brief delay for entry to process
-                            oco_result = await place_oco_order(symbol, action, entry_price, take_profit_price, stop_loss_price, quantity)
-                            return {"status": "success", "order_type": "Market_Entry_OCO", "entry": entry_result, "oco": oco_result}
-                        else:
-                            # Monitor entry order and place OCO when filled
-                            logging.info("Entry was stop order - monitoring for fill to place OCO...")
-                            order_tracking = {"ENTRY": entry_result.get("id"), "TP": None, "SL": None}
-                            asyncio.create_task(monitor_entry_and_place_oco(order_tracking, symbol, action, take_profit_price, stop_loss_price, quantity))
-                            return {"status": "success", "order_type": "Stop_Entry_Monitoring", "entry": entry_result}
-                    
-                    except Exception as fallback_error:
-                        logging.error(f"Fallback order placement also failed: {fallback_error}")
-                        # Final fallback: manual orders with monitoring
-                        logging.info("Using manual order placement as final fallback...")
-                        result = await place_manual_orders(symbol, action, entry_price, take_profit_price, stop_loss_price, quantity)
-                        return {"status": "success", "order_type": "Manual_Monitoring", "result": result}
+                # Add stop loss order (STOP) at the same time as ENTRY and TP1
+                if "STOP" in data:
+                    order_plan.append({
+                        "label": "STOP",
+                        "action": "Sell" if action.lower() == "buy" else "Buy",
+                        "orderType": "Stop",
+                        "stopPrice": data["STOP"],
+                        "qty": 1
+                    })
+                    logging.info(f"Added stop loss order for STOP at price: {data['STOP']}")
+                else:
+                    logging.warning("STOP not found in alert data - no stop loss order will be placed")
+
+                logging.info(f"Order plan created with {len(order_plan)} orders")
+                
+                # Initialize variables for tracking orders
+                order_results = []
+                order_tracking = {
+                    "ENTRY": None,
+                    "TP1": None, 
+                    "STOP": None
+                }
+
+                # Execute the order plan with ENTRY fallback logic
+                logging.info("Executing order plan with ENTRY fallback logic")
+                for order in order_plan:
+                    order_payload = {
+                        "accountId": client.account_id,
+                        "symbol": symbol,
+                        "action": order["action"],
+                        "orderQty": order["qty"],
+                        "orderType": order["orderType"],
+                        "price": order.get("price"),
+                        "stopPrice": order.get("stopPrice"),
+                        "timeInForce": "GTC",
+                        "isAutomated": True
+                    }
+
+                    # ENTRY fallback: If ENTRY is a stop order and price is already at/through stop, use market order
+                    if order["label"] == "ENTRY" and order["orderType"] == "Stop":
+                        try:
+                            try:
+                                latest_price = await get_latest_price(symbol)
+                            except ValueError:
+                                latest_price = None
+                            stop_price = order.get("stopPrice")
+                            if stop_price is not None and latest_price is not None:
+                                # For BUY, if price >= stop, for SELL, if price <= stop
+                                if (order["action"].lower() == "buy" and latest_price >= stop_price) or \
+                                   (order["action"].lower() == "sell" and latest_price <= stop_price):
+                                    logging.info(f"ENTRY stop order would be triggered immediately (latest: {latest_price}, stop: {stop_price}). Placing as MARKET order instead.")
+                                    order_payload["orderType"] = "Market"
+                                    order_payload.pop("stopPrice", None)
+                                    order_payload.pop("price", None)
+                        except Exception as e:
+                            logging.error(f"Error checking latest price for ENTRY fallback: {e}")
+
+                    logging.info(f"Placing order: {order_payload}")
+                    try:
+                        result = await client.place_order(
+                            symbol=symbol,
+                            action=order["action"],
+                            quantity=order["qty"],
+                            order_data=order_payload
+                        )
+                        logging.info(f"Order placed successfully: {result}")
+                        if order['label'] == 'ENTRY':
+                            logging.info(f"ENTRY order API response: {result}")
+                        order_id = result.get("id")
+                        order_tracking[order["label"]] = order_id
+                        order_results.append({order["label"]: result})
+                    except Exception as e:
+                        logging.error(f"Error placing order {order['label']}: {e}")
+
+                logging.info("Order plan execution completed")
+                return {"status": "success", "order_responses": order_results}
                 
             finally:
                 # Always clear the currently processing symbol when done
@@ -714,188 +578,6 @@ async def webhook(req: Request):
             # Clear processing symbol on error too
             currently_processing_symbol = None
             raise HTTPException(status_code=500, detail="Internal server error")
-
-async def monitor_entry_and_place_oco(order_tracking, symbol, action, take_profit_price, stop_loss_price, quantity):
-    """
-    Monitor entry order and place OCO when it fills.
-    """
-    headers = {"Authorization": f"Bearer {client.access_token}"}
-    logging.info(f"Starting entry monitoring for OCO placement on {symbol}")
-    
-    while True:
-        try:
-            if order_tracking["ENTRY"]:
-                url = f"https://demo-api.tradovate.com/v1/order/{order_tracking['ENTRY']}"
-                async with httpx.AsyncClient() as http_client:
-                    response = await http_client.get(url, headers=headers)
-                    response.raise_for_status()
-                    order_status = response.json()
-                
-                status = order_status.get("status")
-                logging.info(f"Entry order status: {status}")
-                
-                if status == "Filled":
-                    logging.info("Entry filled! Placing OCO for TP/SL...")
-                    try:
-                        oco_result = await place_oco_order(symbol, action, 0, take_profit_price, stop_loss_price, quantity)
-                        logging.info(f"OCO placed after entry fill: {oco_result}")
-                        return
-                    except Exception as e:
-                        logging.error(f"Failed to place OCO after entry fill: {e}")
-                        # Fallback to manual TP/SL orders
-                        await place_manual_tp_sl(symbol, action, take_profit_price, stop_loss_price, quantity)
-                        return
-                
-                elif status in ["Cancelled", "Rejected"]:
-                    logging.warning(f"Entry order was {status} - stopping monitoring")
-                    return
-            
-            await asyncio.sleep(2)
-            
-        except Exception as e:
-            logging.error(f"Error in entry monitoring: {e}")
-            await asyncio.sleep(5)
-
-async def place_manual_tp_sl(symbol, action, take_profit_price, stop_loss_price, quantity):
-    """
-    Place manual TP and SL orders and monitor them for OCO behavior.
-    """
-    headers = {"Authorization": f"Bearer {client.access_token}"}
-    opposite_action = "Sell" if action.lower() == "buy" else "Buy"
-    order_tracking = {"TP": None, "SL": None}
-    
-    try:
-        # Place Take Profit order
-        tp_payload = {
-            "accountId": client.account_id,
-            "symbol": symbol,
-            "action": opposite_action,
-            "orderQty": quantity,
-            "orderType": "Limit",
-            "price": take_profit_price,
-            "timeInForce": "GTC"
-        }
-        
-        # Place Stop Loss order
-        sl_payload = {
-            "accountId": client.account_id,
-            "symbol": symbol,
-            "action": opposite_action,
-            "orderQty": quantity,
-            "orderType": "Stop",
-            "stopPrice": stop_loss_price,
-            "timeInForce": "GTC"
-        }
-        
-        async with httpx.AsyncClient() as http_client:
-            # Place TP order
-            tp_response = await http_client.post(
-                "https://demo-api.tradovate.com/v1/order/placeorder",
-                headers=headers,
-                json=tp_payload
-            )
-            tp_response.raise_for_status()
-            tp_result = tp_response.json()
-            order_tracking["TP"] = tp_result.get("id")
-            logging.info(f"Manual TP order placed: {tp_result}")
-            
-            # Place SL order
-            sl_response = await http_client.post(
-                "https://demo-api.tradovate.com/v1/order/placeorder",
-                headers=headers,
-                json=sl_payload
-            )
-            sl_response.raise_for_status()
-            sl_result = sl_response.json()
-            order_tracking["SL"] = sl_result.get("id")
-            logging.info(f"Manual SL order placed: {sl_result}")
-        
-        # Start monitoring for OCO behavior
-        asyncio.create_task(monitor_tp_sl_oco(order_tracking, symbol))
-        
-    except Exception as e:
-        logging.error(f"Error placing manual TP/SL orders: {e}")
-
-async def monitor_tp_sl_oco(order_tracking, symbol):
-    """
-    Monitor TP and SL orders to provide OCO behavior (cancel opposite when one fills).
-    """
-    headers = {"Authorization": f"Bearer {client.access_token}"}
-    logging.info(f"Starting TP/SL OCO monitoring for {symbol}")
-    
-    while True:
-        try:
-            if order_tracking["TP"] and order_tracking["SL"]:
-                tp_url = f"https://demo-api.tradovate.com/v1/order/{order_tracking['TP']}"
-                sl_url = f"https://demo-api.tradovate.com/v1/order/{order_tracking['SL']}"
-                
-                async with httpx.AsyncClient() as http_client:
-                    tp_response = await http_client.get(tp_url, headers=headers)
-                    sl_response = await http_client.get(sl_url, headers=headers)
-                    
-                    tp_status = tp_response.json() if tp_response.status_code == 200 else {}
-                    sl_status = sl_response.json() if sl_response.status_code == 200 else {}
-                    
-                    # If TP filled, cancel SL
-                    if tp_status.get("status") == "Filled":
-                        logging.info("Take Profit filled! Cancelling Stop Loss...")
-                        try:
-                            cancel_response = await http_client.post(
-                                f"https://demo-api.tradovate.com/v1/order/cancel/{order_tracking['SL']}",
-                                headers=headers
-                            )
-                            logging.info(f"Stop Loss cancelled after TP fill")
-                        except Exception as e:
-                            logging.error(f"Error cancelling SL after TP fill: {e}")
-                        return
-                    
-                    # If SL filled, cancel TP
-                    if sl_status.get("status") == "Filled":
-                        logging.info("Stop Loss filled! Cancelling Take Profit...")
-                        try:
-                            cancel_response = await http_client.post(
-                                f"https://demo-api.tradovate.com/v1/order/cancel/{order_tracking['TP']}",
-                                headers=headers
-                            )
-                            logging.info(f"Take Profit cancelled after SL fill")
-                        except Exception as e:
-                            logging.error(f"Error cancelling TP after SL fill: {e}")
-                        return
-            
-            await asyncio.sleep(2)
-            
-        except Exception as e:
-            logging.error(f"Error in TP/SL OCO monitoring: {e}")
-            await asyncio.sleep(5)
-
-async def get_current_nq_symbol():
-    """
-    Fetch the current front-month NASDAQ futures symbol dynamically using Tradovate's API.
-    """
-    url = "https://demo-api.tradovate.com/v1/contract/list"
-    headers = {"Authorization": f"Bearer {client.access_token}"}
-
-    try:
-        async with httpx.AsyncClient() as http_client:
-            response = await http_client.get(url, headers=headers)
-            response.raise_for_status()
-            contracts = response.json()
-
-            # Filter for NASDAQ futures contracts
-            nq_contracts = [c for c in contracts if c.get("symbol", "").startswith("NQ")]
-
-            # Sort contracts by expiration date and select the nearest one
-            nq_contracts.sort(key=lambda c: c.get("expirationDate"))
-            if nq_contracts:
-                current_symbol = nq_contracts[0]["symbol"]
-                logging.info(f"Dynamically fetched current NQ symbol: {current_symbol}")
-                return current_symbol
-
-    except Exception as e:
-        logging.warning(f"Failed to fetch current NQ symbol dynamically: {e}")
-
-    logging.warning("No valid NQ symbol found. Defaulting to NQZ25.")
-    return "NQZ25"
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
