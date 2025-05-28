@@ -323,7 +323,7 @@ async def webhook(req: Request):
         # Add stop order for entry
         if "PRICE" in data:
             order_plan.append({
-                "label": "ENTRY",
+                "label": "ENTRY",   
                 "action": action,
                 "orderType": "Stop",
                 "stopPrice": data["PRICE"],
@@ -407,6 +407,9 @@ async def webhook(req: Request):
         logging.error(f"Unexpected error in webhook: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+        # Initialize is_opposite_direction with a default value
+        is_opposite_direction = False
+
         # Determine if this is an opposite direction alert
         current_direction = action.lower()
         pos_url = f"https://demo-api.tradovate.com/v1/position/list"
@@ -422,7 +425,6 @@ async def webhook(req: Request):
                 existing_position = pos
                 break
 
-        is_opposite_direction = False
         if existing_position:
             current_pos_qty = existing_position.get("netPos", 0)
             if (current_pos_qty > 0 and current_direction == "sell") or (current_pos_qty < 0 and current_direction == "buy"):
