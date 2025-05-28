@@ -368,8 +368,23 @@ async def process_alert(data, symbol, action):
                     quantity=order["qty"],
                     order_data=order_payload
                 )
+                logging.info(f"Order placement response for {order['label']}: {json.dumps(result, indent=2)}")
                 order_results.append({order["label"]: result})
                 order_tracking[order["label"]] = result.get("id")
+
+                # Fallback logic for ENTRY order ID
+                if order["label"] == "ENTRY" and not result.get("id"):
+                    logging.warning("ENTRY order ID is None. Attempting to retrieve from order list.")
+                    headers = {"Authorization": f"Bearer {client.access_token}"}
+                    async with httpx.AsyncClient() as http_client:
+                        list_response = await http_client.get(f"https://demo-api.tradovate.com/v1/order/list", headers=headers)
+                        list_response.raise_for_status()
+                        orders = list_response.json()
+                        for o in orders:
+                            if o.get("symbol") == symbol and o.get("orderType") == "Stop" and o.get("status") == "Working":
+                                order_tracking["ENTRY"] = o.get("id")
+                                logging.info(f"Retrieved ENTRY order ID from order list: {o.get('id')}")
+                                break
             except Exception as e:
                 logging.error(f"Error placing order {order['label']}: {e}")
 
