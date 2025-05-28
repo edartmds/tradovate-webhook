@@ -194,7 +194,7 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                 if label == "ENTRY":
                     logging.info(f"ENTRY order current status: {status}")
                 
-                if status == "Filled":
+                if status and status.lower() == "filled":
                     if label == "ENTRY" and not entry_filled:
                         logging.info(f"ENTRY order filled! Now placing STOP LOSS order for protection.")
                         entry_filled = True
