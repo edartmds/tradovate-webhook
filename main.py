@@ -248,71 +248,54 @@ async def place_oco_order(symbol, action, entry_price, take_profit_price, stop_l
 async def place_oso_order(symbol, action, entry_price, take_profit_price, stop_loss_price, quantity=1):
     """
     Place an OSO (One-Sends-Other) order using Tradovate's OSO functionality.
-    This places an entry order that, when filled, automatically places OCO orders for TP and SL.
     """
     headers = {"Authorization": f"Bearer {client.access_token}"}
-    
-    # Determine if we need market or stop order for entry
+
     is_buy = action.lower() == "buy"
-    
-    # Get current market price to determine entry order type
+
     try:
         current_price = await get_latest_price(symbol)
-        # For BUY: if current price >= entry price, use market. For SELL: if current price <= entry price, use market
         use_market_entry = (is_buy and current_price >= entry_price) or (not is_buy and current_price <= entry_price)
     except:
         use_market_entry = False
         current_price = None
-    
-    # Determine the opposite action for TP and SL
+
     opposite_action = "Sell" if is_buy else "Buy"
-    
-    # Primary order (entry)
-    if use_market_entry:
-        primary_order = {
-            "accountId": client.account_id,
-            "symbol": symbol,
-            "action": action,
-            "orderQty": quantity,
-            "orderType": "Market",
-            "timeInForce": "GTC"
-        }
-        logging.info(f"Using market order for entry (current: {current_price}, entry: {entry_price})")
-    else:
-        primary_order = {
-            "accountId": client.account_id,
-            "symbol": symbol,
-            "action": action,
-            "orderQty": quantity,
-            "orderType": "Stop",
-            "stopPrice": entry_price,
-            "timeInForce": "GTC"
-        }
-        logging.info(f"Using stop order for entry at price: {entry_price}")
-    
-    # OCO orders to be placed when primary fills
-    oco_orders = [
-        {
-            "action": opposite_action,
-            "orderType": "Limit",
-            "price": take_profit_price,
-            "orderQty": quantity,
-            "timeInForce": "GTC"
-        },
-        {
-            "action": opposite_action,
-            "orderType": "Stop",
-            "stopPrice": stop_loss_price,
-            "orderQty": quantity,
-            "timeInForce": "GTC"
-        }
-    ]
-    
+
+    primary_order = {
+        "accountId": client.account_id,
+        "symbol": symbol,
+        "action": action,
+        "orderQty": quantity,
+        "orderType": "Market" if use_market_entry else "Stop",
+        "stopPrice": entry_price if not use_market_entry else None,
+        "timeInForce": "GTC"
+    }
+
     oso_payload = {
         "primaryOrder": primary_order,
-        "ocoOrders": oco_orders
+        "other": [
+            {
+                "accountId": client.account_id,
+                "symbol": symbol,
+                "action": opposite_action,
+                "orderQty": quantity,
+                "orderType": "Limit",
+                "price": take_profit_price,
+                "timeInForce": "GTC"
+            },
+            {
+                "accountId": client.account_id,
+                "symbol": symbol,
+                "action": opposite_action,
+                "orderQty": quantity,
+                "orderType": "Stop",
+                "stopPrice": stop_loss_price,
+                "timeInForce": "GTC"
+            }
+        ]
     }
-    
+
     try:
         async with httpx.AsyncClient() as http_client:
             response = await http_client.post(
@@ -326,7 +309,6 @@ async def place_oso_order(symbol, action, entry_price, take_profit_price, stop_l
             return result
     except Exception as e:
         logging.error(f"Error placing OSO order: {e}")
-        # Fallback to manual order placement
         logging.info("Falling back to manual order placement...")
         return await place_manual_orders(symbol, action, entry_price, take_profit_price, stop_loss_price, quantity)
 
@@ -546,8 +528,7 @@ async def webhook(req: Request):
 
             action = data["action"].capitalize()
             symbol = data["symbol"]
-            if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
-                symbol = "NQM5"
+            symbol = await get_current_nq_symbol() if symbol in ["CME_MINI:NQ1!", "NQ1!", "NQM5"] else symbol
 
             # Check if another symbol is currently being processed
             if currently_processing_symbol is not None and currently_processing_symbol != symbol:
@@ -886,6 +867,36 @@ async def monitor_tp_sl_oco(order_tracking, symbol):
         except Exception as e:
             logging.error(f"Error in TP/SL OCO monitoring: {e}")
             await asyncio.sleep(5)
+
+async def get_current_nq_symbol():
+    """
+    Dynamically fetch the current front-month NASDAQ futures symbol.
+    """
+    possible_symbols = [
+        "NQZ25",  # December 2025
+        "NQH26",  # March 2026
+        "NQM26",  # June 2026
+        "NQU26",  # September 2026
+    ]
+
+    headers = {"Authorization": f"Bearer {client.access_token}"}
+
+    for symbol in possible_symbols:
+        try:
+            url = f"https://demo-api.tradovate.com/v1/marketdata/quote/{symbol}"
+            async with httpx.AsyncClient() as http_client:
+                response = await http_client.get(url, headers=headers)
+                if response.status_code == 200:
+                    data = response.json()
+                    if data.get("last") is not None:
+                        logging.info(f"Valid NQ symbol found: {symbol} with price: {data.get('last')}")
+                        return symbol
+        except Exception as e:
+            logging.debug(f"Symbol {symbol} not valid: {e}")
+            continue
+
+    logging.warning("No valid NQ symbol found. Defaulting to NQZ25.")
+    return "NQZ25"
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
