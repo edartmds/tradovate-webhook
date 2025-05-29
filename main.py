@@ -354,16 +354,22 @@ async def webhook(req: Request):
         if not all([symbol, action, price, t1, stop]):
             missing = [k for k, v in {"symbol": symbol, "action": action, "PRICE": price, "T1": t1, "STOP": stop}.items() if not v]
             logging.error(f"Missing required fields: {missing}")
-            raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")
-
-        # Map TradingView symbol to Tradovate symbol
+            raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")        # Map TradingView symbol to Tradovate symbol
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
             symbol = "NQM5"
-            logging.info(f"Mapped symbol to: {symbol}")        # STEP 1: Close all existing positions to prevent over-leveraging
+            logging.info(f"Mapped symbol to: {symbol}")
+
+        # STEP 1: Close all existing positions to prevent over-leveraging
         logging.info("=== CLOSING ALL EXISTING POSITIONS ===")
         try:
             closed_positions = await client.close_all_positions()
             logging.info(f"Successfully closed {len(closed_positions)} positions")
+            
+            # Add small delay to ensure market orders are fully processed
+            if closed_positions:
+                logging.info("Waiting for position closure to fully process...")
+                await asyncio.sleep(2)  # 2 second delay for market order execution
+                
         except Exception as e:
             logging.warning(f"Failed to close some positions: {e}")
             # Continue even if position closure partially fails
