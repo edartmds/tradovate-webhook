@@ -347,6 +347,7 @@ async def webhook(req: Request):
             ],
             "osoOrders": [
                 {
+                    "action": str(exit_action),
                     "orders": [
                         {
                             "action": str(exit_action),
