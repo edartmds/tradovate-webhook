@@ -556,9 +556,8 @@ async def webhook(req: Request):
             logging.info(f"Successfully cancelled {len(cancelled_orders)} pending orders")
         except Exception as e:
             logging.warning(f"Failed to cancel some orders: {e}")
-            # Continue with new order placement even if cancellation partially fails        # STEP 3: Place entry order with automatic bracket orders (OSO)
-        logging.info(f"=== PLACING OSO BRACKET ORDER FOR EXACT POSITIONING ===")
-        logging.info(f"Symbol: {symbol}, Entry: {price}, TP: {t1}, SL: {stop}")
+            # Continue with new order placement even if cancellation partially fails        # STEP 3: Place entry order with automatic bracket orders (OSO)        logging.info(f"=== PLACING OSO BRACKET ORDER FOR STOP ENTRY ===")
+        logging.info(f"Symbol: {symbol}, Stop Entry: {price}, TP: {t1}, SL: {stop}")
         
         # Determine opposite action for take profit and stop loss
         opposite_action = "Sell" if action.lower() == "buy" else "Buy"
@@ -567,16 +566,15 @@ async def webhook(req: Request):
         # If BUY and current price is below target, use Limit order
         # If BUY and current price is above target, use Stop order
         # This ensures proper entry execution
-        
-        # OSO payload with proper Tradovate API structure
+          # OSO payload with proper Tradovate API structure
         oso_payload = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
             "action": action.capitalize(),  # "Buy" or "Sell"
             "symbol": symbol,
             "orderQty": 1,
-            "orderType": "Limit",  # Use Limit for exact price entry
-            "price": price,        # Entry at EXACT PRICE level
+            "orderType": "Stop",   # Use Stop order for entry trigger
+            "stopPrice": price,    # Entry triggers when price reaches this level
             "timeInForce": "GTC",
             "isAutomated": True,
             # Take Profit bracket (bracket1)
