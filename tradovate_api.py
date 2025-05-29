@@ -205,3 +205,142 @@ class TradovateClient:
         except Exception as e:
             logging.error(f"Unexpected error during STOP order placement: {e}")
             raise HTTPException(status_code=500, detail="Internal server error during STOP order placement")
+
+    async def get_pending_orders(self):
+        """
+        Retrieves all pending orders for the authenticated account.
+
+        Returns:
+            list: List of pending orders.
+        """
+        if not self.access_token:
+            await self.authenticate()
+
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json"
+        }
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"{BASE_URL}/order/list", headers=headers)
+                response.raise_for_status()
+                orders = response.json()
+                
+                # Filter for pending orders only
+                pending_orders = [order for order in orders if order.get("ordStatus") in ["Pending", "Working", "Submitted"]]
+                logging.info(f"Found {len(pending_orders)} pending orders")
+                logging.debug(f"Pending orders: {json.dumps(pending_orders, indent=2)}")
+                return pending_orders
+                
+        except httpx.HTTPStatusError as e:
+            logging.error(f"Failed to get orders: {e.response.text}")
+            raise HTTPException(status_code=e.response.status_code, detail=f"Failed to get orders: {e.response.text}")
+        except Exception as e:
+            logging.error(f"Unexpected error getting orders: {e}")
+            raise HTTPException(status_code=500, detail="Internal server error getting orders")
+
+    async def cancel_order(self, order_id: int):
+        """
+        Cancels a specific order by ID.
+
+        Args:
+            order_id (int): The ID of the order to cancel.
+
+        Returns:
+            dict: The response from the Tradovate API.
+        """
+        if not self.access_token:
+            await self.authenticate()
+
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json"
+        }
+
+        cancel_payload = {
+            "orderId": order_id
+        }
+
+        try:
+            async with httpx.AsyncClient() as client:
+                logging.debug(f"Canceling order {order_id}")
+                response = await client.post(f"{BASE_URL}/order/cancelorder", json=cancel_payload, headers=headers)
+                response.raise_for_status()
+                response_data = response.json()
+                logging.info(f"Order {order_id} cancelled successfully: {json.dumps(response_data, indent=2)}")
+                return response_data
+                
+        except httpx.HTTPStatusError as e:
+            logging.error(f"Failed to cancel order {order_id}: {e.response.text}")
+            raise HTTPException(status_code=e.response.status_code, detail=f"Failed to cancel order: {e.response.text}")
+        except Exception as e:
+            logging.error(f"Unexpected error canceling order {order_id}: {e}")
+            raise HTTPException(status_code=500, detail="Internal server error canceling order")
+
+    async def cancel_all_pending_orders(self):
+        """
+        Cancels all pending orders for the authenticated account.
+
+        Returns:
+            list: List of cancelled order responses.
+        """
+        try:
+            pending_orders = await self.get_pending_orders()
+            cancelled_orders = []
+            
+            for order in pending_orders:
+                order_id = order.get("id")
+                if order_id:
+                    try:
+                        result = await self.cancel_order(order_id)
+                        cancelled_orders.append(result)
+                        logging.info(f"Successfully cancelled order {order_id}")
+                    except Exception as e:
+                        logging.error(f"Failed to cancel order {order_id}: {e}")
+                        
+            logging.info(f"Cancelled {len(cancelled_orders)} out of {len(pending_orders)} pending orders")
+            return cancelled_orders
+            
+        except Exception as e:
+            logging.error(f"Error cancelling all pending orders: {e}")
+            raise HTTPException(status_code=500, detail="Internal server error cancelling orders")
+
+    async def place_oco_order(self, order1: dict, order2: dict):
+        """
+        Places an Order Cancels Order (OCO) order on Tradovate.
+        
+        Args:
+            order1 (dict): First order payload
+            order2 (dict): Second order payload
+            
+        Returns:
+            dict: The response from the Tradovate API.
+        """
+        if not self.access_token:
+            await self.authenticate()
+
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json"
+        }
+
+        # OCO requires a different format - orders as an array
+        oco_payload = {
+            "orders": [order1, order2]
+        }
+
+        try:
+            async with httpx.AsyncClient() as client:
+                logging.debug(f"Sending OCO order payload: {json.dumps(oco_payload, indent=2)}")
+                response = await client.post(f"{BASE_URL}/order/placeoco", json=oco_payload, headers=headers)
+                response.raise_for_status()
+                response_data = response.json()
+                logging.info(f"OCO order response: {json.dumps(response_data, indent=2)}")
+                return response_data
+        except httpx.HTTPStatusError as e:
+            logging.error(f"OCO order placement failed: {e.response.text}")
+            raise HTTPException(status_code=e.response.status_code, detail=f"OCO order placement failed: {e.response.text}")
+        except Exception as e:
+            logging.error(f"Unexpected error during OCO order placement: {e}")
+            raise HTTPException(status_code=500, detail="Internal server error during OCO order placement")
