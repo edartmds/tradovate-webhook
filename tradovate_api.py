@@ -3,6 +3,7 @@ import os
 import logging
 import json  # Added for pretty-printing JSON responses
 import asyncio  # Added for retry logic
+import httpx  # Added for HTTP requests
 from dotenv import load_dotenv
 from fastapi import HTTPException
 
