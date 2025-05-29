@@ -320,108 +320,73 @@ async def webhook(req: Request):
             await wait_until_no_open_orders(symbol, timeout=10)
             logging.info("All open orders cancelled, proceeding to place new ENTRY and TP orders.")
 
-        # Initialize the order plan
-        order_plan = []
-        stop_order_data = None
-        logging.info("Creating order plan based on alert data")
+        # Build OSO+OCO payload for Tradovate
+        logging.info("Building OSO+OCO payload for Tradovate")
+        if "PRICE" not in data or "T1" not in data or "STOP" not in data:
+            raise HTTPException(status_code=400, detail="Missing required order prices (PRICE, T1, STOP)")
 
-        # Add limit order for T1 (Take Profit) at the exact alert value
-        if "T1" in data:
-            tp_price = float(data["T1"])
-            order_plan.append({
-                "label": "TP1",
-                "action": "Sell" if action.lower() == "buy" else "Buy",
-                "orderType": "Limit",
-                "price": tp_price,
-                "qty": 1
-            })
-            logging.info(f"Added limit order for TP1 at exact alert price: {tp_price}")
-        else:
-            logging.warning("T1 not found in alert data - no take profit order will be placed")
+        entry_action = action.capitalize()
+        exit_action = "Sell" if entry_action.lower() == "buy" else "Buy"
+        entry_price = float(data["PRICE"])
+        tp_price = float(data["T1"])
+        stop_price = float(data["STOP"])
 
-        # Add stop order for entry, always use stop order at the exact alert value
-        if "PRICE" in data:
-            entry_price = float(data["PRICE"])
-            order_plan.append({
-                "label": "ENTRY",
-                "action": action,
-                "orderType": "Stop",
-                "stopPrice": entry_price,
-                "qty": 1
-            })
-            logging.info(f"Added stop order for entry at exact alert price: {entry_price}")
-        else:
-            logging.warning("PRICE not found in alert data - no entry order will be placed")
-
-        # Add stop loss order (STOP) at the exact alert value (to be placed after ENTRY is filled)
-        if "STOP" in data:
-            stop_price = float(data["STOP"])
-            stop_order_data = {
-                "accountId": client.account_id,
-                "symbol": symbol,
-                "action": "Sell" if action.lower() == "buy" else "Buy",
-                "orderQty": 1,
-                "orderType": "Stop",
-                "stopPrice": stop_price,
-                "timeInForce": "GTC",
-                "isAutomated": True
-            }
-            logging.info(f"Prepared STOP LOSS order data for after ENTRY fill at exact alert price: {stop_price}")
-        else:
-            logging.warning("STOP not found in alert data - no stop loss order will be placed")
-
-        logging.info(f"Order plan created with {len(order_plan)} orders (STOP LOSS will be placed after ENTRY fill)")
-
-        # Initialize variables for tracking orders
-        order_results = []
-        order_tracking = {
-            "ENTRY": None,
-            "TP1": None, 
-            "STOP": None  # Will be set after ENTRY is filled
+        oso_payload = {
+            "accountId": client.account_id,
+            "orders": [
+                {
+                    "action": entry_action,
+                    "symbol": symbol,
+                    "orderQty": 1,
+                    "orderType": "Stop",
+                    "stopPrice": entry_price,
+                    "timeInForce": "GTC",
+                    "isAutomated": True
+                }
+            ],
+            "osoOrders": [
+                {
+                    "oco": [
+                        {
+                            "action": exit_action,
+                            "symbol": symbol,
+                            "orderQty": 1,
+                            "orderType": "Limit",
+                            "price": tp_price,
+                            "timeInForce": "GTC",
+                            "isAutomated": True
+                        },
+                        {
+                            "action": exit_action,
+                            "symbol": symbol,
+                            "orderQty": 1,
+                            "orderType": "Stop",
+                            "stopPrice": stop_price,
+                            "timeInForce": "GTC",
+                            "isAutomated": True
+                        }
+                    ]
+                }
+            ]
         }
+        logging.info(f"OSO+OCO payload: {json.dumps(oso_payload)}")
 
-        # Execute the order plan (no ENTRY fallback, no market data logic)
-        logging.info("Executing order plan")
-        for order in order_plan:
-            order_payload = {
-                "accountId": client.account_id,
-                "symbol": symbol,
-                "action": order["action"],
-                "orderQty": order["qty"],
-                "orderType": order["orderType"],
-                "price": order.get("price"),
-                "stopPrice": order.get("stopPrice"),
-                "timeInForce": "GTC",
-                "isAutomated": True
-            }
-
-            logging.info(f"Constructed order payload: {order_payload}")
-
-            try:
-                result = await client.place_order(
-                    symbol=symbol,
-                    action=order["action"],
-                    quantity=order["qty"],
-                    order_data=order_payload
-                )
-                logging.info(f"Order placed successfully: {result}")
-                if order['label'] == 'ENTRY':
-                    logging.info(f"ENTRY order API response: {result}")
-                order_id = result.get("id")
-                order_tracking[order["label"]] = order_id
-                order_results.append({order["label"]: result})
-            except Exception as e:
-                logging.error(f"Error placing order {order['label']}: {e}")
-                logging.error(f"Failed order payload: {order_payload}")
-
-        # Monitor orders: place STOP LOSS after ENTRY is filled, cancel opposite when one is filled
+        # Place the OSO order (which will trigger OCO bracket after entry is filled)
         try:
-            await monitor_all_orders(order_tracking, symbol, stop_order_data)
+            headers = {"Authorization": f"Bearer {client.access_token}"}
+            async with httpx.AsyncClient() as http_client:
+                response = await http_client.post(
+                    "https://demo-api.tradovate.com/v1/order/placeoso",
+                    headers=headers,
+                    json=oso_payload
+                )
+                response.raise_for_status()
+                result = response.json()
+                logging.info(f"OSO+OCO order placed successfully: {result}")
+            return {"status": "success", "order_response": result}
         except Exception as e:
-            logging.error(f"Error monitoring orders: {e}")
-
-        logging.info("Order plan execution completed")
-        return {"status": "success", "order_responses": order_results}
+            logging.error(f"Error placing OSO+OCO order: {e}")
+            raise HTTPException(status_code=500, detail="Failed to place OSO+OCO order")
     except Exception as e:
         logging.error(f"Unexpected error in webhook: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
