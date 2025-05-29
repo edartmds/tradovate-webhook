@@ -236,28 +236,48 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                 
                 if status and status.lower() == "filled":
                     # CRITICAL: If ENTRY is filled and we haven't placed stop loss yet
-                    if label == "ENTRY" and not entry_filled and not stop_placed:
+                    if label == "ENTRY" and not entry_filled:
                         entry_filled = True
 
-                        # Place the STOP LOSS order since the ENTRY is filled
-                        if stop_order_data:
+                        # Prepare the OSO payload for stop loss and take profit
+                        if stop_order_data and "T1" in stop_order_data:
+                            oso_payload = {
+                                "accountSpec": client.account_spec,
+                                "accountId": client.account_id,
+                                "action": stop_order_data.get("action"),
+                                "symbol": stop_order_data.get("symbol"),
+                                "orderQty": stop_order_data.get("orderQty", 1),
+                                "orderType": "Stop",
+                                "price": stop_order_data.get("stopPrice"),
+                                "isAutomated": True,
+                                "bracket1": {
+                                    "action": "Sell" if stop_order_data.get("action") == "Buy" else "Buy",
+                                    "orderType": "Limit",
+                                    "price": stop_order_data.get("T1"),
+                                    "timeInForce": "GTC"
+                                }
+                            }
+
                             try:
-                                stop_result = await client.place_order(
-                                    symbol=stop_order_data.get("symbol"),
-                                    action=stop_order_data.get("action"),
-                                    quantity=stop_order_data.get("orderQty", 1),
-                                    order_data=stop_order_data
-                                )
-                                stop_id = stop_result.get("id")
-                                if stop_id:
-                                    order_tracking["STOP"] = stop_id
-                                    stop_placed = True
-                                else:
-                                    raise ValueError("Failed to retrieve STOP order ID from response.")
+                                # Place the OSO order
+                                async with httpx.AsyncClient() as http_client:
+                                    response = await http_client.post(
+                                        f"https://demo-api.tradovate.com/v1/order/placeOSO",
+                                        headers={"Authorization": f"Bearer {client.access_token}", "Content-Type": "application/json"},
+                                        json=oso_payload
+                                    )
+                                    response.raise_for_status()
+                                    oso_result = response.json()
+
+                                    if "orderId" in oso_result:
+                                        logging.info(f"OSO order placed successfully: {oso_result}")
+                                        stop_placed = True
+                                    else:
+                                        raise ValueError(f"Failed to place OSO order: {oso_result}")
                             except Exception as e:
-                                raise RuntimeError(f"Failed to place STOP LOSS order: {e}")
+                                logging.error(f"Error placing OSO order: {e}")
                         else:
-                            raise ValueError("stop_order_data is missing or invalid.")
+                            logging.error("Missing stop_order_data or T1 for OSO placement.")
                     
                     # If TP1 is filled, cancel the stop loss
                     elif label == "TP1" and entry_filled:
