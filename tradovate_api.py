@@ -590,3 +590,63 @@ class TradovateClient:
                     logging.info("✅ All positions successfully closed!")
                     return True
                 else:
+                    logging.warning(f"❌ {len(final_positions)} positions still open after attempt {attempt + 1}")
+                    for pos in final_positions:
+                        logging.warning(f"❌ Remaining: {pos.get('symbol')} netPos={pos.get('netPos', 0)}")
+                    
+                    # If this is the last attempt, try one more aggressive approach
+                    if attempt == max_attempts - 1:
+                        logging.info("🔥 FINAL ATTEMPT: Using most aggressive closure methods")
+                        for pos in final_positions:
+                            symbol = pos.get("symbol")
+                            net_pos = pos.get("netPos", 0)
+                            if symbol and net_pos != 0:
+                                # Try multiple order types as last resort
+                                for order_type in ["Market", "Limit"]:
+                                    try:
+                                        close_action = "Sell" if net_pos > 0 else "Buy"
+                                        close_order = {
+                                            "accountSpec": self.account_spec,
+                                            "accountId": self.account_id,
+                                            "action": close_action,
+                                            "symbol": symbol,
+                                            "orderQty": abs(net_pos),
+                                            "orderType": order_type,
+                                            "timeInForce": "FOK",  # Fill or Kill
+                                            "isAutomated": True
+                                        }
+                                        
+                                        # For limit orders, use a price that's very likely to fill
+                                        if order_type == "Limit":
+                                            # Use a price that's very favorable for immediate execution
+                                            # This is aggressive but necessary for position closure
+                                            close_order["price"] = pos.get("lastPrice", 0) * (0.95 if close_action == "Sell" else 1.05)
+                                        
+                                        async with httpx.AsyncClient() as client:
+                                            response = await client.post(f"{BASE_URL}/order/placeorder", json=close_order, headers=headers)
+                                            response.raise_for_status()
+                                            logging.info(f"✅ Final attempt {order_type} order placed for {symbol}")
+                                            break  # If successful, don't try other order types
+                                            
+                                    except Exception as e:
+                                        logging.error(f"❌ Final attempt {order_type} order failed for {symbol}: {e}")
+                          # Final wait and check
+                        await asyncio.sleep(5)
+                        
+            except Exception as e:
+                logging.error(f"❌ Error during force position closure attempt {attempt + 1}: {e}")
+                
+        # Final verification after all attempts
+        try:
+            remaining_positions = await self.get_positions()
+            if remaining_positions:
+                logging.error(f"❌ CRITICAL: {len(remaining_positions)} positions still open after all attempts!")
+                for pos in remaining_positions:
+                    logging.error(f"❌ Remaining position: {pos.get('symbol')} netPos={pos.get('netPos', 0)}")
+                return False
+            else:
+                logging.info("✅ All positions finally closed")
+                return True
+        except Exception as e:
+            logging.error(f"❌ Error checking final positions: {e}")
+            return False
