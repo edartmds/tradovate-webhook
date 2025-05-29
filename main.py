@@ -2,6 +2,7 @@ import os
 import logging
 import json
 import asyncio
+import traceback
 from datetime import datetime, timedelta
 from fastapi import FastAPI, Request, HTTPException
 from tradovate_api import TradovateClient
@@ -359,14 +360,17 @@ async def webhook(req: Request):
         # Map TradingView symbol to Tradovate symbol
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
             symbol = "NQM5"
-            logging.info(f"Mapped symbol to: {symbol}")        # STEP 1: Close all existing positions to prevent over-leveraging
-        logging.info("=== CLOSING ALL EXISTING POSITIONS ===")
+            logging.info(f"Mapped symbol to: {symbol}")        # STEP 1: Close all existing positions to prevent over-leveraging  
+        logging.info("🔥🔥🔥 === CLOSING ALL EXISTING POSITIONS === 🔥🔥🔥")
         try:
-            closed_positions = await client.close_all_positions()
-            logging.info(f"Successfully closed {len(closed_positions)} positions")
+            success = await client.force_close_all_positions_immediately()
+            if success:
+                logging.info("✅ All existing positions successfully closed")
+            else:
+                logging.error("❌ CRITICAL: Failed to close all positions - proceeding anyway")
         except Exception as e:
-            logging.warning(f"Failed to close some positions: {e}")
-            # Continue even if position closure partially fails
+            logging.error(f"❌ CRITICAL ERROR closing positions: {e}")
+            # Continue anyway - user wants new orders placed regardless
 
         # STEP 2: Cancel all existing pending orders to prevent over-leveraging
         logging.info("=== CANCELLING ALL PENDING ORDERS ===")
@@ -375,88 +379,71 @@ async def webhook(req: Request):
             logging.info(f"Successfully cancelled {len(cancelled_orders)} pending orders")
         except Exception as e:
             logging.warning(f"Failed to cancel some orders: {e}")
-            # Continue with new order placement even if cancellation partially fails        # STEP 3: Create OCO orders to prevent over-leveraging
-        logging.info(f"=== CREATING OCO BRACKET ORDERS ===")
+            # Continue with new order placement even if cancellation partially fails        # STEP 3: Place entry order with automatic bracket orders (OSO)
+        logging.info(f"=== PLACING OSO BRACKET ORDER FOR EXACT POSITIONING ===")
         logging.info(f"Symbol: {symbol}, Entry: {price}, TP: {t1}, SL: {stop}")
         
         # Determine opposite action for take profit and stop loss
         opposite_action = "Sell" if action.lower() == "buy" else "Buy"
         
-        # Create entry stop order (triggers at PRICE level)
-        entry_order = {
+        # For OSO orders, we need to determine entry strategy based on price direction
+        # If BUY and current price is below target, use Limit order
+        # If BUY and current price is above target, use Stop order
+        # This ensures proper entry execution
+        
+        # OSO payload with proper Tradovate API structure
+        oso_payload = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
-            "action": action,
+            "action": action.capitalize(),  # "Buy" or "Sell"
             "symbol": symbol,
             "orderQty": 1,
-            "orderType": "Stop",
-            "stopPrice": price,  # Entry at PRICE level using stop order
+            "orderType": "Limit",  # Use Limit for exact price entry
+            "price": price,        # Entry at EXACT PRICE level
             "timeInForce": "GTC",
-            "isAutomated": True
-        }
-        
-        # Create take profit limit order (at T1 level)
-        take_profit_order = {
-            "accountSpec": client.account_spec,
-            "accountId": client.account_id,
-            "action": opposite_action,
-            "symbol": symbol,
-            "orderQty": 1,
-            "orderType": "Limit",
-            "price": t1,  # Take profit at T1 level
-            "timeInForce": "GTC",
-            "isAutomated": True
-        }
-        
-        logging.info(f"=== ENTRY ORDER ===")
-        logging.info(f"{json.dumps(entry_order, indent=2)}")
-        
-        logging.info(f"=== TAKE PROFIT ORDER ===")
-        logging.info(f"{json.dumps(take_profit_order, indent=2)}")
-
-        # STEP 4: Place OCO bracket order (entry stop + take profit limit)
-        logging.info("=== PLACING OCO BRACKET ORDER ===")
-        try:
-            oco_result = await client.place_oco_order(entry_order, take_profit_order)
-            logging.info(f"=== OCO BRACKET ORDER PLACED SUCCESSFULLY ===")
-            logging.info(f"OCO Result: {oco_result}")
-        except Exception as e:
-            logging.warning(f"OCO placement failed, falling back to OSO: {e}")
-            
-            # Fallback to OSO if OCO fails
-            logging.info("=== FALLING BACK TO OSO BRACKET ORDER ===")
-            oso_payload = {
+            "isAutomated": True,
+            # Take Profit bracket (bracket1)
+            "bracket1": {
                 "accountSpec": client.account_spec,
                 "accountId": client.account_id,
-                "action": action,
+                "action": opposite_action,
+                "symbol": symbol,
+                "orderQty": 1,
+                "orderType": "Limit",
+                "price": t1,
+                "timeInForce": "GTC",
+                "isAutomated": True
+            },
+            # Stop Loss bracket (bracket2)
+            "bracket2": {
+                "accountSpec": client.account_spec,
+                "accountId": client.account_id,
+                "action": opposite_action,
                 "symbol": symbol,
                 "orderQty": 1,
                 "orderType": "Stop",
-                "stopPrice": price,  # Entry at PRICE level using stop order
+                "stopPrice": stop,
                 "timeInForce": "GTC",
-                "isAutomated": True,
-                "bracket1": {
-                    "action": opposite_action,
-                    "orderType": "Limit",
-                    "price": t1,  # Take profit at T1 level
-                    "timeInForce": "GTC"
-                },
-                "bracket2": {
-                    "action": opposite_action, 
-                    "orderType": "Stop",
-                    "stopPrice": stop,  # Stop loss at STOP level
-                    "timeInForce": "GTC"
-                }
+                "isAutomated": True
             }
-            
-            logging.info(f"=== OSO PAYLOAD ===")
-            logging.info(f"{json.dumps(oso_payload, indent=2)}")
-            
-            oco_result = await client.place_oso_order(oso_payload)
-            logging.info(f"=== OSO ORDER PLACED SUCCESSFULLY ===")
-            logging.info(f"OSO Result: {oco_result}")
-
-        return {"status": "success", "order": oco_result}
+        }
+        
+        logging.info(f"=== OSO PAYLOAD ===")
+        logging.info(f"{json.dumps(oso_payload, indent=2)}")
+        
+        # STEP 4: Place OSO bracket order
+        logging.info("=== PLACING OSO BRACKET ORDER ===")
+        try:
+            oso_result = await client.place_oso_order(oso_payload)
+            logging.info(f"✅ OSO BRACKET ORDER PLACED SUCCESSFULLY")
+            logging.info(f"OSO Result: {oso_result}")
+            return {"status": "success", "order": oso_result}
+        except Exception as e:
+            logging.error(f"❌ OSO placement failed: {e}")
+            # Log the detailed error for debugging
+            import traceback
+            logging.error(f"OSO Error traceback: {traceback.format_exc()}")
+            raise HTTPException(status_code=500, detail=f"OSO order placement failed: {str(e)}")
 
     except Exception as e:
         logging.error(f"=== ERROR IN WEBHOOK ===")
