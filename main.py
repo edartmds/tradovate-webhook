@@ -10,9 +10,12 @@ import uvicorn
 import httpx
 import hashlib
 
-# Dictionary to track last alerts to prevent duplicates
-last_alert = {}  # {symbol: {"direction": "buy"/"sell", "timestamp": datetime}}
+# 🔥 ENHANCED DUPLICATE DETECTION AND TRADE TRACKING
+last_alert = {}  # {symbol: {"direction": "buy"/"sell", "timestamp": datetime, "alert_hash": str}}
+completed_trades = {}  # {symbol: {"last_completed_direction": "buy"/"sell", "completion_time": datetime}}
 active_orders = []  # Track active order IDs to manage cancellation
+DUPLICATE_THRESHOLD_SECONDS = 300  # 5 minutes - ignore identical alerts within this timeframe
+COMPLETED_TRADE_COOLDOWN = 600  # 10 minutes - prevent immediate identical trades after completion
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 logging.info(f"Loaded WEBHOOK_SECRET: {WEBHOOK_SECRET}")
@@ -161,8 +164,99 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
     return parsed_data
 
 def hash_alert(data: dict) -> str:
-    alert_string = json.dumps(data, sort_keys=True)
+    """Generate a unique hash for an alert to detect duplicates."""
+    # Only include essential trading fields for duplicate detection
+    essential_fields = {
+        "symbol": data.get("symbol"),
+        "action": data.get("action"), 
+        "PRICE": data.get("PRICE"),
+        "T1": data.get("T1"),
+        "STOP": data.get("STOP")
+    }
+    alert_string = json.dumps(essential_fields, sort_keys=True)
     return hashlib.sha256(alert_string.encode()).hexdigest()
+
+def is_duplicate_alert(symbol: str, action: str, data: dict) -> bool:
+    """
+    🔥 CRITICAL DUPLICATE DETECTION: Check if this alert is a duplicate or too soon after completion.
+    
+    Returns True if:
+    1. Identical alert received within DUPLICATE_THRESHOLD_SECONDS
+    2. Same direction trade completed recently (within COMPLETED_TRADE_COOLDOWN)
+    3. Alert hash matches recent alert
+    """
+    current_time = datetime.now()
+    alert_hash = hash_alert(data)
+    
+    # Check 1: Recent identical alert
+    if symbol in last_alert:
+        last_alert_data = last_alert[symbol]
+        time_diff = (current_time - last_alert_data["timestamp"]).total_seconds()
+        
+        # Same hash within threshold = duplicate
+        if (last_alert_data.get("alert_hash") == alert_hash and 
+            time_diff < DUPLICATE_THRESHOLD_SECONDS):
+            logging.warning(f"🚫 DUPLICATE ALERT DETECTED for {symbol} {action}")
+            logging.warning(f"🚫 Same alert hash received {time_diff:.1f} seconds ago")
+            return True
+            
+        # Same direction within threshold = too frequent
+        if (last_alert_data.get("direction", "").lower() == action.lower() and 
+            time_diff < DUPLICATE_THRESHOLD_SECONDS):
+            logging.warning(f"🚫 FREQUENT ALERT DETECTED for {symbol} {action}")
+            logging.warning(f"🚫 Same direction alert received {time_diff:.1f} seconds ago")
+            return True
+    
+    # Check 2: Recently completed trade in same direction
+    if symbol in completed_trades:
+        completed_data = completed_trades[symbol]
+        time_since_completion = (current_time - completed_data["completion_time"]).total_seconds()
+        
+        if (completed_data.get("last_completed_direction", "").lower() == action.lower() and
+            time_since_completion < COMPLETED_TRADE_COOLDOWN):
+            logging.warning(f"🚫 POST-COMPLETION DUPLICATE for {symbol} {action}")
+            logging.warning(f"🚫 Same direction trade completed {time_since_completion:.1f} seconds ago")
+            logging.warning(f"🚫 Waiting {COMPLETED_TRADE_COOLDOWN - time_since_completion:.1f} more seconds")
+            return True
+    
+    # Not a duplicate - update tracking
+    last_alert[symbol] = {
+        "direction": action.lower(),
+        "timestamp": current_time,
+        "alert_hash": alert_hash
+    }
+    
+    logging.info(f"✅ UNIQUE ALERT ACCEPTED for {symbol} {action}")
+    return False
+
+def mark_trade_completed(symbol: str, direction: str):
+    """Mark a trade as completed to prevent immediate duplicates."""
+    completed_trades[symbol] = {
+        "last_completed_direction": direction.lower(),
+        "completion_time": datetime.now()
+    }
+    logging.info(f"🏁 TRADE COMPLETION MARKED: {symbol} {direction}")
+    
+def cleanup_old_tracking_data():
+    """Clean up old tracking data to prevent memory leaks."""
+    current_time = datetime.now()
+    cutoff_time = current_time - timedelta(seconds=max(DUPLICATE_THRESHOLD_SECONDS, COMPLETED_TRADE_COOLDOWN) * 2)
+    
+    # Clean old alerts
+    symbols_to_remove = []
+    for symbol, data in last_alert.items():
+        if data["timestamp"] < cutoff_time:
+            symbols_to_remove.append(symbol)
+    for symbol in symbols_to_remove:
+        del last_alert[symbol]
+        
+    # Clean old completed trades
+    symbols_to_remove = []
+    for symbol, data in completed_trades.items():
+        if data["completion_time"] < cutoff_time:
+            symbols_to_remove.append(symbol)
+    for symbol in symbols_to_remove:
+        del completed_trades[symbol]
 
 # Direct API function to place a stop loss order (DEPRECATED - using OCO/OSO instead)
 async def place_stop_loss_order_legacy(stop_order_data):
@@ -174,10 +268,13 @@ async def place_stop_loss_order_legacy(stop_order_data):
     return None, "DEPRECATED: Use OCO/OSO bracket orders instead"
 async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
     """
+    🔥 ENHANCED ORDER MONITORING with trade completion detection
+    
     Monitor all orders and manage their relationships:
     - If ENTRY is filled, place the STOP order and keep TP active
-    - If TP is filled, cancel STOP
-    - If STOP is filled, cancel TP
+    - If TP is filled, cancel STOP and mark trade as completed
+    - If STOP is filled, cancel TP and mark trade as completed
+    - Track completion to prevent immediate duplicate alerts
     """
     logging.info(f"Starting comprehensive order monitoring for {symbol}")
     entry_filled = False
@@ -264,9 +361,15 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                         else:
                             logging.error("Missing stop_order_data or T1 for OSO placement.")
                     
-                    # If TP1 is filled, cancel the stop loss
+                    # 🔥 CRITICAL: If TP1 is filled, cancel the stop loss and mark trade completion
                     elif label == "TP1" and entry_filled:
-                        logging.info(f"TP1 order filled! Cancelling STOP order.")
+                        logging.info(f"🏁 TP1 order filled! Trade completed successfully - PROFIT TARGET HIT")
+                        trade_direction = stop_order_data.get("action", "unknown") if stop_order_data else "unknown"
+                        
+                        # Mark trade as completed to prevent immediate duplicates
+                        mark_trade_completed(symbol, trade_direction)
+                        logging.info(f"✅ Trade completion recorded: {symbol} {trade_direction} via Take Profit")
+                        
                         if order_tracking.get("STOP"):
                             cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{order_tracking['STOP']}"
                             try:
@@ -280,9 +383,15 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                                 logging.error(f"Exception while cancelling STOP order after TP1 fill: {e}")
                         return  # Exit monitoring
                     
-                    # If stop loss is filled, cancel the take profit
+                    # 🔥 CRITICAL: If stop loss is filled, cancel the take profit and mark trade completion
                     elif label == "STOP" and entry_filled:
-                        logging.info(f"STOP order filled! Cancelling TP1 order.")
+                        logging.info(f"🛑 STOP order filled! Trade completed - STOP LOSS HIT")
+                        trade_direction = stop_order_data.get("action", "unknown") if stop_order_data else "unknown"
+                        
+                        # Mark trade as completed to prevent immediate duplicates
+                        mark_trade_completed(symbol, trade_direction)
+                        logging.info(f"✅ Trade completion recorded: {symbol} {trade_direction} via Stop Loss")
+                        
                         if order_tracking.get("TP1"):
                             cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{order_tracking['TP1']}"
                             try:
@@ -341,9 +450,7 @@ async def webhook(req: Request):
             logging.error(f"Unsupported content type: {content_type}")
             raise HTTPException(status_code=400, detail="Unsupported content type")
 
-        logging.info(f"=== PARSED ALERT DATA: {data} ===")
-
-        # Extract required fields
+        logging.info(f"=== PARSED ALERT DATA: {data} ===")        # Extract required fields
         symbol = data.get("symbol")
         action = data.get("action")
         price = data.get("PRICE")
@@ -360,7 +467,77 @@ async def webhook(req: Request):
         # Map TradingView symbol to Tradovate symbol
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
             symbol = "NQM5"
-            logging.info(f"Mapped symbol to: {symbol}")        # STEP 1: Close all existing positions to prevent over-leveraging  
+            logging.info(f"Mapped symbol to: {symbol}")
+        
+        # 🔥 CRITICAL DUPLICATE DETECTION - Check before any trading actions
+        logging.info("🔍 === CHECKING FOR DUPLICATE ALERTS ===")
+        cleanup_old_tracking_data()  # Clean up old data first
+        
+        if is_duplicate_alert(symbol, action, data):
+            logging.warning(f"🚫 DUPLICATE/FREQUENT ALERT REJECTED: {symbol} {action}")
+            logging.warning(f"🚫 Reason: Too similar to recent alert or completed trade")
+            return {
+                "status": "rejected", 
+                "reason": "duplicate_alert",
+                "message": f"Duplicate or too frequent alert for {symbol} {action}"
+            }
+        
+        logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with trade")
+        
+        # 🔥 TRADE COMPLETION DETECTION: Check if this is right after a successful completion
+        # If we just closed positions and this is the same direction, it might be a completion duplicate
+        try:
+            current_positions = await client.get_positions()
+            if not current_positions:  # No positions = recently completed trade
+                logging.info("🔍 No open positions detected - checking for post-completion duplicate")
+                # Additional check for completion-based duplicates
+                if symbol in completed_trades:
+                    last_completed = completed_trades[symbol]
+                    time_since_completion = (datetime.now() - last_completed["completion_time"]).total_seconds()
+                    if (last_completed.get("last_completed_direction") == action.lower() and 
+                        time_since_completion < 180):  # 3 minutes post-completion protection
+                        logging.warning(f"🚫 POST-COMPLETION DUPLICATE REJECTED: {symbol} {action}")
+                        logging.warning(f"🚫 Same direction completed {time_since_completion:.1f}s ago")
+                        return {
+                            "status": "rejected",
+                            "reason": "post_completion_duplicate", 
+                            "message": f"Trade completed recently, preventing duplicate"
+                        }
+        except Exception as e:
+            logging.warning(f"Position check failed during duplicate detection: {e}")
+            # Continue anyway - don't let position check errors block trading
+            logging.warning(f"🚫 DUPLICATE/FREQUENT ALERT REJECTED: {symbol} {action}")
+            logging.warning(f"🚫 Reason: Too similar to recent alert or completed trade")
+            return {
+                "status": "rejected", 
+                "reason": "duplicate_alert",
+                "message": f"Duplicate or too frequent alert for {symbol} {action}"
+            }
+        
+        logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with trade")
+        
+        # 🔥 TRADE COMPLETION DETECTION: Check if this is right after a successful completion
+        # If we just closed positions and this is the same direction, it might be a completion duplicate
+        try:
+            current_positions = await client.get_positions()
+            if not current_positions:  # No positions = recently completed trade
+                logging.info("🔍 No open positions detected - checking for post-completion duplicate")
+                # Additional check for completion-based duplicates
+                if symbol in completed_trades:
+                    last_completed = completed_trades[symbol]
+                    time_since_completion = (datetime.now() - last_completed["completion_time"]).total_seconds()
+                    if (last_completed.get("last_completed_direction") == action.lower() and 
+                        time_since_completion < 180):  # 3 minutes post-completion protection
+                        logging.warning(f"🚫 POST-COMPLETION DUPLICATE REJECTED: {symbol} {action}")
+                        logging.warning(f"🚫 Same direction completed {time_since_completion:.1f}s ago")
+                        return {
+                            "status": "rejected",
+                            "reason": "post_completion_duplicate", 
+                            "message": f"Trade completed recently, preventing duplicate"
+                        }
+        except Exception as e:
+            logging.warning(f"Position check failed during duplicate detection: {e}")
+            # Continue anyway - don't let position check errors block trading# STEP 1: Close all existing positions to prevent over-leveraging  
         logging.info("🔥🔥🔥 === CLOSING ALL EXISTING POSITIONS === 🔥🔥🔥")
         try:
             success = await client.force_close_all_positions_immediately()
@@ -430,13 +607,18 @@ async def webhook(req: Request):
         
         logging.info(f"=== OSO PAYLOAD ===")
         logging.info(f"{json.dumps(oso_payload, indent=2)}")
-        
-        # STEP 4: Place OSO bracket order
+          # STEP 4: Place OSO bracket order
         logging.info("=== PLACING OSO BRACKET ORDER ===")
         try:
             oso_result = await client.place_oso_order(oso_payload)
             logging.info(f"✅ OSO BRACKET ORDER PLACED SUCCESSFULLY")
             logging.info(f"OSO Result: {oso_result}")
+            
+            # 🔥 MARK SUCCESSFUL TRADE PLACEMENT - This helps prevent immediate duplicates
+            # When this trade completes (hits TP or SL), we'll prevent duplicate signals for a period
+            logging.info(f"📝 Recording successful trade placement: {symbol} {action}")
+            # Note: We mark completion when the trade actually completes, not just when placed
+            
             return {"status": "success", "order": oso_result}
         except Exception as e:
             logging.error(f"❌ OSO placement failed: {e}")
