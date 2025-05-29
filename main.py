@@ -34,7 +34,19 @@ client = TradovateClient()
 
 @app.on_event("startup")
 async def startup_event():
-    await client.authenticate()
+    logging.info("=== APPLICATION STARTING UP ===")
+    try:
+        await client.authenticate()
+        logging.info(f"=== AUTHENTICATION SUCCESSFUL ===")
+        logging.info(f"Account ID: {client.account_id}")
+        logging.info(f"Account Spec: {client.account_spec}")
+        logging.info(f"Access Token: {'***' if client.access_token else 'None'}")
+    except Exception as e:
+        logging.error(f"=== AUTHENTICATION FAILED ===")
+        logging.error(f"Error: {e}")
+        import traceback
+        logging.error(f"Traceback: {traceback.format_exc()}")
+        raise
 
 
 async def cancel_all_orders(symbol):
@@ -339,11 +351,13 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
 
 @app.post("/webhook")
 async def webhook(req: Request):
-    logging.info("Webhook endpoint hit.")
+    logging.info("=== WEBHOOK ENDPOINT HIT ===")
     try:
         # Parse the incoming request
         content_type = req.headers.get("content-type")
         raw_body = await req.body()
+        logging.info(f"Content-Type: {content_type}")
+        logging.info(f"Raw body: {raw_body.decode('utf-8')}")
 
         if content_type == "application/json":
             data = await req.json()
@@ -351,9 +365,10 @@ async def webhook(req: Request):
             text_data = raw_body.decode("utf-8")
             data = parse_alert_to_tradovate_json(text_data, client.account_id)
         else:
+            logging.error(f"Unsupported content type: {content_type}")
             raise HTTPException(status_code=400, detail="Unsupported content type")
 
-        logging.info(f"Parsed alert data: {data}")
+        logging.info(f"=== PARSED ALERT DATA: {data} ===")
 
         # Extract required fields
         symbol = data.get("symbol")
@@ -362,15 +377,22 @@ async def webhook(req: Request):
         t1 = data.get("T1")
         stop = data.get("STOP")
 
+        logging.info(f"Extracted fields - Symbol: {symbol}, Action: {action}, Price: {price}, T1: {t1}, Stop: {stop}")
+
         if not all([symbol, action, price, t1, stop]):
             missing = [k for k, v in {"symbol": symbol, "action": action, "PRICE": price, "T1": t1, "STOP": stop}.items() if not v]
+            logging.error(f"Missing required fields: {missing}")
             raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")
 
         # Map TradingView symbol to Tradovate symbol
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
             symbol = "NQM5"
+            logging.info(f"Mapped symbol to: {symbol}")
 
-        logging.info(f"Creating OSO bracket order for {symbol}: Entry={price}, TP={t1}, SL={stop}")        # Create the OSO bracket order payload
+        logging.info(f"=== CREATING OSO BRACKET ORDER ===")
+        logging.info(f"Symbol: {symbol}, Entry: {price}, TP: {t1}, SL: {stop}")
+        
+        # Create the OSO bracket order payload
         oso_payload = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
@@ -395,18 +417,24 @@ async def webhook(req: Request):
             }
         }
 
-        logging.info(f"OSO payload: {json.dumps(oso_payload, indent=2)}")
+        logging.info(f"=== OSO PAYLOAD ===")
+        logging.info(f"{json.dumps(oso_payload, indent=2)}")
 
         # Place the OSO bracket order
+        logging.info("=== PLACING OSO ORDER ===")
         result = await client.place_oso_order(oso_payload)
-        logging.info(f"OSO order placed successfully: {result}")
+        logging.info(f"=== OSO ORDER PLACED SUCCESSFULLY ===")
+        logging.info(f"Result: {result}")
 
         return {"status": "success", "order": result}
 
     except Exception as e:
-        logging.error(f"Error in webhook: {e}")
+        logging.error(f"=== ERROR IN WEBHOOK ===")
+        logging.error(f"Error: {e}")
+        import traceback
+        logging.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
-    uvicorn.run("fixed_stop_loss:app", host="0.0.0.0", port=port)
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
