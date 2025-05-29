@@ -332,6 +332,7 @@ async def webhook(req: Request):
         stop_price = float(data["STOP"])
 
         # Build robust OSO+OCO payload with strict types and minimal fields
+        # Try a minimal, flat OSO payload (no oco/ocoGroup at group level, only on child orders)
         oso_payload = {
             "accountId": int(client.account_id),
             "orders": [
@@ -370,9 +371,7 @@ async def webhook(req: Request):
                             "oco": True,
                             "ocoGroup": 1
                         }
-                    ],
-                    "oco": True,
-                    "ocoGroup": 1
+                    ]
                 }
             ]
         }
