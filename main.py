@@ -42,10 +42,14 @@ async def startup_event():
         logging.info(f"Account ID: {client.account_id}")
         logging.info(f"Account Spec: {client.account_spec}")
         logging.info(f"Access Token: {'***' if client.access_token else 'None'}")
-        
-        # Cancel any existing pending orders on startup to start clean
-        logging.info("=== CLEANING UP EXISTING ORDERS ON STARTUP ===")
+          # Close any existing positions and cancel pending orders on startup to start clean
+        logging.info("=== CLEANING UP EXISTING POSITIONS AND ORDERS ON STARTUP ===")
         try:
+            # Close all positions first
+            closed_positions = await client.close_all_positions()
+            logging.info(f"Startup cleanup: Closed {len(closed_positions)} existing positions")
+            
+            # Cancel all pending orders
             cancelled_orders = await client.cancel_all_pending_orders()
             logging.info(f"Startup cleanup: Cancelled {len(cancelled_orders)} existing pending orders")
         except Exception as e:
@@ -355,18 +359,23 @@ async def webhook(req: Request):
         # Map TradingView symbol to Tradovate symbol
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
             symbol = "NQM5"
-            logging.info(f"Mapped symbol to: {symbol}")
+            logging.info(f"Mapped symbol to: {symbol}")        # STEP 1: Close all existing positions to prevent over-leveraging
+        logging.info("=== CLOSING ALL EXISTING POSITIONS ===")
+        try:
+            closed_positions = await client.close_all_positions()
+            logging.info(f"Successfully closed {len(closed_positions)} positions")
+        except Exception as e:
+            logging.warning(f"Failed to close some positions: {e}")
+            # Continue even if position closure partially fails
 
-        # STEP 1: Cancel all existing pending orders to prevent over-leveraging
+        # STEP 2: Cancel all existing pending orders to prevent over-leveraging
         logging.info("=== CANCELLING ALL PENDING ORDERS ===")
         try:
             cancelled_orders = await client.cancel_all_pending_orders()
             logging.info(f"Successfully cancelled {len(cancelled_orders)} pending orders")
         except Exception as e:
             logging.warning(f"Failed to cancel some orders: {e}")
-            # Continue with new order placement even if cancellation partially fails
-
-        # STEP 2: Create OCO orders to prevent over-leveraging
+            # Continue with new order placement even if cancellation partially fails        # STEP 3: Create OCO orders to prevent over-leveraging
         logging.info(f"=== CREATING OCO BRACKET ORDERS ===")
         logging.info(f"Symbol: {symbol}, Entry: {price}, TP: {t1}, SL: {stop}")
         
@@ -405,7 +414,7 @@ async def webhook(req: Request):
         logging.info(f"=== TAKE PROFIT ORDER ===")
         logging.info(f"{json.dumps(take_profit_order, indent=2)}")
 
-        # STEP 3: Place OCO bracket order (entry stop + take profit limit)
+        # STEP 4: Place OCO bracket order (entry stop + take profit limit)
         logging.info("=== PLACING OCO BRACKET ORDER ===")
         try:
             oco_result = await client.place_oco_order(entry_order, take_profit_order)
