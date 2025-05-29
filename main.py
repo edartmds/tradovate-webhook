@@ -252,10 +252,13 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
 
 
 # Webhook endpoint (cleaned up, no deduplication, no market data fallback, no legacy logic)
+
+# Suppress repeated same-direction alerts: only act on direction change
 @app.post("/webhook")
 async def webhook(req: Request):
     logging.info("Webhook endpoint hit.")
     try:
+        global last_alert
         content_type = req.headers.get("content-type")
         raw_body = await req.body()
 
@@ -279,6 +282,19 @@ async def webhook(req: Request):
         # Map TradingView symbol to Tradovate symbol for all API calls
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
             symbol = "NQM5"
+
+        # Suppress repeated same-direction alerts
+        direction = action.lower()
+        now = datetime.utcnow()
+        last = last_alert.get(symbol)
+        if last is not None:
+            last_direction = last.get("direction")
+            if last_direction == direction:
+                logging.info(f"Suppressing alert for {symbol}: same direction '{direction}' as last processed alert.")
+                return {"status": "ignored", "reason": "Same direction as last processed alert"}
+
+        # Update last_alert for this symbol
+        last_alert[symbol] = {"direction": direction, "timestamp": now}
 
         # Reset order tracking for the new alert
         order_tracking = {
