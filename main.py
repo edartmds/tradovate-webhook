@@ -357,9 +357,16 @@ async def webhook(req: Request):
             raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")        # Map TradingView symbol to Tradovate symbol
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
             symbol = "NQM5"
-            logging.info(f"Mapped symbol to: {symbol}")
+            logging.info(f"Mapped symbol to: {symbol}")        # STEP 1: Cancel all existing pending orders first (TP/SL from previous alerts)
+        logging.info("=== CANCELLING ALL PENDING ORDERS ===")
+        try:
+            cancelled_orders = await client.cancel_all_pending_orders()
+            logging.info(f"Successfully cancelled {len(cancelled_orders)} pending orders")
+        except Exception as e:
+            logging.warning(f"Failed to cancel some orders: {e}")
+            # Continue with position closure even if cancellation partially fails
 
-        # STEP 1: Close all existing positions to prevent over-leveraging
+        # STEP 2: Close all existing positions (including any position left open after cancelling TP/SL)
         logging.info("=== CLOSING ALL EXISTING POSITIONS ===")
         try:
             closed_positions = await client.close_all_positions()
@@ -374,14 +381,9 @@ async def webhook(req: Request):
             logging.warning(f"Failed to close some positions: {e}")
             # Continue even if position closure partially fails
 
-        # STEP 2: Cancel all existing pending orders to prevent over-leveraging
-        logging.info("=== CANCELLING ALL PENDING ORDERS ===")
-        try:
-            cancelled_orders = await client.cancel_all_pending_orders()
-            logging.info(f"Successfully cancelled {len(cancelled_orders)} pending orders")
-        except Exception as e:
-            logging.warning(f"Failed to cancel some orders: {e}")
-            # Continue with new order placement even if cancellation partially fails        # STEP 3: Create OSO bracket orders (entry + take profit + stop loss)
+        # STEP 2.5: Add extra delay to ensure cleanup is complete before placing new orders
+        logging.info("=== ENSURING CLEAN SLATE BEFORE NEW ORDERS ===")
+        await asyncio.sleep(1)  # Additional delay to ensure all cleanup is complete# STEP 3: Create OSO bracket orders (entry + take profit + stop loss)
         logging.info(f"=== CREATING OSO BRACKET ORDERS ===")
         logging.info(f"Symbol: {symbol}, Entry: {price}, TP: {t1}, SL: {stop}")
         
