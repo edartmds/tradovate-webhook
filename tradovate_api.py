@@ -455,6 +455,7 @@ class TradovateClient:
     async def close_all_positions(self):
         """
         Closes all open positions for the authenticated account.
+        Waits for positions to be actually closed before returning.
 
         Returns:
             list: List of close order responses.
@@ -471,9 +472,14 @@ class TradovateClient:
                     try:
                         result = await self.close_position(symbol)
                         closed_positions.append(result)
-                        logging.info(f"Successfully closed position for {symbol}")
+                        logging.info(f"Successfully initiated position close for {symbol}")
                     except Exception as e:
                         logging.error(f"Failed to close position for {symbol}: {e}")
+            
+            # Wait for all positions to be actually closed
+            if closed_positions:
+                logging.info("Waiting for positions to be closed...")
+                await self._wait_for_positions_closed([pos.get("symbol") for pos in positions if pos.get("netPos", 0) != 0])
                         
             logging.info(f"Closed {len(closed_positions)} positions")
             return closed_positions
@@ -481,3 +487,54 @@ class TradovateClient:
         except Exception as e:
             logging.error(f"Error closing all positions: {e}")
             raise HTTPException(status_code=500, detail="Internal server error closing positions")
+
+    async def _wait_for_positions_closed(self, symbols: list, max_wait_seconds: int = 30):
+        """
+        Waits for positions to be closed by checking position status.
+        
+        Args:
+            symbols (list): List of symbols to check for position closure
+            max_wait_seconds (int): Maximum time to wait for positions to close
+        """
+        start_time = asyncio.get_event_loop().time()
+        wait_interval = 1.0  # Check every 1 second
+        
+        while (asyncio.get_event_loop().time() - start_time) < max_wait_seconds:
+            try:
+                current_positions = await self.get_positions()
+                open_symbols = []
+                
+                for position in current_positions:
+                    symbol = position.get("symbol")
+                    net_pos = position.get("netPos", 0)
+                    if symbol in symbols and net_pos != 0:
+                        open_symbols.append(symbol)
+                
+                if not open_symbols:
+                    logging.info("All positions successfully closed")
+                    return
+                
+                logging.info(f"Still waiting for positions to close: {open_symbols}")
+                await asyncio.sleep(wait_interval)
+                
+            except Exception as e:
+                logging.warning(f"Error checking position status during wait: {e}")
+                await asyncio.sleep(wait_interval)
+        
+        # Final check after timeout
+        try:
+            final_positions = await self.get_positions()
+            remaining_open = []
+            for position in final_positions:
+                symbol = position.get("symbol")
+                net_pos = position.get("netPos", 0)
+                if symbol in symbols and net_pos != 0:
+                    remaining_open.append(f"{symbol} (netPos: {net_pos})")
+            
+            if remaining_open:
+                logging.warning(f"Timeout waiting for positions to close. Still open: {remaining_open}")
+            else:
+                logging.info("All positions confirmed closed after timeout period")
+                
+        except Exception as e:
+            logging.error(f"Error in final position check: {e}")
