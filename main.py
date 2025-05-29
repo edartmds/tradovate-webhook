@@ -36,7 +36,6 @@ async def startup_event():
     await client.authenticate()
 
 
-
 async def cancel_all_orders(symbol):
     # Cancel all open orders for the symbol, regardless of status, and double-check after
     list_url = f"https://demo-api.tradovate.com/v1/order/list"
@@ -137,6 +136,55 @@ def hash_alert(data: dict) -> str:
     alert_string = json.dumps(data, sort_keys=True)
     return hashlib.sha256(alert_string.encode()).hexdigest()
 
+# Enhanced function to place a stop loss order
+async def place_stop_loss_order(stop_order_data):
+    """
+    Place a stop loss order using the Tradovate API.
+    This is a standalone function that ensures proper handling of stop loss order placement.
+    """
+    logging.info(f"Placing STOP LOSS order with data: {json.dumps(stop_order_data)}")
+    
+    # Validate stop order data before placing
+    required_fields = ["accountId", "symbol", "action", "orderQty", "orderType", "stopPrice"]
+    for field in required_fields:
+        if field not in stop_order_data:
+            error_msg = f"Missing required field in stop_order_data: {field}"
+            logging.error(error_msg)
+            return None, error_msg
+    
+    # Place STOP LOSS order using direct API call
+    place_url = "https://demo-api.tradovate.com/v1/order/placeorder"
+    headers = {"Authorization": f"Bearer {client.access_token}", "Content-Type": "application/json"}
+    
+    try:
+        async with httpx.AsyncClient() as http_client:
+            response = await http_client.post(
+                place_url,
+                headers=headers,
+                json=stop_order_data
+            )
+            response.raise_for_status()
+            stop_result = response.json()
+            
+            if "errorText" in stop_result:
+                error_msg = f"STOP LOSS order placement failed with API error: {stop_result['errorText']}"
+                logging.error(error_msg)
+                return None, error_msg
+            else:
+                stop_id = stop_result.get("id")
+                if not stop_id:
+                    error_msg = f"STOP LOSS order placement returned no order ID: {stop_result}"
+                    logging.error(error_msg)
+                    return None, error_msg
+                else:
+                    logging.info(f"STOP LOSS order placed successfully with ID {stop_id}")
+                    logging.info(f"Full STOP LOSS order response: {stop_result}")
+                    return stop_id, None
+    except Exception as e:
+        error_msg = f"Error placing STOP LOSS order: {e}"
+        logging.error(error_msg)
+        return None, error_msg
+
 async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
     """
     Monitor all orders and manage their relationships:
@@ -175,31 +223,16 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                         logging.info(f"ENTRY order filled! Now placing STOP LOSS order for protection.")
                         entry_filled = True
                         logging.info(f"STOP LOSS order data to be used: {stop_order_data}")
+                        
                         # Now place the STOP LOSS order since we're in position
                         if stop_order_data:
-                            try:
-                                # Validate stop order data before placing
-                                required_fields = ["accountId", "symbol", "action", "orderQty", "orderType", "stopPrice"]
-                                for field in required_fields:
-                                    if field not in stop_order_data:
-                                        raise ValueError(f"Missing required field in stop_order_data: {field}")
-                                logging.info(f"Placing STOP LOSS order with data: {json.dumps(stop_order_data)}")
-                                # Place STOP LOSS order using Tradovate API
-                                headers = {"Authorization": f"Bearer {client.access_token}"}
-                                async with httpx.AsyncClient() as http_client:
-                                    response = await http_client.post(
-                                        f"https://demo-api.tradovate.com/v1/order/placeorder",
-                                        headers=headers,
-                                        json=stop_order_data
-                                    )
-                                    response.raise_for_status()
-                                    stop_result = response.json()
-                                    logging.info(f"STOP LOSS order placement API response: {stop_result}")
-                                    order_tracking["STOP"] = stop_result.get("id")
-                                    logging.info(f"STOP LOSS order placed successfully: {stop_result}")
-                            except Exception as e:
-                                logging.error(f"Error placing STOP LOSS order after ENTRY fill: {e}")
-                                logging.error(f"STOP LOSS order data: {json.dumps(stop_order_data)}")
+                            # Use the dedicated function to place the stop loss order
+                            stop_id, error = await place_stop_loss_order(stop_order_data)
+                            if stop_id:
+                                order_tracking["STOP"] = stop_id
+                                logging.info(f"Successfully added STOP LOSS order with ID {stop_id} to tracking")
+                            else:
+                                logging.error(f"Failed to place STOP LOSS order: {error}")
                                 logging.error(f"Position will remain UNPROTECTED by stop loss!")
                         else:
                             logging.warning("No stop_order_data provided - position will remain UNPROTECTED!")
@@ -300,7 +333,7 @@ async def webhook(req: Request):
         order_tracking = {
             "ENTRY": None,
             "TP1": None,
-            "STOP": None
+            "STOP": None  # Will be set after ENTRY is filled
         }
 
         # Always flatten and cancel before placing new orders
@@ -357,9 +390,10 @@ async def webhook(req: Request):
         else:
             logging.warning("PRICE not found in alert data - no entry order will be placed")
 
-        # Add stop loss order (STOP) at the exact alert value (to be placed after ENTRY is filled)
+        # Prepare stop loss order data (to be placed after ENTRY is filled)
         if "STOP" in data:
             stop_price = float(data["STOP"])
+            # IMPORTANT: Preparing the stop loss order but NOT placing it yet
             stop_order_data = {
                 "accountId": client.account_id,
                 "symbol": symbol,
@@ -371,6 +405,8 @@ async def webhook(req: Request):
                 "isAutomated": True
             }
             logging.info(f"Prepared STOP LOSS order data for after ENTRY fill at exact alert price: {stop_price}")
+            # Extra logging to confirm the stop loss order is prepared but not placed
+            logging.info("STOP LOSS order will be placed ONLY after ENTRY order is filled")
         else:
             logging.warning("STOP not found in alert data - no stop loss order will be placed")
 
@@ -420,6 +456,7 @@ async def webhook(req: Request):
 
         # Monitor orders: place STOP LOSS after ENTRY is filled, cancel opposite when one is filled
         try:
+            # This function will monitor orders and place the stop loss when entry is filled
             await monitor_all_orders(order_tracking, symbol, stop_order_data)
         except Exception as e:
             logging.error(f"Error monitoring orders: {e}")
