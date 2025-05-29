@@ -396,23 +396,6 @@ async def webhook(req: Request):
         except Exception as e:
             logging.error(f"Error placing OSO+OCO order: {e}")
             raise HTTPException(status_code=500, detail="Failed to place OSO+OCO order")
-
-        # Place the OSO order (which will trigger OCO bracket after entry is filled)
-        try:
-            headers = {"Authorization": f"Bearer {client.access_token}"}
-            async with httpx.AsyncClient() as http_client:
-                response = await http_client.post(
-                    "https://demo-api.tradovate.com/v1/order/placeoso",
-                    headers=headers,
-                    json=oso_payload
-                )
-                response.raise_for_status()
-                result = response.json()
-                logging.info(f"OSO+OCO order placed successfully: {result}")
-            return {"status": "success", "order_response": result}
-        except Exception as e:
-            logging.error(f"Error placing OSO+OCO order: {e}")
-            raise HTTPException(status_code=500, detail="Failed to place OSO+OCO order")
     except Exception as e:
         logging.error(f"Unexpected error in webhook: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
