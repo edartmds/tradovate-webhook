@@ -301,3 +301,60 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
             break
         
         await asyncio.sleep(poll_interval)
+
+@app.post("/webhook")
+async def webhook(request: Request):
+    try:
+        # Parse the incoming request
+        content_type = request.headers.get("content-type")
+        raw_body = await request.body()
+
+        if content_type == "application/json":
+            data = await request.json()
+        elif content_type.startswith("text/plain"):
+            text_data = raw_body.decode("utf-8")
+            data = parse_alert_to_tradovate_json(text_data, client.account_id)
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported content type")
+
+        # Extract symbol and action from the alert data
+        symbol = data.get("symbol")
+        action = data.get("action")
+        if not symbol or not action:
+            raise HTTPException(status_code=400, detail="Missing required fields: symbol or action")
+
+        # Map TradingView symbol to Tradovate symbol for all API calls
+        if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
+            symbol = "NQM5"
+
+        # Prepare stop loss and take profit orders
+        stop_price = float(data.get("STOP"))
+        tp_price = float(data.get("T1"))
+        entry_price = float(data.get("PRICE"))
+
+        stop_order_data = {
+            "accountId": client.account_id,
+            "symbol": symbol,
+            "action": action,
+            "orderQty": 1,
+            "orderType": "Stop",
+            "stopPrice": entry_price,
+            "timeInForce": "GTC",
+            "isAutomated": True,
+            "bracket1": {
+                "action": "Sell" if action.lower() == "buy" else "Buy",
+                "orderType": "Limit",
+                "price": tp_price,
+                "timeInForce": "GTC"
+            }
+        }
+
+        # Place the entry stop order
+        result = await client.place_oso_order(stop_order_data)
+        logging.info(f"Order placed successfully: {result}")
+
+        return {"status": "success", "order": result}
+
+    except Exception as e:
+        logging.error(f"Error in webhook: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
