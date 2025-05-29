@@ -217,105 +217,144 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
             
             # Check status of all tracked orders
             for label, order_id in order_tracking.items():
-                if label == "ENTRY" and not entry_filled:
-                    entry_filled = True
+                if order_id is None:
+                    continue
+                    
+                url = f"https://demo-api.tradovate.com/v1/order/{order_id}"
+                async with httpx.AsyncClient() as http_client:
+                    response = await http_client.get(url, headers=headers)
+                    response.raise_for_status()
+                    order_status = response.json()
+                    
+                status = order_status.get("status")
+                
+                # Special focus on ENTRY order status
+                if label == "ENTRY":
+                    logging.info(f"CRITICAL: ENTRY order (ID: {order_id}) status: {status}")
+                else:
+                    logging.info(f"Order {label} (ID: {order_id}) status: {status}")
+                
+                if status and status.lower() == "filled":
+                    # CRITICAL: If ENTRY is filled and we haven't placed stop loss yet
+                    if label == "ENTRY" and not entry_filled:
+                        entry_filled = True
 
-                    # Construct the JSON payload for the `placeOSO` API call
-                    if stop_order_data:
-                        oso_payload = {
-                            "orders": [
-                                {
-                                    "action": stop_order_data.get("action"),
-                                    "symbol": stop_order_data.get("symbol"),
-                                    "orderQty": stop_order_data.get("orderQty", 1),
-                                    "orderType": "Stop",
-                                    "price": stop_order_data.get("stopPrice"),
-                                    "timeInForce": "GTC"
-                                },
-                                {
+                        # Prepare the OSO payload for stop loss and take profit
+                        if stop_order_data and "T1" in stop_order_data:
+                            oso_payload = {
+                                "accountSpec": client.account_spec,
+                                "accountId": client.account_id,
+                                "action": stop_order_data.get("action"),
+                                "symbol": stop_order_data.get("symbol"),
+                                "orderQty": stop_order_data.get("orderQty", 1),
+                                "orderType": "Stop",
+                                "price": stop_order_data.get("stopPrice"),
+                                "isAutomated": True,
+                                "bracket1": {
                                     "action": "Sell" if stop_order_data.get("action") == "Buy" else "Buy",
-                                    "symbol": stop_order_data.get("symbol"),
-                                    "orderQty": stop_order_data.get("orderQty", 1),
                                     "orderType": "Limit",
                                     "price": stop_order_data.get("T1"),
                                     "timeInForce": "GTC"
                                 }
-                            ]
-                        }
+                            }
 
-                        try:
-                            async with httpx.AsyncClient() as http_client:
-                                response = await http_client.post(
-                                    f"https://demo-api.tradovate.com/v1/order/placeOSO",
-                                    headers={"Authorization": f"Bearer {client.access_token}", "Content-Type": "application/json"},
-                                    json=oso_payload
-                                )
-                                response.raise_for_status()
-                                oso_result = response.json()
+                            try:
+                                # Place the OSO order
+                                async with httpx.AsyncClient() as http_client:
+                                    response = await http_client.post(
+                                        f"https://demo-api.tradovate.com/v1/order/placeOSO",
+                                        headers={"Authorization": f"Bearer {client.access_token}", "Content-Type": "application/json"},
+                                        json=oso_payload
+                                    )
+                                    response.raise_for_status()
+                                    oso_result = response.json()
 
-                                if "orderId" in oso_result:
-                                    logging.info(f"Bracket orders placed successfully: {oso_result}")
-                                    stop_placed = True
-                                else:
-                                    logging.error(f"Failed to place bracket orders: {oso_result}")
-                        except Exception as e:
-                            logging.error(f"Error placing bracket orders: {e}")
-                    else:
-                        logging.error("Missing stop_order_data for bracket order placement.")
-
-                # Restore logic for handling TP1 and STOP fills
-                elif label == "TP1" and entry_filled:
-                    logging.info(f"TP1 order filled! Cancelling STOP order.")
-                    if order_tracking.get("STOP"):
-                        cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{order_tracking['STOP']}"
-                        try:
-                            async with httpx.AsyncClient() as http_client:
-                                resp = await http_client.post(cancel_url, headers=headers)
-                                if resp.status_code == 200:
-                                    logging.info(f"STOP order {order_tracking['STOP']} cancelled after TP1 fill.")
-                                else:
-                                    logging.warning(f"Failed to cancel STOP order after TP1 fill. Status: {resp.status_code}")
-                        except Exception as e:
-                            logging.error(f"Exception while cancelling STOP order after TP1 fill: {e}")
-
-                elif label == "STOP" and entry_filled:
-                    logging.info(f"STOP order filled! Cancelling TP1 order.")
-                    if order_tracking.get("TP1"):
-                        cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{order_tracking['TP1']}"
-                        try:
-                            async with httpx.AsyncClient() as http_client:
-                                resp = await http_client.post(cancel_url, headers=headers)
-                                if resp.status_code == 200:
-                                    logging.info(f"TP1 order {order_tracking['TP1']} cancelled after STOP fill.")
-                                else:
-                                    logging.warning(f"Failed to cancel TP1 order after STOP fill. Status: {resp.status_code}")
-                        except Exception as e:
-                            logging.error(f"Exception while cancelling TP1 order after STOP fill: {e}")
-
+                                    if "orderId" in oso_result:
+                                        logging.info(f"OSO order placed successfully: {oso_result}")
+                                        stop_placed = True
+                                    else:
+                                        raise ValueError(f"Failed to place OSO order: {oso_result}")
+                            except Exception as e:
+                                logging.error(f"Error placing OSO order: {e}")
+                        else:
+                            logging.error("Missing stop_order_data or T1 for OSO placement.")
+                    
+                    # If TP1 is filled, cancel the stop loss
+                    elif label == "TP1" and entry_filled:
+                        logging.info(f"TP1 order filled! Cancelling STOP order.")
+                        if order_tracking.get("STOP"):
+                            cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{order_tracking['STOP']}"
+                            try:
+                                async with httpx.AsyncClient() as http_client:
+                                    resp = await http_client.post(cancel_url, headers=headers)
+                                    if resp.status_code == 200:
+                                        logging.info(f"STOP order {order_tracking['STOP']} cancelled after TP1 fill.")
+                                    else:
+                                        logging.warning(f"Failed to cancel STOP order after TP1 fill. Status: {resp.status_code}")
+                            except Exception as e:
+                                logging.error(f"Exception while cancelling STOP order after TP1 fill: {e}")
+                        return  # Exit monitoring
+                    
+                    # If stop loss is filled, cancel the take profit
+                    elif label == "STOP" and entry_filled:
+                        logging.info(f"STOP order filled! Cancelling TP1 order.")
+                        if order_tracking.get("TP1"):
+                            cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{order_tracking['TP1']}"
+                            try:
+                                async with httpx.AsyncClient() as http_client:
+                                    resp = await http_client.post(cancel_url, headers=headers)
+                                    if resp.status_code == 200:
+                                        logging.info(f"TP1 order {order_tracking['TP1']} cancelled after STOP fill.")
+                                    else:
+                                        logging.warning(f"Failed to cancel TP1 order after STOP fill. Status: {resp.status_code}")
+                            except Exception as e:
+                                logging.error(f"Exception while cancelling TP1 order after STOP fill: {e}")
+                        return  # Exit monitoring
+                        
+                elif status in ["Working", "Accepted"]:
+                    active_orders[label] = order_id
+                    
+            # Check if we've been monitoring too long
+            if asyncio.get_event_loop().time() - monitoring_start_time > max_monitoring_time:
+                logging.warning(f"Order monitoring timeout reached for {symbol}. Stopping.")
+                return
+            
+            # If no active orders remain, stop monitoring
+            if not active_orders:
+                logging.info("No active orders remaining. Stopping monitoring.")
+                return
+            
+            # Check 2x per second if entry has been filled
+            if not entry_filled:
+                poll_interval = 0.5
+            else:
+                poll_interval = 1
+                
+            await asyncio.sleep(poll_interval)
+            
         except Exception as e:
-            logging.error(f"Error in monitor_all_orders: {e}")
+            logging.error(f"Error in order monitoring: {e}")
+            await asyncio.sleep(5)
 
-        # Break the loop if monitoring time exceeds the maximum limit
-        if asyncio.get_event_loop().time() - monitoring_start_time > max_monitoring_time:
-            logging.warning(f"Monitoring timeout reached for {symbol}.")
-            break
-        
-        await asyncio.sleep(poll_interval)
 
 @app.post("/webhook")
-async def webhook(request: Request):
+async def webhook(req: Request):
+    logging.info("Webhook endpoint hit.")
     try:
-        # Parse the incoming request
-        content_type = request.headers.get("content-type")
-        raw_body = await request.body()
+        global last_alert
+        content_type = req.headers.get("content-type")
+        raw_body = await req.body()
 
         if content_type == "application/json":
-            data = await request.json()
+            data = await req.json()
         elif content_type.startswith("text/plain"):
             text_data = raw_body.decode("utf-8")
             data = parse_alert_to_tradovate_json(text_data, client.account_id)
         else:
             raise HTTPException(status_code=400, detail="Unsupported content type")
+
+        if WEBHOOK_SECRET is None:
+            raise HTTPException(status_code=500, detail="Missing WEBHOOK_SECRET")
 
         # Extract symbol and action from the alert data
         symbol = data.get("symbol")
@@ -327,46 +366,156 @@ async def webhook(request: Request):
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
             symbol = "NQM5"
 
-        # Prepare stop loss and take profit orders
-        stop_price = float(data.get("STOP"))
-        tp_price = float(data.get("T1"))
-        entry_price = float(data.get("PRICE"))
+        # Suppress repeated same-direction alerts
+        direction = action.lower()
+        now = datetime.utcnow()
+        last = last_alert.get(symbol)
+        if last is not None:
+            last_direction = last.get("direction")
+            if last_direction == direction:
+                logging.info(f"Suppressing alert for {symbol}: same direction '{direction}' as last processed alert.")
+                return {"status": "ignored", "reason": "Same direction as last processed alert"}
 
-        stop_order_data = {
-            "accountId": client.account_id,
-            "symbol": symbol,
-            "action": action,
-            "orderQty": 1,
-            "orderType": "Stop",
-            "stopPrice": entry_price,
-            "timeInForce": "GTC",
-            "isAutomated": True,
-            "bracket1": {
+        # Update last_alert for this symbol
+        last_alert[symbol] = {"direction": direction, "timestamp": now}
+
+        # Reset order tracking for the new alert
+        order_tracking = {
+            "ENTRY": None,
+            "TP1": None, 
+            "STOP": None  # Will be set after ENTRY is filled
+        }
+
+        # Always flatten and cancel before placing new orders
+        logging.info(f"Checking and modifying open orders for {symbol} to match the latest alert values.")
+        pos_url = f"https://demo-api.tradovate.com/v1/position/list"
+        order_url = f"https://demo-api.tradovate.com/v1/order/list"
+        headers = {"Authorization": f"Bearer {client.access_token}"}
+        async with httpx.AsyncClient() as http_client:
+            # Flatten position if needed
+            pos_resp = await http_client.get(pos_url, headers=headers)
+            pos_resp.raise_for_status()
+            positions = pos_resp.json()
+            for pos in positions:
+                if pos.get("symbol") == symbol and abs(pos.get("netPos", 0)) > 0:
+                    logging.info(f"Flattening open position for {symbol} before modifying orders.")
+                    await flatten_position(symbol)
+                    break
+
+            # Cancel all open orders for the symbol before placing new ones
+            await cancel_all_orders(symbol)
+            await wait_until_no_open_orders(symbol, timeout=10)
+            logging.info("All open orders cancelled, proceeding to place new ENTRY and TP orders.")
+
+        # Initialize the order plan
+        order_plan = []
+        stop_order_data = None
+        logging.info("Creating order plan based on alert data")
+
+        # Add limit order for T1 (Take Profit) at the exact alert value
+        if "T1" in data:
+            tp_price = float(data["T1"])
+            order_plan.append({
+                "label": "TP1",
                 "action": "Sell" if action.lower() == "buy" else "Buy",
                 "orderType": "Limit",
                 "price": tp_price,
-                "timeInForce": "GTC"
-            },
-            "bracket2": {
+                "qty": 1
+            })
+            logging.info(f"Added limit order for TP1 at exact alert price: {tp_price}")
+        else:
+            logging.warning("T1 not found in alert data - no take profit order will be placed")
+
+        # Add stop order for entry, always use stop order at the exact alert value
+        if "PRICE" in data:
+            entry_price = float(data["PRICE"])
+            order_plan.append({
+                "label": "ENTRY",
+                "action": action,
+                "orderType": "Stop",
+                "stopPrice": entry_price,
+                "qty": 1
+            })
+            logging.info(f"Added stop order for entry at exact alert price: {entry_price}")
+        else:
+            logging.warning("PRICE not found in alert data - no entry order will be placed")
+
+        # Prepare stop loss order data (to be placed after ENTRY is filled)
+        if "STOP" in data:
+            stop_price = float(data["STOP"])
+            # IMPORTANT: Preparing the stop loss order but NOT placing it yet
+            stop_order_data = {
+                "accountId": client.account_id,
+                "symbol": symbol,
                 "action": "Sell" if action.lower() == "buy" else "Buy",
-                "orderType": "Limit",
-                "price": float(data.get("T2")),
-                "timeInForce": "GTC"
-            },
-            "bracket3": {
-                "action": "Sell" if action.lower() == "buy" else "Buy",
-                "orderType": "Limit",
-                "price": float(data.get("T3")),
-                "timeInForce": "GTC"
+                "orderQty": 1,
+                "orderType": "Stop",
+                "stopPrice": stop_price,
+                "timeInForce": "GTC",
+                "isAutomated": True
             }
+            logging.info(f"Prepared STOP LOSS order data for after ENTRY fill at exact alert price: {stop_price}")
+            # Extra logging to confirm the stop loss order is prepared but not placed
+            logging.info("STOP LOSS order will be placed ONLY after ENTRY order is filled")
+        else:
+            logging.warning("STOP not found in alert data - no stop loss order will be placed")
+
+        # Initialize variables for tracking orders
+        order_results = []
+        # NOTE: We intentionally initialize this AFTER preparing stop_order_data
+        order_tracking = {
+            "ENTRY": None,
+            "TP1": None, 
+            "STOP": None  # Will be set after ENTRY is filled
         }
 
-        # Place the entry stop order
-        result = await client.place_oso_order(stop_order_data)
-        logging.info(f"Order placed successfully: {result}")
+        # Execute the order plan (no ENTRY fallback, no market data logic)
+        logging.info("Executing order plan")
+        for order in order_plan:
+            order_payload = {
+                "accountId": client.account_id,
+                "symbol": symbol,
+                "action": order["action"],
+                "orderQty": order["qty"],
+                "orderType": order["orderType"],
+                "price": order.get("price"),
+                "stopPrice": order.get("stopPrice"),
+                "timeInForce": "GTC",
+                "isAutomated": True
+            }
 
-        return {"status": "success", "order": result}
+            logging.info(f"Constructed order payload: {order_payload}")
 
+            try:
+                result = await client.place_order(
+                    symbol=symbol,
+                    action=order["action"],
+                    quantity=order["qty"],
+                    order_data=order_payload
+                )
+                logging.info(f"Order placed successfully: {result}")
+                if order['label'] == 'ENTRY':
+                    logging.info(f"CRITICAL: ENTRY order API response: {result}")
+                order_id = result.get("id")
+                order_tracking[order["label"]] = order_id
+                order_results.append({order["label"]: result})
+            except Exception as e:
+                logging.error(f"Error placing order {order['label']}: {e}")
+                logging.error(f"Failed order payload: {order_payload}")
+
+        # Monitor orders: place STOP LOSS after ENTRY is filled, cancel opposite when one is filled
+        try:
+            # This function will monitor orders and place the stop loss when entry is filled
+            await monitor_all_orders(order_tracking, symbol, stop_order_data)
+        except Exception as e:
+            logging.error(f"Error monitoring orders: {e}")
+
+        logging.info("Order plan execution completed")
+        return {"status": "success", "order_responses": order_results}
     except Exception as e:
-        logging.error(f"Error in webhook: {e}")
+        logging.error(f"Unexpected error in webhook: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 10000))
+    uvicorn.run("fixed_stop_loss:app", host="0.0.0.0", port=port)
