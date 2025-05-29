@@ -346,6 +346,18 @@ async def webhook(request: Request):
                 "orderType": "Limit",
                 "price": tp_price,
                 "timeInForce": "GTC"
+            },
+            "bracket2": {
+                "action": "Sell" if action.lower() == "buy" else "Buy",
+                "orderType": "Limit",
+                "price": float(data.get("T2")),
+                "timeInForce": "GTC"
+            },
+            "bracket3": {
+                "action": "Sell" if action.lower() == "buy" else "Buy",
+                "orderType": "Limit",
+                "price": float(data.get("T3")),
+                "timeInForce": "GTC"
             }
         }
 
