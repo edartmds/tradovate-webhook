@@ -331,45 +331,81 @@ async def webhook(req: Request):
         tp_price = float(data["T1"])
         stop_price = float(data["STOP"])
 
+        # Build robust OSO+OCO payload with strict types and minimal fields
         oso_payload = {
-            "accountId": client.account_id,
+            "accountId": int(client.account_id),
             "orders": [
                 {
-                    "action": entry_action,
-                    "symbol": symbol,
+                    "action": str(entry_action),
+                    "symbol": str(symbol),
                     "orderQty": 1,
                     "orderType": "Stop",
-                    "stopPrice": entry_price,
+                    "stopPrice": float(entry_price),
                     "timeInForce": "GTC",
                     "isAutomated": True
                 }
             ],
             "osoOrders": [
                 {
-                    "oco": [
+                    "orders": [
                         {
-                            "action": exit_action,
-                            "symbol": symbol,
+                            "action": str(exit_action),
+                            "symbol": str(symbol),
                             "orderQty": 1,
                             "orderType": "Limit",
-                            "price": tp_price,
+                            "price": float(tp_price),
                             "timeInForce": "GTC",
-                            "isAutomated": True
+                            "isAutomated": True,
+                            "oco": True,
+                            "ocoGroup": 1
                         },
                         {
-                            "action": exit_action,
-                            "symbol": symbol,
+                            "action": str(exit_action),
+                            "symbol": str(symbol),
                             "orderQty": 1,
                             "orderType": "Stop",
-                            "stopPrice": stop_price,
+                            "stopPrice": float(stop_price),
                             "timeInForce": "GTC",
-                            "isAutomated": True
+                            "isAutomated": True,
+                            "oco": True,
+                            "ocoGroup": 1
                         }
                     ]
                 }
             ]
         }
-        logging.info(f"OSO+OCO payload: {json.dumps(oso_payload)}")
+        # Log the payload as Tradovate will see it
+        logging.info(f"OSO+OCO payload: {json.dumps(oso_payload, separators=(',', ':'))}")
+
+        # Extra: Validate payload types and values before sending
+        assert isinstance(oso_payload["accountId"], int), "accountId must be int"
+        assert isinstance(oso_payload["orders"], list) and len(oso_payload["orders"]) == 1, "orders must be a list with one entry order"
+        assert isinstance(oso_payload["osoOrders"], list) and len(oso_payload["osoOrders"]) == 1, "osoOrders must be a list with one OCO group"
+        for o in oso_payload["osoOrders"][0]["orders"]:
+            assert o["oco"] is True and o["ocoGroup"] == 1, "OCO children must have oco=True and ocoGroup=1"
+
+        # Place the OSO order (which will trigger OCO bracket after entry is filled)
+        try:
+            headers = {"Authorization": f"Bearer {client.access_token}"}
+            async with httpx.AsyncClient() as http_client:
+                response = await http_client.post(
+                    "https://demo-api.tradovate.com/v1/order/placeoso",
+                    headers=headers,
+                    json=oso_payload
+                )
+                # Log the full response for debugging
+                logging.info(f"Tradovate response status: {response.status_code}")
+                logging.info(f"Tradovate response text: {response.text}")
+                response.raise_for_status()
+                result = response.json()
+                logging.info(f"OSO+OCO order placed successfully: {result}")
+            return {"status": "success", "order_response": result}
+        except httpx.HTTPStatusError as e:
+            logging.error(f"HTTP error placing OSO+OCO order: {e.response.status_code} {e.response.text}")
+            raise HTTPException(status_code=500, detail=f"Failed to place OSO+OCO order: {e.response.text}")
+        except Exception as e:
+            logging.error(f"Error placing OSO+OCO order: {e}")
+            raise HTTPException(status_code=500, detail="Failed to place OSO+OCO order")
 
         # Place the OSO order (which will trigger OCO bracket after entry is filled)
         try:
