@@ -344,3 +344,140 @@ class TradovateClient:
         except Exception as e:
             logging.error(f"Unexpected error during OCO order placement: {e}")
             raise HTTPException(status_code=500, detail="Internal server error during OCO order placement")
+
+    async def get_positions(self):
+        """
+        Retrieves all open positions for the authenticated account.
+
+        Returns:
+            list: List of open positions.
+        """
+        if not self.access_token:
+            await self.authenticate()
+
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json"
+        }
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"{BASE_URL}/position/list", headers=headers)
+                response.raise_for_status()
+                positions = response.json()
+                
+                # Filter for open positions only (netPos != 0)
+                open_positions = [pos for pos in positions if pos.get("netPos", 0) != 0]
+                logging.info(f"Found {len(open_positions)} open positions")
+                logging.debug(f"Open positions: {json.dumps(open_positions, indent=2)}")
+                return open_positions
+                
+        except httpx.HTTPStatusError as e:
+            logging.error(f"Failed to get positions: {e.response.text}")
+            raise HTTPException(status_code=e.response.status_code, detail=f"Failed to get positions: {e.response.text}")
+        except Exception as e:
+            logging.error(f"Unexpected error getting positions: {e}")
+            raise HTTPException(status_code=500, detail="Internal server error getting positions")
+
+    async def close_position(self, symbol: str):
+        """
+        Closes a specific position by symbol using a market order.
+
+        Args:
+            symbol (str): The symbol of the position to close.
+
+        Returns:
+            dict: The response from the Tradovate API.
+        """
+        if not self.access_token:
+            await self.authenticate()
+
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json"
+        }
+
+        # First, get the current position for this symbol
+        try:
+            positions = await self.get_positions()
+            target_position = None
+            
+            for position in positions:
+                if position.get("symbol") == symbol:
+                    target_position = position
+                    break
+            
+            if not target_position:
+                logging.info(f"No open position found for symbol {symbol}")
+                return {"status": "no_position", "message": f"No open position for {symbol}"}
+            
+            net_pos = target_position.get("netPos", 0)
+            if net_pos == 0:
+                logging.info(f"Position for {symbol} already closed (netPos = 0)")
+                return {"status": "already_closed", "message": f"Position for {symbol} already closed"}
+            
+            # Determine the action needed to close the position
+            # If netPos > 0 (long position), we need to sell to close
+            # If netPos < 0 (short position), we need to buy to close
+            close_action = "Sell" if net_pos > 0 else "Buy"
+            close_quantity = abs(net_pos)
+            
+            logging.info(f"Closing position for {symbol}: netPos={net_pos}, action={close_action}, qty={close_quantity}")
+            
+            # Create market order to close position
+            close_order = {
+                "accountSpec": self.account_spec,
+                "accountId": self.account_id,
+                "action": close_action,
+                "symbol": symbol,
+                "orderQty": close_quantity,
+                "orderType": "Market",
+                "timeInForce": "GTC",
+                "isAutomated": True
+            }
+            
+            # Place the closing order
+            async with httpx.AsyncClient() as client:
+                logging.debug(f"Placing position close order: {json.dumps(close_order, indent=2)}")
+                response = await client.post(f"{BASE_URL}/order/placeorder", json=close_order, headers=headers)
+                response.raise_for_status()
+                response_data = response.json()
+                logging.info(f"Position close order placed: {json.dumps(response_data, indent=2)}")
+                return response_data
+                
+        except httpx.HTTPStatusError as e:
+            logging.error(f"Failed to close position for {symbol}: {e.response.text}")
+            raise HTTPException(status_code=e.response.status_code, detail=f"Failed to close position: {e.response.text}")
+        except Exception as e:
+            logging.error(f"Unexpected error closing position for {symbol}: {e}")
+            raise HTTPException(status_code=500, detail="Internal server error closing position")
+
+    async def close_all_positions(self):
+        """
+        Closes all open positions for the authenticated account.
+
+        Returns:
+            list: List of close order responses.
+        """
+        try:
+            positions = await self.get_positions()
+            closed_positions = []
+            
+            for position in positions:
+                symbol = position.get("symbol")
+                net_pos = position.get("netPos", 0)
+                
+                if symbol and net_pos != 0:
+                    try:
+                        result = await self.close_position(symbol)
+                        closed_positions.append(result)
+                        logging.info(f"Successfully closed position for {symbol}")
+                    except Exception as e:
+                        logging.error(f"Failed to close position for {symbol}: {e}")
+                        
+            logging.info(f"Closed {len(closed_positions)} positions")
+            return closed_positions
+            
+        except Exception as e:
+            logging.error(f"Error closing all positions: {e}")
+            raise HTTPException(status_code=500, detail="Internal server error closing positions")
