@@ -538,3 +538,97 @@ class TradovateClient:
                 
         except Exception as e:
             logging.error(f"Error in final position check: {e}")
+
+    async def force_close_all_positions_immediately(self):
+        """
+        Aggressively closes all positions using immediate market orders.
+        This method uses a more direct approach for immediate position closure.
+        
+        Returns:
+            list: List of closed position results
+        """
+        if not self.access_token:
+            await self.authenticate()
+
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json"
+        }
+
+        try:
+            # Get all current positions
+            positions = await self.get_positions()
+            closed_results = []
+            
+            for position in positions:
+                symbol = position.get("symbol")
+                net_pos = position.get("netPos", 0)
+                
+                if symbol and net_pos != 0:
+                    logging.info(f"🔥 FORCE CLOSING POSITION: {symbol} (netPos: {net_pos})")
+                    
+                    # Determine close action and quantity
+                    close_action = "Sell" if net_pos > 0 else "Buy"
+                    close_qty = abs(net_pos)
+                    
+                    # Create immediate market order
+                    market_close_order = {
+                        "accountSpec": self.account_spec,
+                        "accountId": self.account_id,
+                        "action": close_action,
+                        "symbol": symbol,
+                        "orderQty": close_qty,
+                        "orderType": "Market",
+                        "timeInForce": "IOC",  # Immediate or Cancel for faster execution
+                        "isAutomated": True
+                    }
+                    
+                    try:
+                        async with httpx.AsyncClient(timeout=10.0) as client:
+                            logging.info(f"Placing immediate market close order: {json.dumps(market_close_order, indent=2)}")
+                            response = await client.post(f"{BASE_URL}/order/placeorder", json=market_close_order, headers=headers)
+                            response.raise_for_status()
+                            result = response.json()
+                            closed_results.append(result)
+                            logging.info(f"✅ Force close order placed for {symbol}: {result}")
+                            
+                    except Exception as e:
+                        logging.error(f"❌ Failed to force close {symbol}: {e}")
+                        
+                        # Try alternative approach - liquidate position directly
+                        try:
+                            liquidate_payload = {
+                                "accountId": self.account_id,
+                                "symbol": symbol
+                            }
+                            
+                            liquidate_response = await client.post(f"{BASE_URL}/position/liquidateposition", json=liquidate_payload, headers=headers)
+                            if liquidate_response.status_code == 200:
+                                liquidate_result = liquidate_response.json()
+                                closed_results.append(liquidate_result)
+                                logging.info(f"✅ Position liquidated for {symbol}: {liquidate_result}")
+                            else:
+                                logging.error(f"❌ Liquidation also failed for {symbol}: {liquidate_response.text}")
+                        except Exception as liquidate_error:
+                            logging.error(f"❌ Liquidation attempt failed for {symbol}: {liquidate_error}")
+            
+            # Brief wait for orders to process
+            if closed_results:
+                await asyncio.sleep(2)
+                
+                # Verify closure
+                final_positions = await self.get_positions()
+                remaining = [pos for pos in final_positions if pos.get("netPos", 0) != 0]
+                
+                if remaining:
+                    logging.warning(f"⚠️ {len(remaining)} positions still open after force close attempt")
+                    for pos in remaining:
+                        logging.warning(f"  - {pos.get('symbol')}: netPos={pos.get('netPos', 0)}")
+                else:
+                    logging.info("✅ All positions successfully force closed")
+            
+            return closed_results
+            
+        except Exception as e:
+            logging.error(f"❌ Error in force_close_all_positions_immediately: {e}")
+            raise HTTPException(status_code=500, detail=f"Force position closure failed: {str(e)}")
