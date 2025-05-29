@@ -237,71 +237,27 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                 if status and status.lower() == "filled":
                     # CRITICAL: If ENTRY is filled and we haven't placed stop loss yet
                     if label == "ENTRY" and not entry_filled and not stop_placed:
-                        logging.info(f"==========================================")
-                        logging.info(f"CRITICAL: ENTRY ORDER FILLED! Placing stop loss now!")
-                        logging.info(f"==========================================")
                         entry_filled = True
-                        
-                        # Now place the STOP LOSS order since we're in position
+
+                        # Place the STOP LOSS order since the ENTRY is filled
                         if stop_order_data:
-                            # Try up to 3 times to place the stop loss
-                            for attempt in range(3):
-                                try:
-                                    logging.info(f"ATTEMPT #{attempt+1}: Placing STOP LOSS order")
-                                    
-                                    # Make sure the stop price is set correctly
-                                    if "stopPrice" not in stop_order_data:
-                                        logging.error("CRITICAL: No stopPrice field in stop_order_data")
-                                        if "price" in stop_order_data:
-                                            stop_order_data["stopPrice"] = stop_order_data["price"]
-                                            logging.info(f"Using price field: {stop_order_data['stopPrice']}")
-                                    
-                                    # Make sure order type is set to Stop
-                                    stop_order_data["orderType"] = "Stop"
-                                    
-                                    # Try to place the stop loss order
-                                    stop_result = await client.place_order(
-                                        symbol=stop_order_data.get("symbol"),
-                                        action=stop_order_data.get("action"),
-                                        quantity=stop_order_data.get("orderQty", 1),
-                                        order_data=stop_order_data
-                                    )
-                                    
-                                    # Check if the order placement was successful
-                                    if "id" in stop_result:
-                                        stop_id = stop_result.get("id")
-                                        order_tracking["STOP"] = stop_id
-                                        stop_placed = True
-                                        logging.info(f"==========================================")
-                                        logging.info(f"STOP LOSS order placed successfully with ID {stop_id}")
-                                        logging.info(f"==========================================")
-                                        break
-                                    else:
-                                        logging.error(f"Stop order placement failed: {stop_result}")
-                                        # Wait a moment before retrying
-                                        await asyncio.sleep(1)
-                                        
-                                except Exception as e:
-                                    logging.error(f"Error placing stop loss (attempt {attempt+1}): {e}")
-                                    await asyncio.sleep(1)
-                            
-                            # If we still haven't placed the stop loss, try direct API call
-                            if not stop_placed:
-                                logging.error("All regular attempts failed, trying direct API call for stop loss")
-                                try:
-                                    stop_id, error = await place_stop_loss_order(stop_order_data)
-                                    if stop_id:
-                                        order_tracking["STOP"] = stop_id
-                                        stop_placed = True
-                                        logging.info(f"STOP LOSS placed via direct API with ID {stop_id}")
-                                    else:
-                                        logging.error(f"Direct API STOP LOSS placement failed: {error}")
-                                        logging.error(f"POSITION REMAINS UNPROTECTED!")
-                                except Exception as e:
-                                    logging.error(f"Exception in direct API stop loss placement: {e}")
-                                    logging.error("POSITION REMAINS UNPROTECTED!")
+                            try:
+                                stop_result = await client.place_order(
+                                    symbol=stop_order_data.get("symbol"),
+                                    action=stop_order_data.get("action"),
+                                    quantity=stop_order_data.get("orderQty", 1),
+                                    order_data=stop_order_data
+                                )
+                                stop_id = stop_result.get("id")
+                                if stop_id:
+                                    order_tracking["STOP"] = stop_id
+                                    stop_placed = True
+                                else:
+                                    raise ValueError("Failed to retrieve STOP order ID from response.")
+                            except Exception as e:
+                                raise RuntimeError(f"Failed to place STOP LOSS order: {e}")
                         else:
-                            logging.error("No stop_order_data available - position unprotected!")
+                            raise ValueError("stop_order_data is missing or invalid.")
                     
                     # If TP1 is filled, cancel the stop loss
                     elif label == "TP1" and entry_filled:
