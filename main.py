@@ -253,7 +253,8 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
 
 # Webhook endpoint (cleaned up, no deduplication, no market data fallback, no legacy logic)
 
-# Suppress repeated same-direction alerts: only act on direction change
+
+# Webhook endpoint (now ignores repeated same-direction alerts until direction changes)
 @app.post("/webhook")
 async def webhook(req: Request):
     logging.info("Webhook endpoint hit.")
@@ -283,18 +284,13 @@ async def webhook(req: Request):
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
             symbol = "NQM5"
 
-        # Suppress repeated same-direction alerts
-        direction = action.lower()
-        now = datetime.utcnow()
+        # Only process alert if direction has changed for this symbol
         last = last_alert.get(symbol)
-        if last is not None:
-            last_direction = last.get("direction")
-            if last_direction == direction:
-                logging.info(f"Suppressing alert for {symbol}: same direction '{direction}' as last processed alert.")
-                return {"status": "ignored", "reason": "Same direction as last processed alert"}
-
+        if last and last.get("direction", "").lower() == action.lower():
+            logging.info(f"Ignoring repeated same-direction alert for {symbol} ({action}). Last direction: {last.get('direction')}.")
+            return {"status": "ignored", "reason": "Same direction as last alert"}
         # Update last_alert for this symbol
-        last_alert[symbol] = {"direction": direction, "timestamp": now}
+        last_alert[symbol] = {"direction": action, "timestamp": datetime.utcnow()}
 
         # Reset order tracking for the new alert
         order_tracking = {
