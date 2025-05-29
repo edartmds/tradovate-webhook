@@ -253,8 +253,7 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
 
 # Webhook endpoint (cleaned up, no deduplication, no market data fallback, no legacy logic)
 
-
-# Webhook endpoint (now ignores repeated same-direction alerts until direction changes)
+# Suppress repeated same-direction alerts: only act on direction change
 @app.post("/webhook")
 async def webhook(req: Request):
     logging.info("Webhook endpoint hit.")
@@ -284,13 +283,18 @@ async def webhook(req: Request):
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
             symbol = "NQM5"
 
-        # Only process alert if direction has changed for this symbol
+        # Suppress repeated same-direction alerts
+        direction = action.lower()
+        now = datetime.utcnow()
         last = last_alert.get(symbol)
-        if last and last.get("direction", "").lower() == action.lower():
-            logging.info(f"Ignoring repeated same-direction alert for {symbol} ({action}). Last direction: {last.get('direction')}.")
-            return {"status": "ignored", "reason": "Same direction as last alert"}
+        if last is not None:
+            last_direction = last.get("direction")
+            if last_direction == direction:
+                logging.info(f"Suppressing alert for {symbol}: same direction '{direction}' as last processed alert.")
+                return {"status": "ignored", "reason": "Same direction as last processed alert"}
+
         # Update last_alert for this symbol
-        last_alert[symbol] = {"direction": action, "timestamp": datetime.utcnow()}
+        last_alert[symbol] = {"direction": direction, "timestamp": now}
 
         # Reset order tracking for the new alert
         order_tracking = {
@@ -320,82 +324,108 @@ async def webhook(req: Request):
             await wait_until_no_open_orders(symbol, timeout=10)
             logging.info("All open orders cancelled, proceeding to place new ENTRY and TP orders.")
 
-        # Build OSO+OCO payload for Tradovate
-        logging.info("Building OSO+OCO payload for Tradovate")
-        if "PRICE" not in data or "T1" not in data or "STOP" not in data:
-            raise HTTPException(status_code=400, detail="Missing required order prices (PRICE, T1, STOP)")
+        # Initialize the order plan
+        order_plan = []
+        stop_order_data = None
+        logging.info("Creating order plan based on alert data")
 
-        entry_action = action.capitalize()
-        exit_action = "Sell" if entry_action.lower() == "buy" else "Buy"
-        entry_price = float(data["PRICE"])
-        tp_price = float(data["T1"])
-        stop_price = float(data["STOP"])
+        # Add limit order for T1 (Take Profit) at the exact alert value
+        if "T1" in data:
+            tp_price = float(data["T1"])
+            order_plan.append({
+                "label": "TP1",
+                "action": "Sell" if action.lower() == "buy" else "Buy",
+                "orderType": "Limit",
+                "price": tp_price,
+                "qty": 1
+            })
+            logging.info(f"Added limit order for TP1 at exact alert price: {tp_price}")
+        else:
+            logging.warning("T1 not found in alert data - no take profit order will be placed")
 
-        # Build robust OSO+OCO payload with strict types and minimal fields
-        # Try a minimal, flat OSO payload (no oco/ocoGroup at group level, only on child orders)
-        oso_payload = {
-            "accountId": int(client.account_id),
-            "orders": [
-                {
-                    "action": str(entry_action),
-                    "symbol": str(symbol),
-                    "orderQty": 1,
-                    "orderType": "Stop",
-                    "stopPrice": float(entry_price),
-                    "timeInForce": "GTC",
-                    "isAutomated": True
-                }
-            ],
-            "osoOrders": [
-                {
-                    "orders": [
-                        {
-                            "action": str(exit_action),
-                            "symbol": str(symbol),
-                            "orderQty": 1,
-                            "orderType": "Limit",
-                            "price": float(tp_price),
-                            "timeInForce": "GTC",
-                            "isAutomated": True,
-                            "oco": True,
-                            "ocoGroup": 1
-                        },
-                        {
-                            "action": str(exit_action),
-                            "symbol": str(symbol),
-                            "orderQty": 1,
-                            "orderType": "Stop",
-                            "stopPrice": float(stop_price),
-                            "timeInForce": "GTC",
-                            "isAutomated": True,
-                            "oco": True,
-                            "ocoGroup": 1
-                        }
-                    ]
-                }
-            ]
+        # Add stop order for entry, always use stop order at the exact alert value
+        if "PRICE" in data:
+            entry_price = float(data["PRICE"])
+            order_plan.append({
+                "label": "ENTRY",
+                "action": action,
+                "orderType": "Stop",
+                "stopPrice": entry_price,
+                "qty": 1
+            })
+            logging.info(f"Added stop order for entry at exact alert price: {entry_price}")
+        else:
+            logging.warning("PRICE not found in alert data - no entry order will be placed")
+
+        # Add stop loss order (STOP) at the exact alert value (to be placed after ENTRY is filled)
+        if "STOP" in data:
+            stop_price = float(data["STOP"])
+            stop_order_data = {
+                "accountId": client.account_id,
+                "symbol": symbol,
+                "action": "Sell" if action.lower() == "buy" else "Buy",
+                "orderQty": 1,
+                "orderType": "Stop",
+                "stopPrice": stop_price,
+                "timeInForce": "GTC",
+                "isAutomated": True
+            }
+            logging.info(f"Prepared STOP LOSS order data for after ENTRY fill at exact alert price: {stop_price}")
+        else:
+            logging.warning("STOP not found in alert data - no stop loss order will be placed")
+
+        logging.info(f"Order plan created with {len(order_plan)} orders (STOP LOSS will be placed after ENTRY fill)")
+
+        # Initialize variables for tracking orders
+        order_results = []
+        order_tracking = {
+            "ENTRY": None,
+            "TP1": None, 
+            "STOP": None  # Will be set after ENTRY is filled
         }
-        # Log the payload as Tradovate will see it
-        logging.info(f"OSO+OCO payload: {json.dumps(oso_payload, separators=(',', ':'))}")
 
-        # Extra: Validate payload types and values before sending
-        assert isinstance(oso_payload["accountId"], int), "accountId must be int"
-        assert isinstance(oso_payload["orders"], list) and len(oso_payload["orders"]) == 1, "orders must be a list with one entry order"
-        assert isinstance(oso_payload["osoOrders"], list) and len(oso_payload["osoOrders"]) == 1, "osoOrders must be a list with one OCO group"
-        for o in oso_payload["osoOrders"][0]["orders"]:
-            assert o["oco"] is True and o["ocoGroup"] == 1, "OCO children must have oco=True and ocoGroup=1"
+        # Execute the order plan (no ENTRY fallback, no market data logic)
+        logging.info("Executing order plan")
+        for order in order_plan:
+            order_payload = {
+                "accountId": client.account_id,
+                "symbol": symbol,
+                "action": order["action"],
+                "orderQty": order["qty"],
+                "orderType": order["orderType"],
+                "price": order.get("price"),
+                "stopPrice": order.get("stopPrice"),
+                "timeInForce": "GTC",
+                "isAutomated": True
+            }
 
-        # Place the OSO order using the TradovateClient method for consistency
+            logging.info(f"Constructed order payload: {order_payload}")
+
+            try:
+                result = await client.place_order(
+                    symbol=symbol,
+                    action=order["action"],
+                    quantity=order["qty"],
+                    order_data=order_payload
+                )
+                logging.info(f"Order placed successfully: {result}")
+                if order['label'] == 'ENTRY':
+                    logging.info(f"ENTRY order API response: {result}")
+                order_id = result.get("id")
+                order_tracking[order["label"]] = order_id
+                order_results.append({order["label"]: result})
+            except Exception as e:
+                logging.error(f"Error placing order {order['label']}: {e}")
+                logging.error(f"Failed order payload: {order_payload}")
+
+        # Monitor orders: place STOP LOSS after ENTRY is filled, cancel opposite when one is filled
         try:
-            result = await client.place_oso_order(oso_payload)
-            logging.info(f"OSO+OCO order placed successfully: {result}")
-            return {"status": "success", "order_response": result}
-        except HTTPException as e:
-            logging.error(f"HTTP error placing OSO+OCO order: {e.detail}")
-            raise
+            await monitor_all_orders(order_tracking, symbol, stop_order_data)
         except Exception as e:
-            logging.error(f"Error placing OSO+OCO order: {e}")
-            raise HTTPException(status_code=500, detail="Failed to place OSO+OCO order")
+            logging.error(f"Error monitoring orders: {e}")
+
+        logging.info("Order plan execution completed")
+        return {"status": "success", "order_responses": order_results}
     except Exception as e:
         logging.error(f"Unexpected error in webhook: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
