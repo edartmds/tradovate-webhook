@@ -42,14 +42,10 @@ async def startup_event():
         logging.info(f"Account ID: {client.account_id}")
         logging.info(f"Account Spec: {client.account_spec}")
         logging.info(f"Access Token: {'***' if client.access_token else 'None'}")
-          # Close any existing positions and cancel pending orders on startup to start clean
-        logging.info("=== CLEANING UP EXISTING POSITIONS AND ORDERS ON STARTUP ===")
+        
+        # Cancel any existing pending orders on startup to start clean
+        logging.info("=== CLEANING UP EXISTING ORDERS ON STARTUP ===")
         try:
-            # Close all positions first
-            closed_positions = await client.close_all_positions()
-            logging.info(f"Startup cleanup: Closed {len(closed_positions)} existing positions")
-            
-            # Cancel all pending orders
             cancelled_orders = await client.cancel_all_pending_orders()
             logging.info(f"Startup cleanup: Cancelled {len(cancelled_orders)} existing pending orders")
         except Exception as e:
@@ -163,10 +159,162 @@ def hash_alert(data: dict) -> str:
     alert_string = json.dumps(data, sort_keys=True)
     return hashlib.sha256(alert_string.encode()).hexdigest()
 
-# REMOVED: Legacy stop loss function - now handled by OSO bracket orders
-# REMOVED: Legacy monitor_all_orders function that was interfering with OSO bracket orders
-# OSO (Order Sends Order) handles bracket order management automatically
-# Manual order monitoring is no longer needed
+# Direct API function to place a stop loss order (DEPRECATED - using OCO/OSO instead)
+async def place_stop_loss_order_legacy(stop_order_data):
+    """
+    DEPRECATED: This function is kept for reference only.
+    We now use OCO/OSO bracket orders instead of manual stop loss placement.
+    """
+    logging.warning("DEPRECATED: place_stop_loss_order_legacy called - use OCO/OSO instead")
+    return None, "DEPRECATED: Use OCO/OSO bracket orders instead"
+async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
+    """
+    Monitor all orders and manage their relationships:
+    - If ENTRY is filled, place the STOP order and keep TP active
+    - If TP is filled, cancel STOP
+    - If STOP is filled, cancel TP
+    """
+    logging.info(f"Starting comprehensive order monitoring for {symbol}")
+    entry_filled = False
+    stop_placed = False
+    monitoring_start_time = asyncio.get_event_loop().time()
+    max_monitoring_time = 3600  # 1 hour timeout
+    
+    # Extra check for stop_order_data
+    if not stop_order_data:
+        logging.error("CRITICAL: No stop_order_data provided when starting monitoring")
+    else:
+        logging.info(f"Will use this STOP data when entry fills: {stop_order_data}")
+    
+    # Check orders every second
+    poll_interval = 1
+    
+    while True:
+        try:
+            headers = {"Authorization": f"Bearer {client.access_token}"}
+            active_orders = {}
+            logging.info(f"Order tracking state: {order_tracking}")
+            
+            # Check status of all tracked orders
+            for label, order_id in order_tracking.items():
+                if order_id is None:
+                    continue
+                    
+                url = f"https://demo-api.tradovate.com/v1/order/{order_id}"
+                async with httpx.AsyncClient() as http_client:
+                    response = await http_client.get(url, headers=headers)
+                    response.raise_for_status()
+                    order_status = response.json()
+                    
+                status = order_status.get("status")
+                
+                # Special focus on ENTRY order status
+                if label == "ENTRY":
+                    logging.info(f"CRITICAL: ENTRY order (ID: {order_id}) status: {status}")
+                else:
+                    logging.info(f"Order {label} (ID: {order_id}) status: {status}")
+                
+                if status and status.lower() == "filled":
+                    # CRITICAL: If ENTRY is filled and we haven't placed stop loss yet
+                    if label == "ENTRY" and not entry_filled:
+                        entry_filled = True
+
+                        # Prepare the OSO payload for stop loss and take profit
+                        if stop_order_data and "T1" in stop_order_data:
+                            oso_payload = {
+                                "accountSpec": client.account_spec,
+                                "accountId": client.account_id,
+                                "action": stop_order_data.get("action"),
+                                "symbol": stop_order_data.get("symbol"),
+                                "orderQty": stop_order_data.get("orderQty", 1),
+                                "orderType": "Stop",
+                                "price": stop_order_data.get("stopPrice"),
+                                "isAutomated": True,
+                                "bracket1": {
+                                    "action": "Sell" if stop_order_data.get("action") == "Buy" else "Buy",
+                                    "orderType": "Limit",
+                                    "price": stop_order_data.get("T1"),
+                                    "timeInForce": "GTC"
+                                }
+                            }
+
+                            try:
+                                # Place the OSO order
+                                async with httpx.AsyncClient() as http_client:
+                                    response = await http_client.post(
+                                        f"https://demo-api.tradovate.com/v1/order/placeOSO",
+                                        headers={"Authorization": f"Bearer {client.access_token}", "Content-Type": "application/json"},
+                                        json=oso_payload
+                                    )
+                                    response.raise_for_status()
+                                    oso_result = response.json()
+
+                                    if "orderId" in oso_result:
+                                        logging.info(f"OSO order placed successfully: {oso_result}")
+                                        stop_placed = True
+                                    else:
+                                        raise ValueError(f"Failed to place OSO order: {oso_result}")
+                            except Exception as e:
+                                logging.error(f"Error placing OSO order: {e}")
+                        else:
+                            logging.error("Missing stop_order_data or T1 for OSO placement.")
+                    
+                    # If TP1 is filled, cancel the stop loss
+                    elif label == "TP1" and entry_filled:
+                        logging.info(f"TP1 order filled! Cancelling STOP order.")
+                        if order_tracking.get("STOP"):
+                            cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{order_tracking['STOP']}"
+                            try:
+                                async with httpx.AsyncClient() as http_client:
+                                    resp = await http_client.post(cancel_url, headers=headers)
+                                    if resp.status_code == 200:
+                                        logging.info(f"STOP order {order_tracking['STOP']} cancelled after TP1 fill.")
+                                    else:
+                                        logging.warning(f"Failed to cancel STOP order after TP1 fill. Status: {resp.status_code}")
+                            except Exception as e:
+                                logging.error(f"Exception while cancelling STOP order after TP1 fill: {e}")
+                        return  # Exit monitoring
+                    
+                    # If stop loss is filled, cancel the take profit
+                    elif label == "STOP" and entry_filled:
+                        logging.info(f"STOP order filled! Cancelling TP1 order.")
+                        if order_tracking.get("TP1"):
+                            cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{order_tracking['TP1']}"
+                            try:
+                                async with httpx.AsyncClient() as http_client:
+                                    resp = await http_client.post(cancel_url, headers=headers)
+                                    if resp.status_code == 200:
+                                        logging.info(f"TP1 order {order_tracking['TP1']} cancelled after STOP fill.")
+                                    else:
+                                        logging.warning(f"Failed to cancel TP1 order after STOP fill. Status: {resp.status_code}")
+                            except Exception as e:
+                                logging.error(f"Exception while cancelling TP1 order after STOP fill: {e}")
+                        return  # Exit monitoring
+                        
+                elif status in ["Working", "Accepted"]:
+                    active_orders[label] = order_id
+                    
+            # Check if we've been monitoring too long
+            if asyncio.get_event_loop().time() - monitoring_start_time > max_monitoring_time:
+                logging.warning(f"Order monitoring timeout reached for {symbol}. Stopping.")
+                return
+            
+            # If no active orders remain, stop monitoring
+            if not active_orders:
+                logging.info("No active orders remaining. Stopping monitoring.")
+                return
+            
+            # Check 2x per second if entry has been filled
+            if not entry_filled:
+                poll_interval = 0.5
+            else:
+                poll_interval = 1
+                
+            await asyncio.sleep(poll_interval)
+            
+        except Exception as e:
+            logging.error(f"Error in order monitoring: {e}")
+            await asyncio.sleep(5)
 
 
 @app.post("/webhook")
@@ -202,89 +350,41 @@ async def webhook(req: Request):
         if not all([symbol, action, price, t1, stop]):
             missing = [k for k, v in {"symbol": symbol, "action": action, "PRICE": price, "T1": t1, "STOP": stop}.items() if not v]
             logging.error(f"Missing required fields: {missing}")
-            raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")        # Map TradingView symbol to Tradovate symbol
+            raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")
+
+        # Map TradingView symbol to Tradovate symbol
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
             symbol = "NQM5"
-            logging.info(f"Mapped symbol to: {symbol}")        # STEP 1: Cancel all existing pending orders first (TP/SL from previous alerts)
+            logging.info(f"Mapped symbol to: {symbol}")        # STEP 1: Cancel all existing pending orders to prevent over-leveraging
         logging.info("=== CANCELLING ALL PENDING ORDERS ===")
         try:
             cancelled_orders = await client.cancel_all_pending_orders()
             logging.info(f"Successfully cancelled {len(cancelled_orders)} pending orders")
         except Exception as e:
             logging.warning(f"Failed to cancel some orders: {e}")
-            # Continue with position closure even if cancellation partially fails        # STEP 2: Close all existing positions (including any position left open after cancelling TP/SL)
-        logging.info("=== CLOSING ALL EXISTING POSITIONS ===")
-        try:
-            # First, get current positions to see what we're working with
-            current_positions = await client.get_positions()
-            logging.info(f"Found {len(current_positions)} positions before closure attempt:")
-            for pos in current_positions:
-                symbol_pos = pos.get("symbol")
-                net_pos = pos.get("netPos", 0)
-                unrealized_pnl = pos.get("unrealizedPnL", 0)
-                logging.info(f"  - {symbol_pos}: netPos={net_pos}, unrealizedPnL=${unrealized_pnl}")
-              # If we have open positions, close them
-            if any(pos.get("netPos", 0) != 0 for pos in current_positions):
-                logging.info("🔥 DETECTED OPEN POSITIONS - CLOSING WITH MARKET ORDERS")
-                
-                # First try the standard method
-                try:
-                    closed_positions = await client.close_all_positions()
-                    logging.info(f"✅ Standard closure initiated for {len(closed_positions)} positions")
-                except Exception as e:
-                    logging.warning(f"⚠️ Standard closure failed: {e}")
-                    closed_positions = []
-                
-                # Wait for market orders to execute
-                await asyncio.sleep(1.5)
-                
-                # Check if positions are still open
-                check_positions = await client.get_positions()
-                still_open = [pos for pos in check_positions if pos.get("netPos", 0) != 0]
-                
-                if still_open:
-                    logging.warning(f"⚠️ {len(still_open)} positions still open after standard closure - using FORCE CLOSE")
-                    for pos in still_open:
-                        logging.warning(f"  - Still open: {pos.get('symbol')} netPos={pos.get('netPos', 0)}")
-                    
-                    # Use aggressive force close method
-                    try:
-                        force_closed = await client.force_close_all_positions_immediately()
-                        logging.info(f"🔥 Force closed {len(force_closed)} positions")
-                    except Exception as force_error:
-                        logging.error(f"❌ Force close also failed: {force_error}")
-                
-                # Final verification
-                final_positions = await client.get_positions()
-                remaining_open = [pos for pos in final_positions if pos.get("netPos", 0) != 0]
-                
-                if remaining_open:
-                    logging.error(f"❌ CRITICAL: {len(remaining_open)} positions STILL OPEN after all closure attempts:")
-                    for pos in remaining_open:
-                        logging.error(f"    - {pos.get('symbol')}: netPos={pos.get('netPos', 0)}")
-                else:
-                    logging.info("✅ All positions successfully closed and verified")
-            else:
-                logging.info("ℹ️ No open positions found to close")
-                
-        except Exception as e:
-            logging.error(f"❌ Failed to close positions: {e}")
-            import traceback
-            logging.error(f"Traceback: {traceback.format_exc()}")
-            # Continue even if position closure fails
+            # Continue with new order placement even if cancellation partially fails
 
-        # STEP 2.5: Add extra delay to ensure cleanup is complete before placing new orders
-        logging.info("=== ENSURING CLEAN SLATE BEFORE NEW ORDERS ===")
-        await asyncio.sleep(1)  # Additional delay to ensure all cleanup is complete# STEP 3: Create OSO bracket orders (entry + take profit + stop loss)
-        logging.info(f"=== CREATING OSO BRACKET ORDERS ===")
+        # STEP 2: CRITICAL - Close all existing open positions from previous alerts
+        logging.info("🔥🔥🔥 === CLOSING ALL EXISTING POSITIONS === 🔥🔥🔥")
+        try:
+            success = await client.force_close_all_positions_immediately()
+            if success:
+                logging.info("✅ All existing positions successfully closed")
+            else:
+                logging.error("❌ CRITICAL: Failed to close all positions - proceeding anyway")
+        except Exception as e:
+            logging.error(f"❌ CRITICAL ERROR closing positions: {e}")
+            # Continue anyway - user wants new orders placed regardless
+
+        # STEP 3: Create OCO orders to prevent over-leveraging
+        logging.info(f"=== CREATING OCO BRACKET ORDERS ===")
         logging.info(f"Symbol: {symbol}, Entry: {price}, TP: {t1}, SL: {stop}")
         
         # Determine opposite action for take profit and stop loss
         opposite_action = "Sell" if action.lower() == "buy" else "Buy"
         
-        # Create OSO payload with entry order and two bracket orders (TP + SL)
-        # Ensure all required fields are present in all orders
-        oso_payload = {
+        # Create entry stop order (triggers at PRICE level)
+        entry_order = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
             "action": action,
@@ -293,48 +393,69 @@ async def webhook(req: Request):
             "orderType": "Stop",
             "stopPrice": price,  # Entry at PRICE level using stop order
             "timeInForce": "GTC",
-            "isAutomated": True,
-            "bracket1": {
+            "isAutomated": True
+        }
+        
+        # Create take profit limit order (at T1 level)
+        take_profit_order = {
+            "accountSpec": client.account_spec,
+            "accountId": client.account_id,
+            "action": opposite_action,
+            "symbol": symbol,
+            "orderQty": 1,
+            "orderType": "Limit",
+            "price": t1,  # Take profit at T1 level
+            "timeInForce": "GTC",
+            "isAutomated": True
+        }
+        
+        logging.info(f"=== ENTRY ORDER ===")
+        logging.info(f"{json.dumps(entry_order, indent=2)}")
+        
+        logging.info(f"=== TAKE PROFIT ORDER ===")
+        logging.info(f"{json.dumps(take_profit_order, indent=2)}")        # STEP 4: Place OCO bracket order (entry stop + take profit limit)
+        logging.info("=== PLACING OCO BRACKET ORDER ===")
+        try:
+            oco_result = await client.place_oco_order(entry_order, take_profit_order)
+            logging.info(f"=== OCO BRACKET ORDER PLACED SUCCESSFULLY ===")
+            logging.info(f"OCO Result: {oco_result}")
+        except Exception as e:
+            logging.warning(f"OCO placement failed, falling back to OSO: {e}")
+            
+            # Fallback to OSO if OCO fails
+            logging.info("=== FALLING BACK TO OSO BRACKET ORDER ===")
+            oso_payload = {
                 "accountSpec": client.account_spec,
                 "accountId": client.account_id,
-                "action": opposite_action,
-                "symbol": symbol,
-                "orderQty": 1,
-                "orderType": "Limit",
-                "price": t1,  # Take profit at T1 level
-                "timeInForce": "GTC",
-                "isAutomated": True
-            },
-            "bracket2": {
-                "accountSpec": client.account_spec,
-                "accountId": client.account_id,
-                "action": opposite_action,
+                "action": action,
                 "symbol": symbol,
                 "orderQty": 1,
                 "orderType": "Stop",
-                "stopPrice": stop,  # Stop loss at STOP level
+                "stopPrice": price,  # Entry at PRICE level using stop order
                 "timeInForce": "GTC",
-                "isAutomated": True
+                "isAutomated": True,
+                "bracket1": {
+                    "action": opposite_action,
+                    "orderType": "Limit",
+                    "price": t1,  # Take profit at T1 level
+                    "timeInForce": "GTC"
+                },
+                "bracket2": {
+                    "action": opposite_action, 
+                    "orderType": "Stop",
+                    "stopPrice": stop,  # Stop loss at STOP level
+                    "timeInForce": "GTC"
+                }
             }
-        }
-        
-        logging.info(f"=== OSO BRACKET PAYLOAD ===")
-        logging.info(f"{json.dumps(oso_payload, indent=2)}")
+            
+            logging.info(f"=== OSO PAYLOAD ===")
+            logging.info(f"{json.dumps(oso_payload, indent=2)}")
+            
+            oco_result = await client.place_oso_order(oso_payload)
+            logging.info(f"=== OSO ORDER PLACED SUCCESSFULLY ===")
+            logging.info(f"OSO Result: {oco_result}")
 
-        # STEP 4: Place OSO bracket order (entry + take profit + stop loss)
-        logging.info("=== PLACING OSO BRACKET ORDER ===")
-        try:
-            oso_result = await client.place_oso_order(oso_payload)
-            logging.info(f"=== OSO BRACKET ORDER PLACED SUCCESSFULLY ===")
-            logging.info(f"OSO Result: {oso_result}")
-            
-            return {"status": "success", "order": oso_result}
-            
-        except Exception as e:
-            logging.error(f"OSO bracket order placement failed: {e}")
-            import traceback
-            logging.error(f"Traceback: {traceback.format_exc()}")
-            raise HTTPException(status_code=500, detail=f"Failed to place bracket order: {str(e)}")
+        return {"status": "success", "order": oco_result}
 
     except Exception as e:
         logging.error(f"=== ERROR IN WEBHOOK ===")
