@@ -306,12 +306,51 @@ class TradovateClient:
             logging.error(f"Error cancelling all pending orders: {e}")
             raise HTTPException(status_code=500, detail="Internal server error cancelling orders")
 
-    async def get_all_positions(self):
+    async def place_oco_order(self, order1: dict, order2: dict):
         """
-        Retrieves all positions for the authenticated account.
+        Places an Order Cancels Order (OCO) order on Tradovate.
+        
+        Args:
+            order1 (dict): First order payload
+            order2 (dict): Second order payload
+            
+        Returns:
+            dict: The response from the Tradovate API.
+        """
+        if not self.access_token:
+            await self.authenticate()
+
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json"
+        }
+
+        # OCO requires a different format - orders as an array
+        oco_payload = {
+            "orders": [order1, order2]
+        }
+
+        try:
+            async with httpx.AsyncClient() as client:
+                logging.debug(f"Sending OCO order payload: {json.dumps(oco_payload, indent=2)}")
+                response = await client.post(f"{BASE_URL}/order/placeoco", json=oco_payload, headers=headers)
+                response.raise_for_status()
+                response_data = response.json()
+                logging.info(f"OCO order response: {json.dumps(response_data, indent=2)}")
+                return response_data
+        except httpx.HTTPStatusError as e:
+            logging.error(f"OCO order placement failed: {e.response.text}")
+            raise HTTPException(status_code=e.response.status_code, detail=f"OCO order placement failed: {e.response.text}")
+        except Exception as e:
+            logging.error(f"Unexpected error during OCO order placement: {e}")
+            raise HTTPException(status_code=500, detail="Internal server error during OCO order placement")
+
+    async def get_positions(self):
+        """
+        Retrieves all open positions for the authenticated account.
 
         Returns:
-            list: List of positions.
+            list: List of open positions.
         """
         if not self.access_token:
             await self.authenticate()
@@ -327,15 +366,10 @@ class TradovateClient:
                 response.raise_for_status()
                 positions = response.json()
                 
-                # Filter for non-zero positions
+                # Filter for open positions only (netPos != 0)
                 open_positions = [pos for pos in positions if pos.get("netPos", 0) != 0]
-                logging.info(f"🔍 Found {len(open_positions)} open positions")
-                
-                for pos in open_positions:
-                    symbol = pos.get("symbol", "Unknown")
-                    net_pos = pos.get("netPos", 0)
-                    logging.info(f"📊 Position: {symbol} - Net: {net_pos}")
-                
+                logging.info(f"Found {len(open_positions)} open positions")
+                logging.debug(f"Open positions: {json.dumps(open_positions, indent=2)}")
                 return open_positions
                 
         except httpx.HTTPStatusError as e:
@@ -345,13 +379,12 @@ class TradovateClient:
             logging.error(f"Unexpected error getting positions: {e}")
             raise HTTPException(status_code=500, detail="Internal server error getting positions")
 
-    async def close_position_at_market(self, symbol: str, quantity: int):
+    async def close_position(self, symbol: str):
         """
-        Closes a position at market price immediately.
+        Closes a specific position by symbol using a market order.
 
         Args:
-            symbol (str): The symbol to close
-            quantity (int): The quantity to close (positive for long, negative for short)
+            symbol (str): The symbol of the position to close.
 
         Returns:
             dict: The response from the Tradovate API.
@@ -364,154 +397,87 @@ class TradovateClient:
             "Content-Type": "application/json"
         }
 
-        # Determine the action to close the position
-        if quantity > 0:
-            action = "Sell"  # Close long position
-        else:
-            action = "Buy"   # Close short position
-            quantity = abs(quantity)  # Make quantity positive
-
-        market_order_payload = {
-            "accountSpec": self.account_spec,
-            "accountId": self.account_id,
-            "action": action,
-            "symbol": symbol,
-            "orderQty": quantity,
-            "orderType": "Market",
-            "timeInForce": "IOC",  # Immediate or Cancel
-            "isAutomated": True
-        }
-
+        # First, get the current position for this symbol
         try:
+            positions = await self.get_positions()
+            target_position = None
+            
+            for position in positions:
+                if position.get("symbol") == symbol:
+                    target_position = position
+                    break
+            
+            if not target_position:
+                logging.info(f"No open position found for symbol {symbol}")
+                return {"status": "no_position", "message": f"No open position for {symbol}"}
+            
+            net_pos = target_position.get("netPos", 0)
+            if net_pos == 0:
+                logging.info(f"Position for {symbol} already closed (netPos = 0)")
+                return {"status": "already_closed", "message": f"Position for {symbol} already closed"}
+            
+            # Determine the action needed to close the position
+            # If netPos > 0 (long position), we need to sell to close
+            # If netPos < 0 (short position), we need to buy to close
+            close_action = "Sell" if net_pos > 0 else "Buy"
+            close_quantity = abs(net_pos)
+            
+            logging.info(f"Closing position for {symbol}: netPos={net_pos}, action={close_action}, qty={close_quantity}")
+            
+            # Create market order to close position
+            close_order = {
+                "accountSpec": self.account_spec,
+                "accountId": self.account_id,
+                "action": close_action,
+                "symbol": symbol,
+                "orderQty": close_quantity,
+                "orderType": "Market",
+                "timeInForce": "GTC",
+                "isAutomated": True
+            }
+            
+            # Place the closing order
             async with httpx.AsyncClient() as client:
-                logging.info(f"🔥 Placing market order to close position: {symbol} - {action} {quantity}")
-                logging.debug(f"Market order payload: {json.dumps(market_order_payload, indent=2)}")
-                response = await client.post(f"{BASE_URL}/order/placeorder", json=market_order_payload, headers=headers)
+                logging.debug(f"Placing position close order: {json.dumps(close_order, indent=2)}")
+                response = await client.post(f"{BASE_URL}/order/placeorder", json=close_order, headers=headers)
                 response.raise_for_status()
                 response_data = response.json()
-                logging.info(f"✅ Market order placed successfully: {json.dumps(response_data, indent=2)}")
+                logging.info(f"Position close order placed: {json.dumps(response_data, indent=2)}")
                 return response_data
                 
         except httpx.HTTPStatusError as e:
-            logging.error(f"❌ Market order placement failed: {e.response.text}")
-            raise HTTPException(status_code=e.response.status_code, detail=f"Market order placement failed: {e.response.text}")
+            logging.error(f"Failed to close position for {symbol}: {e.response.text}")
+            raise HTTPException(status_code=e.response.status_code, detail=f"Failed to close position: {e.response.text}")
         except Exception as e:
-            logging.error(f"❌ Unexpected error during market order placement: {e}")
-            raise HTTPException(status_code=500, detail="Internal server error during market order placement")
+            logging.error(f"Unexpected error closing position for {symbol}: {e}")
+            raise HTTPException(status_code=500, detail="Internal server error closing position")
 
     async def close_all_positions(self):
         """
-        Closes all open positions at market price.
+        Closes all open positions for the authenticated account.
 
         Returns:
-            list: List of market order responses.
+            list: List of close order responses.
         """
-        logging.info("🔥 STARTING AGGRESSIVE POSITION CLOSURE")
-        
         try:
-            positions = await self.get_all_positions()
-            closed_orders = []
-            
-            if not positions:
-                logging.info("✅ No open positions to close")
-                return closed_orders
+            positions = await self.get_positions()
+            closed_positions = []
             
             for position in positions:
                 symbol = position.get("symbol")
                 net_pos = position.get("netPos", 0)
                 
-                if net_pos != 0:
-                    logging.info(f"🔥 Closing position: {symbol} - Net: {net_pos}")
+                if symbol and net_pos != 0:
                     try:
-                        result = await self.close_position_at_market(symbol, net_pos)
-                        closed_orders.append(result)
-                        logging.info(f"✅ Successfully placed close order for {symbol}")
-                        
-                        # Wait for market order execution
-                        await asyncio.sleep(3)
-                        
+                        result = await self.close_position(symbol)
+                        closed_positions.append(result)
+                        logging.info(f"Successfully closed position for {symbol}")
                     except Exception as e:
-                        logging.error(f"❌ Failed to close position {symbol}: {e}")
-            
-            # Verify positions are closed
-            await asyncio.sleep(2)
-            remaining_positions = await self.get_all_positions()
-            
-            if remaining_positions:
-                logging.warning(f"⚠️ Still have {len(remaining_positions)} open positions after closure attempts")
-                for pos in remaining_positions:
-                    symbol = pos.get("symbol", "Unknown")
-                    net_pos = pos.get("netPos", 0)
-                    logging.warning(f"⚠️ Remaining position: {symbol} - Net: {net_pos}")
-            else:
-                logging.info("✅ All positions successfully closed")
+                        logging.error(f"Failed to close position for {symbol}: {e}")
                         
-            logging.info(f"Closed {len(closed_orders)} positions")
-            return closed_orders
+            logging.info(f"Closed {len(closed_positions)} positions")
+            return closed_positions
             
         except Exception as e:
-            logging.error(f"❌ Error closing all positions: {e}")
+            logging.error(f"Error closing all positions: {e}")
             raise HTTPException(status_code=500, detail="Internal server error closing positions")
-
-    async def force_close_all_positions_immediately(self):
-        """
-        Aggressively closes all positions using multiple methods as fallbacks.
-
-        Returns:
-            bool: True if all positions were closed successfully.
-        """
-        logging.info("🔥🔥🔥 FORCE CLOSING ALL POSITIONS IMMEDIATELY")
-        
-        try:
-            # Method 1: Standard position closure
-            logging.info("🔥 Method 1: Standard market orders")
-            await self.close_all_positions()
-            
-            # Wait and verify
-            await asyncio.sleep(3)
-            positions = await self.get_all_positions()
-            
-            if not positions:
-                logging.info("✅ All positions closed via standard method")
-                return True
-            
-            # Method 2: Position liquidation API
-            logging.info("🔥 Method 2: Position liquidation API")
-            if not self.access_token:
-                await self.authenticate()
-
-            headers = {
-                "Authorization": f"Bearer {self.access_token}",
-                "Content-Type": "application/json"
-            }
-            
-            for position in positions:
-                symbol = position.get("symbol")
-                try:
-                    async with httpx.AsyncClient() as client:
-                        liquidate_payload = {"symbol": symbol}
-                        response = await client.post(f"{BASE_URL}/position/closeposition", 
-                                                   json=liquidate_payload, headers=headers)
-                        response.raise_for_status()
-                        logging.info(f"✅ Liquidated position via API: {symbol}")
-                except Exception as e:
-                    logging.error(f"❌ Failed to liquidate {symbol} via API: {e}")
-            
-            # Final verification
-            await asyncio.sleep(3)
-            final_positions = await self.get_all_positions()
-            
-            if not final_positions:
-                logging.info("✅ All positions closed via liquidation API")
-                return True
-            else:
-                logging.error(f"❌ CRITICAL: Still have {len(final_positions)} positions after aggressive closure")
-                for pos in final_positions:
-                    symbol = pos.get("symbol", "Unknown")
-                    net_pos = pos.get("netPos", 0)
-                    logging.error(f"❌ REMAINING: {symbol} - Net: {net_pos}")
-                return False
-                
-        except Exception as e:
-            logging.error(f"❌ CRITICAL ERROR in force close: {e}")
-            return False
