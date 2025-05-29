@@ -347,7 +347,6 @@ async def webhook(req: Request):
             ],
             "osoOrders": [
                 {
-                    "action": str(exit_action),
                     "orders": [
                         {
                             "action": str(exit_action),
@@ -371,7 +370,9 @@ async def webhook(req: Request):
                             "oco": True,
                             "ocoGroup": 1
                         }
-                    ]
+                    ],
+                    "oco": True,
+                    "ocoGroup": 1
                 }
             ]
         }
