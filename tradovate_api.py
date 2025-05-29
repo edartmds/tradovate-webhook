@@ -481,3 +481,112 @@ class TradovateClient:
         except Exception as e:
             logging.error(f"Error closing all positions: {e}")
             raise HTTPException(status_code=500, detail="Internal server error closing positions")
+
+    async def force_close_all_positions_immediately(self):
+        """
+        🔥 CRITICAL FIX: Aggressively closes ALL open positions immediately using multiple methods.
+        
+        This method uses a multi-step approach with fallbacks to ensure positions are closed:
+        1. Market orders with IOC (Immediate or Cancel) execution
+        2. Position flattening API calls 
+        3. Multiple verification attempts
+        4. Aggressive fallback methods
+        
+        Returns:
+            bool: True if all positions successfully closed, False otherwise
+        """
+        if not self.access_token:
+            await self.authenticate()
+
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json"
+        }
+        
+        max_attempts = 5  # Maximum attempts to close positions
+        
+        for attempt in range(max_attempts):
+            try:
+                logging.info(f"🔥 Force position closure attempt {attempt + 1}/{max_attempts}")
+                
+                # Step 1: Get all open positions
+                positions = await self.get_positions()
+                if not positions:
+                    logging.info("✅ No open positions found - all positions closed successfully")
+                    return True
+                
+                logging.info(f"🔥 Found {len(positions)} open positions to close")
+                
+                # Step 2: Close each position with multiple methods
+                for position in positions:
+                    symbol = position.get("symbol")
+                    net_pos = position.get("netPos", 0)
+                    
+                    if symbol and net_pos != 0:
+                        logging.info(f"🔥 Closing position {symbol} with netPos={net_pos}")
+                        
+                        # Method 1: Market order with IOC execution
+                        try:
+                            close_action = "Sell" if net_pos > 0 else "Buy"
+                            close_quantity = abs(net_pos)
+                            
+                            market_order = {
+                                "accountSpec": self.account_spec,
+                                "accountId": self.account_id,
+                                "action": close_action,
+                                "symbol": symbol,
+                                "orderQty": close_quantity,
+                                "orderType": "Market",
+                                "timeInForce": "IOC",  # Immediate or Cancel for fastest execution
+                                "isAutomated": True
+                            }
+                            
+                            async with httpx.AsyncClient() as client:
+                                response = await client.post(f"{BASE_URL}/order/placeorder", json=market_order, headers=headers)
+                                response.raise_for_status()
+                                logging.info(f"✅ Market order placed to close {symbol}")
+                                
+                        except Exception as e:
+                            logging.error(f"❌ Market order failed for {symbol}: {e}")
+                            
+                            # Method 2: Position flattening API call (fallback)
+                            try:
+                                async with httpx.AsyncClient() as client:
+                                    flatten_response = await client.post(
+                                        f"{BASE_URL}/position/closeposition", 
+                                        json={"symbol": symbol}, 
+                                        headers=headers
+                                    )
+                                    flatten_response.raise_for_status()
+                                    logging.info(f"✅ Position flattening called for {symbol}")
+                            except Exception as e2:
+                                logging.error(f"❌ Position flattening failed for {symbol}: {e2}")
+                
+                # Step 3: Wait a moment for orders to execute
+                await asyncio.sleep(2)
+                
+                # Step 4: Verify all positions are closed
+                final_positions = await self.get_positions()
+                if not final_positions:
+                    logging.info("✅ All positions successfully closed!")
+                    return True
+                else:
+                    logging.warning(f"❌ {len(final_positions)} positions still open after attempt {attempt + 1}")
+                    
+            except Exception as e:
+                logging.error(f"❌ Error during force position closure attempt {attempt + 1}: {e}")
+                
+        # If we get here, some positions may still be open
+        try:
+            remaining_positions = await self.get_positions()
+            if remaining_positions:
+                logging.error(f"❌ CRITICAL: {len(remaining_positions)} positions still open after all attempts!")
+                for pos in remaining_positions:
+                    logging.error(f"❌ Remaining position: {pos.get('symbol')} netPos={pos.get('netPos', 0)}")
+                return False
+            else:
+                logging.info("✅ All positions finally closed")
+                return True
+        except Exception as e:
+            logging.error(f"❌ Error checking final positions: {e}")
+            return False
