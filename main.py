@@ -212,22 +212,66 @@ async def webhook(req: Request):
             logging.info(f"Successfully cancelled {len(cancelled_orders)} pending orders")
         except Exception as e:
             logging.warning(f"Failed to cancel some orders: {e}")
-            # Continue with position closure even if cancellation partially fails
-
-        # STEP 2: Close all existing positions (including any position left open after cancelling TP/SL)
+            # Continue with position closure even if cancellation partially fails        # STEP 2: Close all existing positions (including any position left open after cancelling TP/SL)
         logging.info("=== CLOSING ALL EXISTING POSITIONS ===")
         try:
-            closed_positions = await client.close_all_positions()
-            logging.info(f"Successfully closed {len(closed_positions)} positions")
-            
-            # Add small delay to ensure market orders are fully processed
-            if closed_positions:
-                logging.info("Waiting for position closure to fully process...")
-                await asyncio.sleep(2)  # 2 second delay for market order execution
+            # First, get current positions to see what we're working with
+            current_positions = await client.get_positions()
+            logging.info(f"Found {len(current_positions)} positions before closure attempt:")
+            for pos in current_positions:
+                symbol_pos = pos.get("symbol")
+                net_pos = pos.get("netPos", 0)
+                unrealized_pnl = pos.get("unrealizedPnL", 0)
+                logging.info(f"  - {symbol_pos}: netPos={net_pos}, unrealizedPnL=${unrealized_pnl}")
+              # If we have open positions, close them
+            if any(pos.get("netPos", 0) != 0 for pos in current_positions):
+                logging.info("🔥 DETECTED OPEN POSITIONS - CLOSING WITH MARKET ORDERS")
+                
+                # First try the standard method
+                try:
+                    closed_positions = await client.close_all_positions()
+                    logging.info(f"✅ Standard closure initiated for {len(closed_positions)} positions")
+                except Exception as e:
+                    logging.warning(f"⚠️ Standard closure failed: {e}")
+                    closed_positions = []
+                
+                # Wait for market orders to execute
+                await asyncio.sleep(1.5)
+                
+                # Check if positions are still open
+                check_positions = await client.get_positions()
+                still_open = [pos for pos in check_positions if pos.get("netPos", 0) != 0]
+                
+                if still_open:
+                    logging.warning(f"⚠️ {len(still_open)} positions still open after standard closure - using FORCE CLOSE")
+                    for pos in still_open:
+                        logging.warning(f"  - Still open: {pos.get('symbol')} netPos={pos.get('netPos', 0)}")
+                    
+                    # Use aggressive force close method
+                    try:
+                        force_closed = await client.force_close_all_positions_immediately()
+                        logging.info(f"🔥 Force closed {len(force_closed)} positions")
+                    except Exception as force_error:
+                        logging.error(f"❌ Force close also failed: {force_error}")
+                
+                # Final verification
+                final_positions = await client.get_positions()
+                remaining_open = [pos for pos in final_positions if pos.get("netPos", 0) != 0]
+                
+                if remaining_open:
+                    logging.error(f"❌ CRITICAL: {len(remaining_open)} positions STILL OPEN after all closure attempts:")
+                    for pos in remaining_open:
+                        logging.error(f"    - {pos.get('symbol')}: netPos={pos.get('netPos', 0)}")
+                else:
+                    logging.info("✅ All positions successfully closed and verified")
+            else:
+                logging.info("ℹ️ No open positions found to close")
                 
         except Exception as e:
-            logging.warning(f"Failed to close some positions: {e}")
-            # Continue even if position closure partially fails
+            logging.error(f"❌ Failed to close positions: {e}")
+            import traceback
+            logging.error(f"Traceback: {traceback.format_exc()}")
+            # Continue even if position closure fails
 
         # STEP 2.5: Add extra delay to ensure cleanup is complete before placing new orders
         logging.info("=== ENSURING CLEAN SLATE BEFORE NEW ORDERS ===")
