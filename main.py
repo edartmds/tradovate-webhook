@@ -137,13 +137,13 @@ def hash_alert(data: dict) -> str:
     alert_string = json.dumps(data, sort_keys=True)
     return hashlib.sha256(alert_string.encode()).hexdigest()
 
-# Enhanced function to place a stop loss order
+# Direct API function to place a stop loss order (used as fallback)
 async def place_stop_loss_order(stop_order_data):
     """
-    Place a stop loss order using the Tradovate API.
-    This is a standalone function that ensures proper handling of stop loss order placement.
+    Place a stop loss order using direct Tradovate API calls.
+    This is a standalone function for emergency fallback.
     """
-    logging.info(f"Placing STOP LOSS order with data: {json.dumps(stop_order_data)}")
+    logging.info(f"DIRECT API: Placing STOP LOSS order with data: {json.dumps(stop_order_data)}")
     
     # Validate stop order data before placing
     required_fields = ["accountId", "symbol", "action", "orderQty", "orderType", "stopPrice"]
@@ -178,7 +178,7 @@ async def place_stop_loss_order(stop_order_data):
                     logging.error(error_msg)
                     return None, error_msg
                 else:
-                    logging.info(f"STOP LOSS order placed successfully with ID {stop_id}")
+                    logging.info(f"DIRECT API: STOP LOSS order placed successfully with ID {stop_id}")
                     logging.info(f"Full STOP LOSS order response: {stop_result}")
                     return stop_id, None
     except Exception as e:
@@ -186,6 +186,7 @@ async def place_stop_loss_order(stop_order_data):
         logging.error(error_msg)
         return None, error_msg
 
+# CRITICAL: Fixed monitor_all_orders function to properly handle stop loss placement
 async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
     """
     Monitor all orders and manage their relationships:
@@ -195,88 +196,114 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
     """
     logging.info(f"Starting comprehensive order monitoring for {symbol}")
     entry_filled = False
+    stop_placed = False
     monitoring_start_time = asyncio.get_event_loop().time()
     max_monitoring_time = 3600  # 1 hour timeout
+    
+    # Extra check for stop_order_data
+    if not stop_order_data:
+        logging.error("CRITICAL: No stop_order_data provided when starting monitoring")
+    else:
+        logging.info(f"Will use this STOP data when entry fills: {stop_order_data}")
+    
+    # Check orders every second
+    poll_interval = 1
     
     while True:
         try:
             headers = {"Authorization": f"Bearer {client.access_token}"}
             active_orders = {}
             logging.info(f"Order tracking state: {order_tracking}")
+            
             # Check status of all tracked orders
             for label, order_id in order_tracking.items():
                 if order_id is None:
-                    logging.info(f"Order {label} is not yet placed (order_id=None)")
                     continue
+                    
                 url = f"https://demo-api.tradovate.com/v1/order/{order_id}"
                 async with httpx.AsyncClient() as http_client:
                     response = await http_client.get(url, headers=headers)
                     response.raise_for_status()
                     order_status = response.json()
+                    
                 status = order_status.get("status")
-                logging.info(f"Order {label} (ID: {order_id}) status: {status} | Full order_status: {order_status}")
-                # Extra logging for debugging order status
+                
+                # Special focus on ENTRY order status
                 if label == "ENTRY":
-                    logging.info(f"ENTRY order current status: {status}")
+                    logging.info(f"CRITICAL: ENTRY order (ID: {order_id}) status: {status}")
+                else:
+                    logging.info(f"Order {label} (ID: {order_id}) status: {status}")
                 
                 if status and status.lower() == "filled":
-                    if label == "ENTRY" and not entry_filled:
-                        logging.info(f"CRITICAL: ENTRY order filled! Now placing STOP LOSS order for protection.")
+                    # CRITICAL: If ENTRY is filled and we haven't placed stop loss yet
+                    if label == "ENTRY" and not entry_filled and not stop_placed:
+                        logging.info(f"==========================================")
+                        logging.info(f"CRITICAL: ENTRY ORDER FILLED! Placing stop loss now!")
+                        logging.info(f"==========================================")
                         entry_filled = True
-                        logging.info(f"STOP LOSS order data to be used: {stop_order_data}")
                         
                         # Now place the STOP LOSS order since we're in position
                         if stop_order_data:
-                            try:
-                                logging.info(f"CRITICAL: Placing STOP LOSS order with data: {json.dumps(stop_order_data)}")
-                                
-                                # Double check stop price field
-                                if "stopPrice" not in stop_order_data:
-                                    logging.error("CRITICAL ERROR: stopPrice missing from stop_order_data")
-                                    if "price" in stop_order_data:
-                                        stop_order_data["stopPrice"] = stop_order_data["price"]
-                                        logging.info(f"Using price field instead: {stop_order_data['stopPrice']}")
-                                    else:
-                                        # Try to find STOP field in the original data
-                                        # This would be a fallback if the data got lost somewhere
-                                        logging.error("No price information found for STOP order! Aborting stop loss placement.")
-                                        return
-                                
-                                # Ensure we've set the order type correctly for the stop loss
-                                stop_order_data["orderType"] = "Stop"
-                                
-                                # Use TradovateClient.place_order method to place the stop loss
-                                logging.info("Trying primary placement method with client.place_order")
-                                stop_result = await client.place_order(
-                                    symbol=stop_order_data.get("symbol"),
-                                    action=stop_order_data.get("action"),
-                                    quantity=stop_order_data.get("orderQty", 1),
-                                    order_data=stop_order_data
-                                )
-                                
-                                if "id" not in stop_result:
-                                    logging.error(f"CRITICAL: STOP LOSS order placement failed: {stop_result}")
-                                    logging.error(f"Trying fallback method to place stop loss")
+                            # Try up to 3 times to place the stop loss
+                            for attempt in range(3):
+                                try:
+                                    logging.info(f"ATTEMPT #{attempt+1}: Placing STOP LOSS order")
                                     
-                                    # Try the direct API call from place_stop_loss_order as a fallback
+                                    # Make sure the stop price is set correctly
+                                    if "stopPrice" not in stop_order_data:
+                                        logging.error("CRITICAL: No stopPrice field in stop_order_data")
+                                        if "price" in stop_order_data:
+                                            stop_order_data["stopPrice"] = stop_order_data["price"]
+                                            logging.info(f"Using price field: {stop_order_data['stopPrice']}")
+                                    
+                                    # Make sure order type is set to Stop
+                                    stop_order_data["orderType"] = "Stop"
+                                    
+                                    # Try to place the stop loss order
+                                    stop_result = await client.place_order(
+                                        symbol=stop_order_data.get("symbol"),
+                                        action=stop_order_data.get("action"),
+                                        quantity=stop_order_data.get("orderQty", 1),
+                                        order_data=stop_order_data
+                                    )
+                                    
+                                    # Check if the order placement was successful
+                                    if "id" in stop_result:
+                                        stop_id = stop_result.get("id")
+                                        order_tracking["STOP"] = stop_id
+                                        stop_placed = True
+                                        logging.info(f"==========================================")
+                                        logging.info(f"STOP LOSS order placed successfully with ID {stop_id}")
+                                        logging.info(f"==========================================")
+                                        break
+                                    else:
+                                        logging.error(f"Stop order placement failed: {stop_result}")
+                                        # Wait a moment before retrying
+                                        await asyncio.sleep(1)
+                                        
+                                except Exception as e:
+                                    logging.error(f"Error placing stop loss (attempt {attempt+1}): {e}")
+                                    await asyncio.sleep(1)
+                            
+                            # If we still haven't placed the stop loss, try direct API call
+                            if not stop_placed:
+                                logging.error("All regular attempts failed, trying direct API call for stop loss")
+                                try:
                                     stop_id, error = await place_stop_loss_order(stop_order_data)
                                     if stop_id:
                                         order_tracking["STOP"] = stop_id
-                                        logging.info(f"CRITICAL: STOP LOSS order placed successfully with fallback method, ID: {stop_id}")
+                                        stop_placed = True
+                                        logging.info(f"STOP LOSS placed via direct API with ID {stop_id}")
                                     else:
-                                        logging.error(f"Position will remain UNPROTECTED by stop loss! Failed with error: {error}")
-                                else:
-                                    stop_id = stop_result.get("id")
-                                    order_tracking["STOP"] = stop_id
-                                    logging.info(f"CRITICAL: STOP LOSS order placed successfully with ID {stop_id}")
-                                    logging.info(f"Full STOP LOSS order response: {stop_result}")
-                            except Exception as e:
-                                logging.error(f"CRITICAL ERROR placing STOP LOSS order after ENTRY fill: {e}")
-                                logging.error(f"STOP LOSS order data: {json.dumps(stop_order_data)}")
-                                logging.error(f"Position will remain UNPROTECTED by stop loss!")
+                                        logging.error(f"Direct API STOP LOSS placement failed: {error}")
+                                        logging.error(f"POSITION REMAINS UNPROTECTED!")
+                                except Exception as e:
+                                    logging.error(f"Exception in direct API stop loss placement: {e}")
+                                    logging.error("POSITION REMAINS UNPROTECTED!")
                         else:
-                            logging.error("CRITICAL: No stop_order_data provided - position will remain UNPROTECTED!")
-                        
+                            logging.error("No stop_order_data available - position unprotected!")
+                    
+                    # If TP1 is filled, cancel the stop loss
                     elif label == "TP1" and entry_filled:
                         logging.info(f"TP1 order filled! Cancelling STOP order.")
                         if order_tracking.get("STOP"):
@@ -287,46 +314,53 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                                     if resp.status_code == 200:
                                         logging.info(f"STOP order {order_tracking['STOP']} cancelled after TP1 fill.")
                                     else:
-                                        logging.warning(f"Failed to cancel STOP order {order_tracking['STOP']} after TP1 fill. Status: {resp.status_code}")
+                                        logging.warning(f"Failed to cancel STOP order after TP1 fill. Status: {resp.status_code}")
                             except Exception as e:
                                 logging.error(f"Exception while cancelling STOP order after TP1 fill: {e}")
-                        else:
-                            logging.info("No STOP order to cancel after TP1 fill.")
                         return  # Exit monitoring
-                        
+                    
+                    # If stop loss is filled, cancel the take profit
                     elif label == "STOP" and entry_filled:
-                        logging.info(f"STOP order filled! Cancelling TP orders.")
+                        logging.info(f"STOP order filled! Cancelling TP1 order.")
                         if order_tracking.get("TP1"):
                             cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{order_tracking['TP1']}"
-                            async with httpx.AsyncClient() as http_client:
-                                await http_client.post(cancel_url, headers=headers)
+                            try:
+                                async with httpx.AsyncClient() as http_client:
+                                    resp = await http_client.post(cancel_url, headers=headers)
+                                    if resp.status_code == 200:
+                                        logging.info(f"TP1 order {order_tracking['TP1']} cancelled after STOP fill.")
+                                    else:
+                                        logging.warning(f"Failed to cancel TP1 order after STOP fill. Status: {resp.status_code}")
+                            except Exception as e:
+                                logging.error(f"Exception while cancelling TP1 order after STOP fill: {e}")
                         return  # Exit monitoring
                         
                 elif status in ["Working", "Accepted"]:
                     active_orders[label] = order_id
-                elif status in ["Cancelled", "Rejected"]:
-                    logging.info(f"Order {label} was {status}")
                     
-            # Check if monitoring has been running too long
+            # Check if we've been monitoring too long
             if asyncio.get_event_loop().time() - monitoring_start_time > max_monitoring_time:
-                logging.warning(f"Order monitoring timeout reached for {symbol}. Stopping monitoring.")
+                logging.warning(f"Order monitoring timeout reached for {symbol}. Stopping.")
                 return
-                
+            
             # If no active orders remain, stop monitoring
             if not active_orders:
                 logging.info("No active orders remaining. Stopping monitoring.")
                 return
+            
+            # Check 2x per second if entry has been filled
+            if not entry_filled:
+                poll_interval = 0.5
+            else:
+                poll_interval = 1
                 
-            await asyncio.sleep(1)
+            await asyncio.sleep(poll_interval)
             
         except Exception as e:
-            logging.error(f"Error in comprehensive order monitoring: {e}")
+            logging.error(f"Error in order monitoring: {e}")
             await asyncio.sleep(5)
 
 
-# Webhook endpoint (cleaned up, no deduplication, no market data fallback, no legacy logic)
-
-# Suppress repeated same-direction alerts: only act on direction change
 @app.post("/webhook")
 async def webhook(req: Request):
     logging.info("Webhook endpoint hit.")
@@ -367,7 +401,9 @@ async def webhook(req: Request):
                 return {"status": "ignored", "reason": "Same direction as last processed alert"}
 
         # Update last_alert for this symbol
-        last_alert[symbol] = {"direction": direction, "timestamp": now}        # Reset order tracking for the new alert
+        last_alert[symbol] = {"direction": direction, "timestamp": now}
+
+        # Reset order tracking for the new alert
         order_tracking = {
             "ENTRY": None,
             "TP1": None, 
@@ -448,10 +484,9 @@ async def webhook(req: Request):
         else:
             logging.warning("STOP not found in alert data - no stop loss order will be placed")
 
-        logging.info(f"Order plan created with {len(order_plan)} orders (STOP LOSS will be placed after ENTRY fill)")
-
         # Initialize variables for tracking orders
         order_results = []
+        # NOTE: We intentionally initialize this AFTER preparing stop_order_data
         order_tracking = {
             "ENTRY": None,
             "TP1": None, 
@@ -484,7 +519,7 @@ async def webhook(req: Request):
                 )
                 logging.info(f"Order placed successfully: {result}")
                 if order['label'] == 'ENTRY':
-                    logging.info(f"ENTRY order API response: {result}")
+                    logging.info(f"CRITICAL: ENTRY order API response: {result}")
                 order_id = result.get("id")
                 order_tracking[order["label"]] = order_id
                 order_results.append({order["label"]: result})
@@ -507,4 +542,4 @@ async def webhook(req: Request):
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
+    uvicorn.run("fixed_stop_loss:app", host="0.0.0.0", port=port)
