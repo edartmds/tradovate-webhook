@@ -484,13 +484,13 @@ class TradovateClient:
 
     async def force_close_all_positions_immediately(self):
         """
-        🔥 CRITICAL FIX: Aggressively closes ALL open positions immediately using multiple methods.
+        🔥 ENHANCED CRITICAL FIX: Aggressively closes ALL positions and cancels ALL orders using multiple strategies.
         
-        This method uses a multi-step approach with fallbacks to ensure positions are closed:
-        1. Market orders with IOC (Immediate or Cancel) execution
-        2. Position flattening API calls 
-        3. Multiple verification attempts
-        4. Aggressive fallback methods
+        This method uses multiple approaches with fallbacks:
+        1. Cancel ALL pending orders first
+        2. Close all positions with Market orders using IOC execution
+        3. Multiple retry attempts with different order types
+        4. Position verification and cleanup
         
         Returns:
             bool: True if all positions successfully closed, False otherwise
@@ -503,7 +503,18 @@ class TradovateClient:
             "Content-Type": "application/json"
         }
         
-        max_attempts = 5  # Maximum attempts to close positions
+        logging.info("🔥🔥🔥 STARTING AGGRESSIVE POSITION AND ORDER CLEANUP 🔥🔥🔥")
+        
+        # STEP 1: Cancel ALL pending orders first
+        try:
+            logging.info("🔥 STEP 1: Cancelling ALL pending orders")
+            cancelled_orders = await self.cancel_all_pending_orders()
+            logging.info(f"✅ Cancelled {len(cancelled_orders)} pending orders")
+        except Exception as e:
+            logging.error(f"❌ Failed to cancel all orders: {e}")
+            # Continue anyway - we'll handle positions regardless
+        
+        max_attempts = 3
         
         for attempt in range(max_attempts):
             try:
@@ -517,7 +528,7 @@ class TradovateClient:
                 
                 logging.info(f"🔥 Found {len(positions)} open positions to close")
                 
-                # Step 2: Close each position with multiple methods
+                # Step 2: Close each position with IOC market orders (fastest execution)
                 for position in positions:
                     symbol = position.get("symbol")
                     net_pos = position.get("netPos", 0)
@@ -525,11 +536,12 @@ class TradovateClient:
                     if symbol and net_pos != 0:
                         logging.info(f"🔥 Closing position {symbol} with netPos={net_pos}")
                         
-                        # Method 1: Market order with IOC execution
+                        # Determine the action needed to close the position
+                        close_action = "Sell" if net_pos > 0 else "Buy"
+                        close_quantity = abs(net_pos)
+                        
+                        # Method 1: Market order with IOC execution (fastest)
                         try:
-                            close_action = "Sell" if net_pos > 0 else "Buy"
-                            close_quantity = abs(net_pos)
-                            
                             market_order = {
                                 "accountSpec": self.account_spec,
                                 "accountId": self.account_id,
@@ -544,26 +556,33 @@ class TradovateClient:
                             async with httpx.AsyncClient() as client:
                                 response = await client.post(f"{BASE_URL}/order/placeorder", json=market_order, headers=headers)
                                 response.raise_for_status()
-                                logging.info(f"✅ Market order placed to close {symbol}")
+                                result = response.json()
+                                logging.info(f"✅ IOC Market order placed to close {symbol}: {result}")
                                 
                         except Exception as e:
-                            logging.error(f"❌ Market order failed for {symbol}: {e}")
+                            logging.error(f"❌ IOC Market order failed for {symbol}: {e}")
                             
-                            # Method 2: Position flattening API call (fallback)
+                            # Method 2: Standard Market order (fallback)
                             try:
+                                market_order["timeInForce"] = "GTC"
                                 async with httpx.AsyncClient() as client:
-                                    flatten_response = await client.post(
-                                        f"{BASE_URL}/position/closeposition", 
-                                        json={"symbol": symbol}, 
-                                        headers=headers
-                                    )
-                                    flatten_response.raise_for_status()
-                                    logging.info(f"✅ Position flattening called for {symbol}")
+                                    response = await client.post(f"{BASE_URL}/order/placeorder", json=market_order, headers=headers)
+                                    response.raise_for_status()
+                                    result = response.json()
+                                    logging.info(f"✅ GTC Market order placed to close {symbol}: {result}")
+                                    
                             except Exception as e2:
-                                logging.error(f"❌ Position flattening failed for {symbol}: {e2}")
+                                logging.error(f"❌ GTC Market order failed for {symbol}: {e2}")
+                                
+                                # Method 3: Try to use the existing close_position method
+                                try:
+                                    result = await self.close_position(symbol)
+                                    logging.info(f"✅ Standard close_position method succeeded for {symbol}")
+                                except Exception as e3:
+                                    logging.error(f"❌ Standard close_position failed for {symbol}: {e3}")
                 
-                # Step 3: Wait a moment for orders to execute
-                await asyncio.sleep(2)
+                # Step 3: Wait for orders to execute
+                await asyncio.sleep(3)
                 
                 # Step 4: Verify all positions are closed
                 final_positions = await self.get_positions()
@@ -571,22 +590,3 @@ class TradovateClient:
                     logging.info("✅ All positions successfully closed!")
                     return True
                 else:
-                    logging.warning(f"❌ {len(final_positions)} positions still open after attempt {attempt + 1}")
-                    
-            except Exception as e:
-                logging.error(f"❌ Error during force position closure attempt {attempt + 1}: {e}")
-                
-        # If we get here, some positions may still be open
-        try:
-            remaining_positions = await self.get_positions()
-            if remaining_positions:
-                logging.error(f"❌ CRITICAL: {len(remaining_positions)} positions still open after all attempts!")
-                for pos in remaining_positions:
-                    logging.error(f"❌ Remaining position: {pos.get('symbol')} netPos={pos.get('netPos', 0)}")
-                return False
-            else:
-                logging.info("✅ All positions finally closed")
-                return True
-        except Exception as e:
-            logging.error(f"❌ Error checking final positions: {e}")
-            return False
