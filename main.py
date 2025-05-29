@@ -220,14 +220,35 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                 if label == "ENTRY" and not entry_filled:
                     entry_filled = True
 
-                    # Place the bracket orders (stop loss and take profit) after ENTRY is filled
+                    # Construct the JSON payload for the `placeOSO` API call
                     if stop_order_data:
+                        oso_payload = {
+                            "orders": [
+                                {
+                                    "action": stop_order_data.get("action"),
+                                    "symbol": stop_order_data.get("symbol"),
+                                    "orderQty": stop_order_data.get("orderQty", 1),
+                                    "orderType": "Stop",
+                                    "price": stop_order_data.get("stopPrice"),
+                                    "timeInForce": "GTC"
+                                },
+                                {
+                                    "action": "Sell" if stop_order_data.get("action") == "Buy" else "Buy",
+                                    "symbol": stop_order_data.get("symbol"),
+                                    "orderQty": stop_order_data.get("orderQty", 1),
+                                    "orderType": "Limit",
+                                    "price": stop_order_data.get("T1"),
+                                    "timeInForce": "GTC"
+                                }
+                            ]
+                        }
+
                         try:
                             async with httpx.AsyncClient() as http_client:
                                 response = await http_client.post(
                                     f"https://demo-api.tradovate.com/v1/order/placeOSO",
                                     headers={"Authorization": f"Bearer {client.access_token}", "Content-Type": "application/json"},
-                                    json=stop_order_data
+                                    json=oso_payload
                                 )
                                 response.raise_for_status()
                                 oso_result = response.json()
