@@ -226,13 +226,27 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                         
                         # Now place the STOP LOSS order since we're in position
                         if stop_order_data:
-                            # Use the dedicated function to place the stop loss order
-                            stop_id, error = await place_stop_loss_order(stop_order_data)
-                            if stop_id:
-                                order_tracking["STOP"] = stop_id
-                                logging.info(f"Successfully added STOP LOSS order with ID {stop_id} to tracking")
-                            else:
-                                logging.error(f"Failed to place STOP LOSS order: {error}")
+                            try:
+                                logging.info(f"Placing STOP LOSS order with data: {json.dumps(stop_order_data)}")
+                                # Use TradovateClient.place_order method to place the stop loss
+                                stop_result = await client.place_order(
+                                    symbol=stop_order_data.get("symbol"),
+                                    action=stop_order_data.get("action"),
+                                    quantity=stop_order_data.get("orderQty", 1),
+                                    order_data=stop_order_data
+                                )
+                                
+                                if "id" not in stop_result:
+                                    logging.error(f"STOP LOSS order placement failed: {stop_result}")
+                                    logging.error(f"Position will remain UNPROTECTED by stop loss!")
+                                else:
+                                    stop_id = stop_result.get("id")
+                                    order_tracking["STOP"] = stop_id
+                                    logging.info(f"STOP LOSS order placed successfully with ID {stop_id}")
+                                    logging.info(f"Full STOP LOSS order response: {stop_result}")
+                            except Exception as e:
+                                logging.error(f"Error placing STOP LOSS order after ENTRY fill: {e}")
+                                logging.error(f"STOP LOSS order data: {json.dumps(stop_order_data)}")
                                 logging.error(f"Position will remain UNPROTECTED by stop loss!")
                         else:
                             logging.warning("No stop_order_data provided - position will remain UNPROTECTED!")
@@ -327,12 +341,10 @@ async def webhook(req: Request):
                 return {"status": "ignored", "reason": "Same direction as last processed alert"}
 
         # Update last_alert for this symbol
-        last_alert[symbol] = {"direction": direction, "timestamp": now}
-
-        # Reset order tracking for the new alert
+        last_alert[symbol] = {"direction": direction, "timestamp": now}        # Reset order tracking for the new alert
         order_tracking = {
             "ENTRY": None,
-            "TP1": None,
+            "TP1": None, 
             "STOP": None  # Will be set after ENTRY is filled
         }
 
