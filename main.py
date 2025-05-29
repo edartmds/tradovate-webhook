@@ -1,15 +1,16 @@
 import os
-from datetime import timedelta
-last_alert = {}  # {symbol: {"direction": "buy"/"sell", "timestamp": datetime}}
 import logging
-from datetime import datetime
+import json
+import asyncio
+from datetime import datetime, timedelta
 from fastapi import FastAPI, Request, HTTPException
 from tradovate_api import TradovateClient
 import uvicorn
 import httpx
-import json
 import hashlib
-import asyncio
+
+# Dictionary to track last alerts to prevent duplicates
+last_alert = {}  # {symbol: {"direction": "buy"/"sell", "timestamp": datetime}}
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 logging.info(f"Loaded WEBHOOK_SECRET: {WEBHOOK_SECRET}")
@@ -220,15 +221,32 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                 
                 if status and status.lower() == "filled":
                     if label == "ENTRY" and not entry_filled:
-                        logging.info(f"ENTRY order filled! Now placing STOP LOSS order for protection.")
+                        logging.info(f"CRITICAL: ENTRY order filled! Now placing STOP LOSS order for protection.")
                         entry_filled = True
                         logging.info(f"STOP LOSS order data to be used: {stop_order_data}")
                         
                         # Now place the STOP LOSS order since we're in position
                         if stop_order_data:
                             try:
-                                logging.info(f"Placing STOP LOSS order with data: {json.dumps(stop_order_data)}")
+                                logging.info(f"CRITICAL: Placing STOP LOSS order with data: {json.dumps(stop_order_data)}")
+                                
+                                # Double check stop price field
+                                if "stopPrice" not in stop_order_data:
+                                    logging.error("CRITICAL ERROR: stopPrice missing from stop_order_data")
+                                    if "price" in stop_order_data:
+                                        stop_order_data["stopPrice"] = stop_order_data["price"]
+                                        logging.info(f"Using price field instead: {stop_order_data['stopPrice']}")
+                                    else:
+                                        # Try to find STOP field in the original data
+                                        # This would be a fallback if the data got lost somewhere
+                                        logging.error("No price information found for STOP order! Aborting stop loss placement.")
+                                        return
+                                
+                                # Ensure we've set the order type correctly for the stop loss
+                                stop_order_data["orderType"] = "Stop"
+                                
                                 # Use TradovateClient.place_order method to place the stop loss
+                                logging.info("Trying primary placement method with client.place_order")
                                 stop_result = await client.place_order(
                                     symbol=stop_order_data.get("symbol"),
                                     action=stop_order_data.get("action"),
@@ -237,19 +255,27 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                                 )
                                 
                                 if "id" not in stop_result:
-                                    logging.error(f"STOP LOSS order placement failed: {stop_result}")
-                                    logging.error(f"Position will remain UNPROTECTED by stop loss!")
+                                    logging.error(f"CRITICAL: STOP LOSS order placement failed: {stop_result}")
+                                    logging.error(f"Trying fallback method to place stop loss")
+                                    
+                                    # Try the direct API call from place_stop_loss_order as a fallback
+                                    stop_id, error = await place_stop_loss_order(stop_order_data)
+                                    if stop_id:
+                                        order_tracking["STOP"] = stop_id
+                                        logging.info(f"CRITICAL: STOP LOSS order placed successfully with fallback method, ID: {stop_id}")
+                                    else:
+                                        logging.error(f"Position will remain UNPROTECTED by stop loss! Failed with error: {error}")
                                 else:
                                     stop_id = stop_result.get("id")
                                     order_tracking["STOP"] = stop_id
-                                    logging.info(f"STOP LOSS order placed successfully with ID {stop_id}")
+                                    logging.info(f"CRITICAL: STOP LOSS order placed successfully with ID {stop_id}")
                                     logging.info(f"Full STOP LOSS order response: {stop_result}")
                             except Exception as e:
-                                logging.error(f"Error placing STOP LOSS order after ENTRY fill: {e}")
+                                logging.error(f"CRITICAL ERROR placing STOP LOSS order after ENTRY fill: {e}")
                                 logging.error(f"STOP LOSS order data: {json.dumps(stop_order_data)}")
                                 logging.error(f"Position will remain UNPROTECTED by stop loss!")
                         else:
-                            logging.warning("No stop_order_data provided - position will remain UNPROTECTED!")
+                            logging.error("CRITICAL: No stop_order_data provided - position will remain UNPROTECTED!")
                         
                     elif label == "TP1" and entry_filled:
                         logging.info(f"TP1 order filled! Cancelling STOP order.")
