@@ -11,6 +11,7 @@ import hashlib
 
 # Dictionary to track last alerts to prevent duplicates
 last_alert = {}  # {symbol: {"direction": "buy"/"sell", "timestamp": datetime}}
+active_orders = []  # Track active order IDs to manage cancellation
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 logging.info(f"Loaded WEBHOOK_SECRET: {WEBHOOK_SECRET}")
@@ -41,6 +42,15 @@ async def startup_event():
         logging.info(f"Account ID: {client.account_id}")
         logging.info(f"Account Spec: {client.account_spec}")
         logging.info(f"Access Token: {'***' if client.access_token else 'None'}")
+        
+        # Cancel any existing pending orders on startup to start clean
+        logging.info("=== CLEANING UP EXISTING ORDERS ON STARTUP ===")
+        try:
+            cancelled_orders = await client.cancel_all_pending_orders()
+            logging.info(f"Startup cleanup: Cancelled {len(cancelled_orders)} existing pending orders")
+        except Exception as e:
+            logging.warning(f"Startup cleanup failed (non-critical): {e}")
+            
     except Exception as e:
         logging.error(f"=== AUTHENTICATION FAILED ===")
         logging.error(f"Error: {e}")
@@ -149,56 +159,14 @@ def hash_alert(data: dict) -> str:
     alert_string = json.dumps(data, sort_keys=True)
     return hashlib.sha256(alert_string.encode()).hexdigest()
 
-# Direct API function to place a stop loss order (used as fallback)
-async def place_stop_loss_order(stop_order_data):
+# Direct API function to place a stop loss order (DEPRECATED - using OCO/OSO instead)
+async def place_stop_loss_order_legacy(stop_order_data):
     """
-    Place a stop loss order using direct Tradovate API calls.
-    This is a standalone function for emergency fallback.
+    DEPRECATED: This function is kept for reference only.
+    We now use OCO/OSO bracket orders instead of manual stop loss placement.
     """
-    logging.info(f"DIRECT API: Placing STOP LOSS order with data: {json.dumps(stop_order_data)}")
-    
-    # Validate stop order data before placing
-    required_fields = ["accountId", "symbol", "action", "orderQty", "orderType", "stopPrice"]
-    for field in required_fields:
-        if field not in stop_order_data:
-            error_msg = f"Missing required field in stop_order_data: {field}"
-            logging.error(error_msg)
-            return None, error_msg
-    
-    # Place STOP LOSS order using direct API call
-    place_url = "https://demo-api.tradovate.com/v1/order/placeorder"
-    headers = {"Authorization": f"Bearer {client.access_token}", "Content-Type": "application/json"}
-    
-    try:
-        async with httpx.AsyncClient() as http_client:
-            response = await http_client.post(
-                place_url,
-                headers=headers,
-                json=stop_order_data
-            )
-            response.raise_for_status()
-            stop_result = response.json()
-            
-            if "errorText" in stop_result:
-                error_msg = f"STOP LOSS order placement failed with API error: {stop_result['errorText']}"
-                logging.error(error_msg)
-                return None, error_msg
-            else:
-                stop_id = stop_result.get("id")
-                if not stop_id:
-                    error_msg = f"STOP LOSS order placement returned no order ID: {stop_result}"
-                    logging.error(error_msg)
-                    return None, error_msg
-                else:
-                    logging.info(f"DIRECT API: STOP LOSS order placed successfully with ID {stop_id}")
-                    logging.info(f"Full STOP LOSS order response: {stop_result}")
-                    return stop_id, None
-    except Exception as e:
-        error_msg = f"Error placing STOP LOSS order: {e}"
-        logging.error(error_msg)
-        return None, error_msg
-
-# CRITICAL: Fixed monitor_all_orders function to properly handle stop loss placement
+    logging.warning("DEPRECATED: place_stop_loss_order_legacy called - use OCO/OSO instead")
+    return None, "DEPRECATED: Use OCO/OSO bracket orders instead"
 async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
     """
     Monitor all orders and manage their relationships:
@@ -389,11 +357,24 @@ async def webhook(req: Request):
             symbol = "NQM5"
             logging.info(f"Mapped symbol to: {symbol}")
 
-        logging.info(f"=== CREATING OSO BRACKET ORDER ===")
+        # STEP 1: Cancel all existing pending orders to prevent over-leveraging
+        logging.info("=== CANCELLING ALL PENDING ORDERS ===")
+        try:
+            cancelled_orders = await client.cancel_all_pending_orders()
+            logging.info(f"Successfully cancelled {len(cancelled_orders)} pending orders")
+        except Exception as e:
+            logging.warning(f"Failed to cancel some orders: {e}")
+            # Continue with new order placement even if cancellation partially fails
+
+        # STEP 2: Create OCO orders to prevent over-leveraging
+        logging.info(f"=== CREATING OCO BRACKET ORDERS ===")
         logging.info(f"Symbol: {symbol}, Entry: {price}, TP: {t1}, SL: {stop}")
         
-        # Create the OSO bracket order payload
-        oso_payload = {
+        # Determine opposite action for take profit and stop loss
+        opposite_action = "Sell" if action.lower() == "buy" else "Buy"
+        
+        # Create entry stop order (triggers at PRICE level)
+        entry_order = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
             "action": action,
@@ -402,31 +383,71 @@ async def webhook(req: Request):
             "orderType": "Stop",
             "stopPrice": price,  # Entry at PRICE level using stop order
             "timeInForce": "GTC",
-            "isAutomated": True,
-            "bracket1": {
-                "action": "Sell" if action.lower() == "buy" else "Buy",
-                "orderType": "Limit",
-                "price": t1,  # Take profit at T1 level
-                "timeInForce": "GTC"
-            },
-            "bracket2": {
-                "action": "Sell" if action.lower() == "buy" else "Buy", 
-                "orderType": "Stop",
-                "stopPrice": stop,  # Stop loss at STOP level
-                "timeInForce": "GTC"
-            }
+            "isAutomated": True
         }
+        
+        # Create take profit limit order (at T1 level)
+        take_profit_order = {
+            "accountSpec": client.account_spec,
+            "accountId": client.account_id,
+            "action": opposite_action,
+            "symbol": symbol,
+            "orderQty": 1,
+            "orderType": "Limit",
+            "price": t1,  # Take profit at T1 level
+            "timeInForce": "GTC",
+            "isAutomated": True
+        }
+        
+        logging.info(f"=== ENTRY ORDER ===")
+        logging.info(f"{json.dumps(entry_order, indent=2)}")
+        
+        logging.info(f"=== TAKE PROFIT ORDER ===")
+        logging.info(f"{json.dumps(take_profit_order, indent=2)}")
 
-        logging.info(f"=== OSO PAYLOAD ===")
-        logging.info(f"{json.dumps(oso_payload, indent=2)}")
+        # STEP 3: Place OCO bracket order (entry stop + take profit limit)
+        logging.info("=== PLACING OCO BRACKET ORDER ===")
+        try:
+            oco_result = await client.place_oco_order(entry_order, take_profit_order)
+            logging.info(f"=== OCO BRACKET ORDER PLACED SUCCESSFULLY ===")
+            logging.info(f"OCO Result: {oco_result}")
+        except Exception as e:
+            logging.warning(f"OCO placement failed, falling back to OSO: {e}")
+            
+            # Fallback to OSO if OCO fails
+            logging.info("=== FALLING BACK TO OSO BRACKET ORDER ===")
+            oso_payload = {
+                "accountSpec": client.account_spec,
+                "accountId": client.account_id,
+                "action": action,
+                "symbol": symbol,
+                "orderQty": 1,
+                "orderType": "Stop",
+                "stopPrice": price,  # Entry at PRICE level using stop order
+                "timeInForce": "GTC",
+                "isAutomated": True,
+                "bracket1": {
+                    "action": opposite_action,
+                    "orderType": "Limit",
+                    "price": t1,  # Take profit at T1 level
+                    "timeInForce": "GTC"
+                },
+                "bracket2": {
+                    "action": opposite_action, 
+                    "orderType": "Stop",
+                    "stopPrice": stop,  # Stop loss at STOP level
+                    "timeInForce": "GTC"
+                }
+            }
+            
+            logging.info(f"=== OSO PAYLOAD ===")
+            logging.info(f"{json.dumps(oso_payload, indent=2)}")
+            
+            oco_result = await client.place_oso_order(oso_payload)
+            logging.info(f"=== OSO ORDER PLACED SUCCESSFULLY ===")
+            logging.info(f"OSO Result: {oco_result}")
 
-        # Place the OSO bracket order
-        logging.info("=== PLACING OSO ORDER ===")
-        result = await client.place_oso_order(oso_payload)
-        logging.info(f"=== OSO ORDER PLACED SUCCESSFULLY ===")
-        logging.info(f"Result: {result}")
-
-        return {"status": "success", "order": result}
+        return {"status": "success", "order": oco_result}
 
     except Exception as e:
         logging.error(f"=== ERROR IN WEBHOOK ===")
