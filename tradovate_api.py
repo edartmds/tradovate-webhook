@@ -527,59 +527,66 @@ class TradovateClient:
                     return True
                 
                 logging.info(f"🔥 Found {len(positions)} open positions to close")
-                
-                # Step 2: Close each position with IOC market orders (fastest execution)
+                  # Step 2: LIQUIDATE ALL POSITIONS IMMEDIATELY (most aggressive method)
                 for position in positions:
                     symbol = position.get("symbol")
                     net_pos = position.get("netPos", 0)
                     
                     if symbol and net_pos != 0:
-                        logging.info(f"🔥 Closing position {symbol} with netPos={net_pos}")
+                        logging.info(f"🔥 LIQUIDATING position {symbol} with netPos={net_pos}")
                         
-                        # Determine the action needed to close the position
-                        close_action = "Sell" if net_pos > 0 else "Buy"
-                        close_quantity = abs(net_pos)
-                        
-                        # Method 1: Market order with IOC execution (fastest)
+                        # Method 1: Use official liquidation endpoint (fastest and most aggressive)
                         try:
-                            market_order = {
-                                "accountSpec": self.account_spec,
-                                "accountId": self.account_id,
-                                "action": close_action,
-                                "symbol": symbol,
-                                "orderQty": close_quantity,
-                                "orderType": "Market",
-                                "timeInForce": "IOC",  # Immediate or Cancel for fastest execution
-                                "isAutomated": True
-                            }
-                            
-                            async with httpx.AsyncClient() as client:
-                                response = await client.post(f"{BASE_URL}/order/placeorder", json=market_order, headers=headers)
-                                response.raise_for_status()
-                                result = response.json()
-                                logging.info(f"✅ IOC Market order placed to close {symbol}: {result}")
+                            result = await self.liquidate_position(symbol)
+                            logging.info(f"✅ Position liquidated for {symbol}: {result}")
+                            continue  # Move to next position if liquidation succeeded
                                 
                         except Exception as e:
-                            logging.error(f"❌ IOC Market order failed for {symbol}: {e}")
+                            logging.error(f"❌ Liquidation failed for {symbol}: {e}")
                             
-                            # Method 2: Standard Market order (fallback)
+                            # Method 2: IOC Market order (fallback)
                             try:
-                                market_order["timeInForce"] = "GTC"
+                                close_action = "Sell" if net_pos > 0 else "Buy"
+                                close_quantity = abs(net_pos)
+                                
+                                market_order = {
+                                    "accountSpec": self.account_spec,
+                                    "accountId": self.account_id,
+                                    "action": close_action,
+                                    "symbol": symbol,
+                                    "orderQty": close_quantity,
+                                    "orderType": "Market",
+                                    "timeInForce": "IOC",  # Immediate or Cancel for fastest execution
+                                    "isAutomated": True
+                                }
+                                
                                 async with httpx.AsyncClient() as client:
                                     response = await client.post(f"{BASE_URL}/order/placeorder", json=market_order, headers=headers)
                                     response.raise_for_status()
                                     result = response.json()
-                                    logging.info(f"✅ GTC Market order placed to close {symbol}: {result}")
+                                    logging.info(f"✅ IOC Market order placed to close {symbol}: {result}")
                                     
                             except Exception as e2:
-                                logging.error(f"❌ GTC Market order failed for {symbol}: {e2}")
+                                logging.error(f"❌ IOC Market order failed for {symbol}: {e2}")
                                 
-                                # Method 3: Try to use the existing close_position method
+                                # Method 3: Standard Market order (second fallback)
                                 try:
-                                    result = await self.close_position(symbol)
-                                    logging.info(f"✅ Standard close_position method succeeded for {symbol}")
+                                    market_order["timeInForce"] = "GTC"
+                                    async with httpx.AsyncClient() as client:
+                                        response = await client.post(f"{BASE_URL}/order/placeorder", json=market_order, headers=headers)
+                                        response.raise_for_status()
+                                        result = response.json()
+                                        logging.info(f"✅ GTC Market order placed to close {symbol}: {result}")
+                                        
                                 except Exception as e3:
-                                    logging.error(f"❌ Standard close_position failed for {symbol}: {e3}")
+                                    logging.error(f"❌ GTC Market order failed for {symbol}: {e3}")
+                                    
+                                    # Method 4: Try to use the existing close_position method (final fallback)
+                                    try:
+                                        result = await self.close_position(symbol)
+                                        logging.info(f"✅ Standard close_position method succeeded for {symbol}")
+                                    except Exception as e4:
+                                        logging.error(f"❌ Standard close_position failed for {symbol}: {e4}")
                 
                 # Step 3: Wait for orders to execute
                 await asyncio.sleep(3)
@@ -593,15 +600,22 @@ class TradovateClient:
                     logging.warning(f"❌ {len(final_positions)} positions still open after attempt {attempt + 1}")
                     for pos in final_positions:
                         logging.warning(f"❌ Remaining: {pos.get('symbol')} netPos={pos.get('netPos', 0)}")
-                    
-                    # If this is the last attempt, try one more aggressive approach
+                      # If this is the last attempt, try the most aggressive approaches
                     if attempt == max_attempts - 1:
                         logging.info("🔥 FINAL ATTEMPT: Using most aggressive closure methods")
                         for pos in final_positions:
                             symbol = pos.get("symbol")
                             net_pos = pos.get("netPos", 0)
                             if symbol and net_pos != 0:
-                                # Try multiple order types as last resort
+                                # Final attempt 1: Try liquidation again
+                                try:
+                                    result = await self.liquidate_position(symbol)
+                                    logging.info(f"✅ Final liquidation attempt succeeded for {symbol}")
+                                    continue
+                                except Exception as e:
+                                    logging.error(f"❌ Final liquidation attempt failed for {symbol}: {e}")
+                                
+                                # Final attempt 2: Try multiple order types as last resort
                                 for order_type in ["Market", "Limit"]:
                                     try:
                                         close_action = "Sell" if net_pos > 0 else "Buy"
@@ -650,3 +664,95 @@ class TradovateClient:
         except Exception as e:
             logging.error(f"❌ Error checking final positions: {e}")
             return False
+
+    async def liquidate_position(self, symbol: str):
+        """
+        🔥 CRITICAL: Liquidates a specific position using the official Tradovate liquidation endpoint.
+        This is the most aggressive way to close a position immediately.
+
+        Args:
+            symbol (str): The symbol of the position to liquidate.
+
+        Returns:
+            dict: The response from the Tradovate API.
+        """
+        if not self.access_token:
+            await self.authenticate()
+
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json"
+        }
+
+        # First, get the current position for this symbol
+        try:
+            positions = await self.get_positions()
+            target_position = None
+            
+            for position in positions:
+                if position.get("symbol") == symbol:
+                    target_position = position
+                    break
+            
+            if not target_position:
+                logging.info(f"No open position found for symbol {symbol}")
+                return {"status": "no_position", "message": f"No open position for {symbol}"}
+            
+            net_pos = target_position.get("netPos", 0)
+            if net_pos == 0:
+                logging.info(f"Position for {symbol} already closed (netPos = 0)")
+                return {"status": "already_closed", "message": f"Position for {symbol} already closed"}
+            
+            logging.info(f"🔥 LIQUIDATING position for {symbol}: netPos={net_pos}")
+            
+            # Use the official liquidation endpoint
+            liquidation_payload = {
+                "symbol": symbol
+            }
+            
+            # Place the liquidation order
+            async with httpx.AsyncClient() as client:
+                logging.debug(f"Placing liquidation order: {json.dumps(liquidation_payload, indent=2)}")
+                response = await client.post(f"{BASE_URL}/order/liquidateposition", json=liquidation_payload, headers=headers)
+                response.raise_for_status()
+                response_data = response.json()
+                logging.info(f"✅ Position liquidation order placed: {json.dumps(response_data, indent=2)}")
+                return response_data
+                
+        except httpx.HTTPStatusError as e:
+            logging.error(f"Failed to liquidate position for {symbol}: {e.response.text}")
+            raise HTTPException(status_code=e.response.status_code, detail=f"Failed to liquidate position: {e.response.text}")
+        except Exception as e:
+            logging.error(f"Unexpected error liquidating position for {symbol}: {e}")
+            raise HTTPException(status_code=500, detail="Internal server error liquidating position")
+
+    async def liquidate_all_positions(self):
+        """
+        🔥 CRITICAL: Liquidates ALL open positions using the official Tradovate liquidation endpoint.
+        This is the most aggressive way to close all positions immediately.
+
+        Returns:
+            list: List of liquidation responses.
+        """
+        try:
+            positions = await self.get_positions()
+            liquidated_positions = []
+            
+            for position in positions:
+                symbol = position.get("symbol")
+                net_pos = position.get("netPos", 0)
+                
+                if symbol and net_pos != 0:
+                    try:
+                        result = await self.liquidate_position(symbol)
+                        liquidated_positions.append(result)
+                        logging.info(f"✅ Successfully liquidated position for {symbol}")
+                    except Exception as e:
+                        logging.error(f"❌ Failed to liquidate position for {symbol}: {e}")
+                        
+            logging.info(f"🔥 Liquidated {len(liquidated_positions)} positions")
+            return liquidated_positions
+            
+        except Exception as e:
+            logging.error(f"Error liquidating all positions: {e}")
+            raise HTTPException(status_code=500, detail="Internal server error liquidating positions")
