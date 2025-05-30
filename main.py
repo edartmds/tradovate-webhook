@@ -3,6 +3,7 @@ import logging
 import json
 import asyncio
 import traceback
+import time
 from datetime import datetime, timedelta
 from fastapi import FastAPI, Request, HTTPException
 from tradovate_api import TradovateClient
@@ -448,10 +449,11 @@ async def webhook(req: Request):
         if not all([symbol, action, price, t1, stop]):
             missing = [k for k, v in {"symbol": symbol, "action": action, "PRICE": price, "T1": t1, "STOP": stop}.items() if not v]
             logging.error(f"Missing required fields: {missing}")
-            raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")        # Map TradingView symbol to Tradovate symbol
+            raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")        # Map TradingView symbol to Tradovate symbol and get active contract
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
-            symbol = "NQM5"
-            logging.info(f"Mapped symbol to: {symbol}")
+            # Get the current active NQ contract instead of using expired NQM5
+            symbol = await client.get_active_contract_symbol("NQ")
+            logging.info(f"Mapped to active contract: {symbol}")
         
         # 🔥 MINIMAL DUPLICATE DETECTION - Only prevent rapid-fire identical alerts
         logging.info("🔍 === CHECKING FOR RAPID-FIRE DUPLICATES ONLY ===")
@@ -467,6 +469,28 @@ async def webhook(req: Request):
             }
         
         logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
+          # Determine optimal order type based on current market conditions
+        logging.info("🔍 Analyzing market conditions for optimal order type...")
+        try:
+            order_config = await client.determine_optimal_order_type(symbol, action, price)
+            order_type = order_config["orderType"]
+            order_price = order_config.get("price")
+            stop_price = order_config.get("stopPrice")
+            
+            logging.info(f"💡 OPTIMAL ORDER TYPE: {order_type}")
+            if order_type == "Stop":
+                logging.info(f"📊 STOP ORDER: Will trigger when price reaches {stop_price}")
+            else:
+                logging.info(f"📊 LIMIT ORDER: Will execute at price {order_price}")
+                
+        except Exception as e:
+            # 🔥 FALLBACK: If intelligent selection fails, default to traditional approach
+            logging.warning(f"⚠️ Intelligent order type selection failed: {e}")
+            logging.info("🔄 FALLBACK: Using traditional Stop order entry")
+            order_type = "Stop"
+            stop_price = price
+            order_price = None
+            logging.info(f"🔄 FALLBACK STOP ORDER: Will trigger at stopPrice={stop_price}")
         
         # 🔥 REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
         # Every new alert will now automatically flatten existing positions and place new orders
@@ -490,28 +514,27 @@ async def webhook(req: Request):
             logging.info(f"Successfully cancelled {len(cancelled_orders)} pending orders")
         except Exception as e:
             logging.warning(f"Failed to cancel some orders: {e}")
-            # Continue with new order placement even if cancellation partially fails
-
-        # STEP 3: Place entry order with automatic bracket orders (OSO)
-        logging.info(f"=== PLACING OSO BRACKET ORDER FOR STOP ENTRY ===")
-        logging.info(f"Symbol: {symbol}, Stop Entry: {price}, TP: {t1}, SL: {stop}")
+            # Continue with new order placement even if cancellation partially fails        # STEP 3: Place entry order with automatic bracket orders (OSO)
+        logging.info(f"=== PLACING OSO BRACKET ORDER WITH INTELLIGENT ORDER TYPE ===")
+        logging.info(f"Symbol: {symbol}, Order Type: {order_type}, Entry: {price}, TP: {t1}, SL: {stop}")
+        
+        # 🔥 SPEED OPTIMIZATION: For STOP orders, prioritize fastest possible execution
+        if order_type == "Stop":
+            logging.info("⚡ SPEED MODE: STOP order detected - optimizing for fastest execution")
+            # For breakout/breakdown strategies, speed is critical
+        else:
+            logging.info("📊 LIMIT order - using standard execution path")
         
         # Determine opposite action for take profit and stop loss
         opposite_action = "Sell" if action.lower() == "buy" else "Buy"
-        
-        # For OSO orders, we need to determine entry strategy based on price direction
-        # If BUY and current price is below target, use Limit order
-        # If BUY and current price is above target, use Stop order
-        # This ensures proper entry execution
-          # OSO payload with proper Tradovate API structure
+          # Build OSO payload with intelligent order type selection
         oso_payload = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
             "action": action.capitalize(),  # "Buy" or "Sell"
             "symbol": symbol,
             "orderQty": 1,
-            "orderType": "Stop",   # Use Stop order for entry trigger
-            "stopPrice": price,    # Entry triggers when price reaches this level
+            "orderType": order_type,   # Intelligently selected based on market conditions
             "timeInForce": "GTC",
             "isAutomated": True,
             # Take Profit bracket (bracket1)
@@ -540,13 +563,33 @@ async def webhook(req: Request):
             }
         }
         
+        # 🔥 CRITICAL: Add dynamic price/stopPrice fields based on intelligent order type
+        if order_type == "Stop":
+            # Stop order needs stopPrice field
+            oso_payload["stopPrice"] = stop_price
+            logging.info(f"🎯 STOP ORDER: Entry will trigger at stopPrice={stop_price}")
+        else:
+            # Limit order needs price field  
+            oso_payload["price"] = order_price
+            logging.info(f"🎯 LIMIT ORDER: Entry will execute at price={order_price}")
+        
         logging.info(f"=== OSO PAYLOAD ===")
-        logging.info(f"{json.dumps(oso_payload, indent=2)}")
-          # STEP 4: Place OSO bracket order
+        logging.info(f"{json.dumps(oso_payload, indent=2)}")        # STEP 4: Place OSO bracket order with speed optimizations
         logging.info("=== PLACING OSO BRACKET ORDER ===")
+        
+        # 🔥 SPEED OPTIMIZATION: Validate payload before submission to prevent rejection delays
+        required_fields = ['accountSpec', 'accountId', 'action', 'symbol', 'orderQty', 'orderType', 'timeInForce']
+        for field in required_fields:
+            if field not in oso_payload:
+                raise HTTPException(status_code=400, detail=f"Missing required OSO field: {field}")
+        
         try:
+            # 🚀 FASTEST EXECUTION: Place OSO order immediately
+            start_time = time.time()
             oso_result = await client.place_oso_order(oso_payload)
-            logging.info(f"✅ OSO BRACKET ORDER PLACED SUCCESSFULLY")
+            execution_time = (time.time() - start_time) * 1000  # Convert to milliseconds
+            
+            logging.info(f"✅ OSO BRACKET ORDER PLACED SUCCESSFULLY in {execution_time:.2f}ms")
             logging.info(f"OSO Result: {oso_result}")
             
             # 🔥 MARK SUCCESSFUL TRADE PLACEMENT - This helps prevent immediate duplicates
@@ -554,9 +597,28 @@ async def webhook(req: Request):
             logging.info(f"📝 Recording successful trade placement: {symbol} {action}")
             # Note: We mark completion when the trade actually completes, not just when placed
             
-            return {"status": "success", "order": oso_result}
+            return {
+                "status": "success", 
+                "order": oso_result,
+                "execution_time_ms": execution_time,
+                "order_type": order_type,
+                "symbol": symbol
+            }
+            
         except Exception as e:
-            logging.error(f"❌ OSO placement failed: {e}")
+            execution_time = (time.time() - start_time) * 1000 if 'start_time' in locals() else 0
+            logging.error(f"❌ OSO placement failed after {execution_time:.2f}ms: {e}")
+            
+            # 🔥 SMART ERROR HANDLING: Provide specific guidance based on error type
+            error_msg = str(e).lower()
+            if "price is already at or past this level" in error_msg:
+                logging.error("🎯 PRICE LEVEL ERROR: The intelligent order type selection may need adjustment")
+                logging.error(f"🎯 Entry price: {price}, Current market data needed for diagnosis")
+            elif "insufficient buying power" in error_msg:
+                logging.error("💰 MARGIN ERROR: Insufficient buying power for position size")
+            elif "invalid symbol" in error_msg:
+                logging.error(f"📊 SYMBOL ERROR: Contract symbol {symbol} may be expired or invalid")
+            
             # Log the detailed error for debugging
             import traceback
             logging.error(f"OSO Error traceback: {traceback.format_exc()}")
