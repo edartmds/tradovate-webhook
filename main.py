@@ -414,7 +414,7 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
             
         except Exception as e:
             logging.error(f"Error in order monitoring: {e}")
-            await asyncio.sleep(5)
+            await asyncio.sleep(2)
 
 
 @app.post("/webhook")
