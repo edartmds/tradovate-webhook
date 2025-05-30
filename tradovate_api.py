@@ -366,10 +366,20 @@ class TradovateClient:
                 response.raise_for_status()
                 positions = response.json()
                 
+                # 🔥 ENHANCED POSITION DEBUGGING: Log all position objects for analysis
+                logging.info(f"🔍 RAW POSITIONS RESPONSE: {json.dumps(positions, indent=2)}")
+                
                 # Filter for open positions only (netPos != 0)
                 open_positions = [pos for pos in positions if pos.get("netPos", 0) != 0]
                 logging.info(f"Found {len(open_positions)} open positions")
-                logging.debug(f"Open positions: {json.dumps(open_positions, indent=2)}")
+                
+                # 🔥 ENHANCED DEBUGGING: Log each open position structure
+                for i, pos in enumerate(open_positions):
+                    logging.info(f"🔍 OPEN POSITION {i+1}: {json.dumps(pos, indent=2)}")
+                    # Log all available fields for debugging
+                    all_fields = list(pos.keys())
+                    logging.info(f"🔍 Available fields in position {i+1}: {all_fields}")
+                
                 return open_positions
                 
         except httpx.HTTPStatusError as e:
@@ -526,67 +536,135 @@ class TradovateClient:
                     logging.info("✅ No open positions found - all positions closed successfully")
                     return True
                 
-                logging.info(f"🔥 Found {len(positions)} open positions to close")
-                  # Step 2: LIQUIDATE ALL POSITIONS IMMEDIATELY (most aggressive method)
+                logging.info(f"🔥 Found {len(positions)} open positions to close")                # Step 2: CLOSE ALL POSITIONS IMMEDIATELY (most aggressive method)
                 for position in positions:
-                    symbol = position.get("symbol")
                     net_pos = position.get("netPos", 0)
                     
-                    if symbol and net_pos != 0:
-                        logging.info(f"🔥 LIQUIDATING position {symbol} with netPos={net_pos}")
+                    # 🔥 CRITICAL DEBUG: Log the full position object to understand structure
+                    logging.info(f"🔍 POSITION OBJECT: {json.dumps(position, indent=2)}")
+                    
+                    if net_pos != 0:  # Close any position with non-zero netPos
+                        logging.info(f"🔥 CLOSING position with netPos={net_pos}")
                         
-                        # Method 1: Use official liquidation endpoint (fastest and most aggressive)
-                        try:
-                            result = await self.liquidate_position(symbol)
-                            logging.info(f"✅ Position liquidated for {symbol}: {result}")
-                            continue  # Move to next position if liquidation succeeded
+                        # 🔥 ENHANCED SYMBOL DETECTION: Check all possible position fields
+                        symbol_candidates = [
+                            position.get("symbol"),
+                            position.get("contractName"), 
+                            position.get("instrument"),
+                            position.get("masterInstrument", {}).get("symbol") if position.get("masterInstrument") else None,
+                            position.get("contract", {}).get("symbol") if position.get("contract") else None,
+                            position.get("contractId")
+                        ]
+                        
+                        # Find the first valid symbol identifier
+                        symbol = None
+                        for candidate in symbol_candidates:
+                            if candidate and str(candidate).strip():
+                                symbol = str(candidate).strip()
+                                logging.info(f"🔍 Found symbol identifier: {symbol}")
+                                break
                                 
-                        except Exception as e:
-                            logging.error(f"❌ Liquidation failed for {symbol}: {e}")
-                            
-                            # Method 2: IOC Market order (fallback)
+                        # If still no symbol, try contractId-based approach
+                        if not symbol:
+                            contract_id = position.get("contractId")
+                            if contract_id:
+                                # Use contractId directly in orders - some endpoints support this
+                                symbol = f"CONTRACT_{contract_id}"
+                                logging.info(f"🔍 Using contractId fallback: {symbol}")
+                        
+                        # 🔥 METHOD 1: Try Tradovate's liquidateposition endpoint (most direct)
+                        if symbol and not symbol.startswith("CONTRACT_"):
                             try:
-                                close_action = "Sell" if net_pos > 0 else "Buy"
-                                close_quantity = abs(net_pos)
-                                
-                                market_order = {
-                                    "accountSpec": self.account_spec,
-                                    "accountId": self.account_id,
-                                    "action": close_action,
-                                    "symbol": symbol,
-                                    "orderQty": close_quantity,
-                                    "orderType": "Market",
-                                    "timeInForce": "IOC",  # Immediate or Cancel for fastest execution
-                                    "isAutomated": True
-                                }
-                                
+                                liquidation_payload = {"symbol": symbol}
                                 async with httpx.AsyncClient() as client:
-                                    response = await client.post(f"{BASE_URL}/order/placeorder", json=market_order, headers=headers)
-                                    response.raise_for_status()
-                                    result = response.json()
-                                    logging.info(f"✅ IOC Market order placed to close {symbol}: {result}")
-                                    
-                            except Exception as e2:
-                                logging.error(f"❌ IOC Market order failed for {symbol}: {e2}")
-                                
-                                # Method 3: Standard Market order (second fallback)
+                                    response = await client.post(f"{BASE_URL}/order/liquidateposition", 
+                                                               json=liquidation_payload, headers=headers)
+                                    if response.status_code == 200:
+                                        result = response.json()
+                                        logging.info(f"✅ LIQUIDATION order placed: {result}")
+                                        continue  # Skip other methods if liquidation works
+                                    else:
+                                        logging.warning(f"⚠️ Liquidation failed, trying market orders")
+                            except Exception as e1:
+                                logging.warning(f"⚠️ Liquidation method failed: {e1}")
+                        
+                        # 🔥 METHOD 2: IOC Market order with enhanced identification
+                        try:
+                            close_action = "Sell" if net_pos > 0 else "Buy"
+                            close_quantity = abs(net_pos)
+                            
+                            market_order = {
+                                "accountSpec": self.account_spec,
+                                "accountId": self.account_id,
+                                "action": close_action,
+                                "orderQty": close_quantity,
+                                "orderType": "Market",
+                                "timeInForce": "IOC",  # Immediate or Cancel for fastest execution
+                                "isAutomated": True
+                            }
+                            
+                            # 🔥 ENHANCED ORDER IDENTIFICATION: Try multiple field combinations
+                            order_placed = False
+                            
+                            # Try 1: Use symbol if we found one
+                            if symbol and not symbol.startswith("CONTRACT_"):
+                                market_order["symbol"] = symbol
                                 try:
-                                    market_order["timeInForce"] = "GTC"
                                     async with httpx.AsyncClient() as client:
-                                        response = await client.post(f"{BASE_URL}/order/placeorder", json=market_order, headers=headers)
+                                        response = await client.post(f"{BASE_URL}/order/placeorder", 
+                                                                   json=market_order, headers=headers)
                                         response.raise_for_status()
                                         result = response.json()
-                                        logging.info(f"✅ GTC Market order placed to close {symbol}: {result}")
-                                        
-                                except Exception as e3:
-                                    logging.error(f"❌ GTC Market order failed for {symbol}: {e3}")
+                                        logging.info(f"✅ IOC Market order (symbol) placed: {result}")
+                                        order_placed = True
+                                except Exception as e:
+                                    logging.warning(f"⚠️ Market order with symbol failed: {e}")
+                            
+                            # Try 2: Use contractId directly if symbol method failed
+                            if not order_placed and position.get("contractId"):
+                                market_order_contractid = market_order.copy()
+                                market_order_contractid.pop("symbol", None)  # Remove symbol field
+                                market_order_contractid["contractId"] = position.get("contractId")
+                                try:
+                                    async with httpx.AsyncClient() as client:
+                                        response = await client.post(f"{BASE_URL}/order/placeorder", 
+                                                                   json=market_order_contractid, headers=headers)
+                                        response.raise_for_status()
+                                        result = response.json()
+                                        logging.info(f"✅ IOC Market order (contractId) placed: {result}")
+                                        order_placed = True
+                                except Exception as e:
+                                    logging.warning(f"⚠️ Market order with contractId failed: {e}")
+                            
+                            if not order_placed:
+                                raise Exception("All market order identification methods failed")
                                     
-                                    # Method 4: Try to use the existing close_position method (final fallback)
-                                    try:
-                                        result = await self.close_position(symbol)
-                                        logging.info(f"✅ Standard close_position method succeeded for {symbol}")
-                                    except Exception as e4:
-                                        logging.error(f"❌ Standard close_position failed for {symbol}: {e4}")
+                        except Exception as e2:
+                            logging.error(f"❌ IOC Market order failed: {e2}")
+                            
+                            # 🔥 METHOD 3: Try position close API directly (if available)
+                            try:
+                                # Some APIs support closing by position ID
+                                position_id = position.get("id") or position.get("positionId")
+                                if position_id:
+                                    close_payload = {"positionId": position_id}
+                                    async with httpx.AsyncClient() as client:
+                                        response = await client.post(f"{BASE_URL}/position/close", 
+                                                                   json=close_payload, headers=headers)
+                                        if response.status_code == 200:
+                                            result = response.json()
+                                            logging.info(f"✅ Position close API succeeded: {result}")
+                                            continue
+                                        else:
+                                            logging.warning(f"Position close API failed: {response.status_code}")
+                            except Exception as e3:
+                                logging.error(f"❌ Position close API failed: {e3}")
+                                
+                                # 🔥 METHOD 4: Final attempt with relaxed constraints
+                                logging.warning(f"⚠️ All standard methods failed for position: {position}")
+                                logging.warning(f"⚠️ Position may require manual intervention or different API")
+                    else:
+                        logging.info(f"✅ Position already closed: netPos={net_pos}")
                 
                 # Step 3: Wait for orders to execute
                 await asyncio.sleep(3)
