@@ -488,8 +488,7 @@ async def webhook(req: Request):
         # If we just closed positions and this is the same direction, it might be a completion duplicate
         try:
             current_positions = await client.get_positions()
-            if not current_positions:  # No positions = recently completed trade
-                logging.info("🔍 No open positions detected - checking for post-completion duplicate")
+            if not current_positions:  # No positions = recently completed trade                logging.info("🔍 No open positions detected - checking for post-completion duplicate")
                 # Additional check for completion-based duplicates
                 if symbol in completed_trades:
                     last_completed = completed_trades[symbol]
@@ -506,38 +505,8 @@ async def webhook(req: Request):
         except Exception as e:
             logging.warning(f"Position check failed during duplicate detection: {e}")
             # Continue anyway - don't let position check errors block trading
-            logging.warning(f"🚫 DUPLICATE/FREQUENT ALERT REJECTED: {symbol} {action}")
-            logging.warning(f"🚫 Reason: Too similar to recent alert or completed trade")
-            return {
-                "status": "rejected", 
-                "reason": "duplicate_alert",
-                "message": f"Duplicate or too frequent alert for {symbol} {action}"
-            }
-        
-        logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with trade")
-        
-        # 🔥 TRADE COMPLETION DETECTION: Check if this is right after a successful completion
-        # If we just closed positions and this is the same direction, it might be a completion duplicate
-        try:
-            current_positions = await client.get_positions()
-            if not current_positions:  # No positions = recently completed trade
-                logging.info("🔍 No open positions detected - checking for post-completion duplicate")
-                # Additional check for completion-based duplicates
-                if symbol in completed_trades:
-                    last_completed = completed_trades[symbol]
-                    time_since_completion = (datetime.now() - last_completed["completion_time"]).total_seconds()
-                    if (last_completed.get("last_completed_direction") == action.lower() and 
-                        time_since_completion < 180):  # 3 minutes post-completion protection
-                        logging.warning(f"🚫 POST-COMPLETION DUPLICATE REJECTED: {symbol} {action}")
-                        logging.warning(f"🚫 Same direction completed {time_since_completion:.1f}s ago")
-                        return {
-                            "status": "rejected",
-                            "reason": "post_completion_duplicate", 
-                            "message": f"Trade completed recently, preventing duplicate"
-                        }
-        except Exception as e:
-            logging.warning(f"Position check failed during duplicate detection: {e}")
-            # Continue anyway - don't let position check errors block trading# STEP 1: Close all existing positions to prevent over-leveraging  
+
+        # STEP 1: Close all existing positions to prevent over-leveraging  
         logging.info("🔥🔥🔥 === CLOSING ALL EXISTING POSITIONS === 🔥🔥🔥")
         try:
             success = await client.force_close_all_positions_immediately()
@@ -556,7 +525,10 @@ async def webhook(req: Request):
             logging.info(f"Successfully cancelled {len(cancelled_orders)} pending orders")
         except Exception as e:
             logging.warning(f"Failed to cancel some orders: {e}")
-            # Continue with new order placement even if cancellation partially fails        # STEP 3: Place entry order with automatic bracket orders (OSO)        logging.info(f"=== PLACING OSO BRACKET ORDER FOR STOP ENTRY ===")
+            # Continue with new order placement even if cancellation partially fails
+
+        # STEP 3: Place entry order with automatic bracket orders (OSO)
+        logging.info(f"=== PLACING OSO BRACKET ORDER FOR STOP ENTRY ===")
         logging.info(f"Symbol: {symbol}, Stop Entry: {price}, TP: {t1}, SL: {stop}")
         
         # Determine opposite action for take profit and stop loss
