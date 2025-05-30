@@ -10,12 +10,12 @@ import uvicorn
 import httpx
 import hashlib
 
-# 🔥 ENHANCED DUPLICATE DETECTION AND TRADE TRACKING
+# 🔥 RELAXED DUPLICATE DETECTION FOR AUTOMATED TRADING
 last_alert = {}  # {symbol: {"direction": "buy"/"sell", "timestamp": datetime, "alert_hash": str}}
 completed_trades = {}  # {symbol: {"last_completed_direction": "buy"/"sell", "completion_time": datetime}}
 active_orders = []  # Track active order IDs to manage cancellation
-DUPLICATE_THRESHOLD_SECONDS = 300  # 5 minutes - ignore identical alerts within this timeframe
-COMPLETED_TRADE_COOLDOWN = 600  # 10 minutes - prevent immediate identical trades after completion
+DUPLICATE_THRESHOLD_SECONDS = 30  # 30 seconds - only prevent rapid-fire identical alerts
+COMPLETED_TRADE_COOLDOWN = 30  # 30 seconds - minimal cooldown for automated trading
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 logging.info(f"Loaded WEBHOOK_SECRET: {WEBHOOK_SECRET}")
@@ -178,55 +178,41 @@ def hash_alert(data: dict) -> str:
 
 def is_duplicate_alert(symbol: str, action: str, data: dict) -> bool:
     """
-    🔥 CRITICAL DUPLICATE DETECTION: Check if this alert is a duplicate or too soon after completion.
+    🔥 RELAXED DUPLICATE DETECTION FOR AUTOMATED TRADING
     
-    Returns True if:
-    1. Identical alert received within DUPLICATE_THRESHOLD_SECONDS
-    2. Same direction trade completed recently (within COMPLETED_TRADE_COOLDOWN)
-    3. Alert hash matches recent alert
+    Only blocks truly rapid-fire identical alerts within 30 seconds.
+    Allows direction changes and new signals for automated flattening strategy.
+    
+    Returns True ONLY if:
+    1. IDENTICAL alert hash received within 30 seconds (prevents accidental spam)
     """
     current_time = datetime.now()
     alert_hash = hash_alert(data)
     
-    # Check 1: Recent identical alert
+    # ONLY Check for rapid-fire identical alerts (same exact parameters)
     if symbol in last_alert:
         last_alert_data = last_alert[symbol]
         time_diff = (current_time - last_alert_data["timestamp"]).total_seconds()
         
-        # Same hash within threshold = duplicate
+        # Only block if EXACT same alert within 30 seconds
         if (last_alert_data.get("alert_hash") == alert_hash and 
             time_diff < DUPLICATE_THRESHOLD_SECONDS):
-            logging.warning(f"🚫 DUPLICATE ALERT DETECTED for {symbol} {action}")
-            logging.warning(f"🚫 Same alert hash received {time_diff:.1f} seconds ago")
-            return True
-            
-        # Same direction within threshold = too frequent
-        if (last_alert_data.get("direction", "").lower() == action.lower() and 
-            time_diff < DUPLICATE_THRESHOLD_SECONDS):
-            logging.warning(f"🚫 FREQUENT ALERT DETECTED for {symbol} {action}")
-            logging.warning(f"🚫 Same direction alert received {time_diff:.1f} seconds ago")
+            logging.warning(f"🚫 RAPID-FIRE DUPLICATE BLOCKED: {symbol} {action}")
+            logging.warning(f"🚫 Identical alert received {time_diff:.1f} seconds ago")
             return True
     
-    # Check 2: Recently completed trade in same direction
-    if symbol in completed_trades:
-        completed_data = completed_trades[symbol]
-        time_since_completion = (current_time - completed_data["completion_time"]).total_seconds()
-        
-        if (completed_data.get("last_completed_direction", "").lower() == action.lower() and
-            time_since_completion < COMPLETED_TRADE_COOLDOWN):
-            logging.warning(f"🚫 POST-COMPLETION DUPLICATE for {symbol} {action}")
-            logging.warning(f"🚫 Same direction trade completed {time_since_completion:.1f} seconds ago")
-            logging.warning(f"🚫 Waiting {COMPLETED_TRADE_COOLDOWN - time_since_completion:.1f} more seconds")
-            return True
+    # 🔥 REMOVED: Direction-based blocking - allow all direction changes
+    # 🔥 REMOVED: Post-completion blocking - allow immediate new signals
+    # This enables full automated trading with position flattening
     
-    # Not a duplicate - update tracking
+    # Update tracking for rapid-fire detection only
     last_alert[symbol] = {
         "direction": action.lower(),
         "timestamp": current_time,
         "alert_hash": alert_hash
     }
     
-    logging.info(f"✅ UNIQUE ALERT ACCEPTED for {symbol} {action}")
+    logging.info(f"✅ ALERT ACCEPTED: {symbol} {action} - Automated trading enabled")
     return False
 
 def mark_trade_completed(symbol: str, direction: str):
@@ -462,52 +448,31 @@ async def webhook(req: Request):
         if not all([symbol, action, price, t1, stop]):
             missing = [k for k, v in {"symbol": symbol, "action": action, "PRICE": price, "T1": t1, "STOP": stop}.items() if not v]
             logging.error(f"Missing required fields: {missing}")
-            raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")
-
-        # Map TradingView symbol to Tradovate symbol
+            raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")        # Map TradingView symbol to Tradovate symbol
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
             symbol = "NQM5"
             logging.info(f"Mapped symbol to: {symbol}")
         
-        # 🔥 CRITICAL DUPLICATE DETECTION - Check before any trading actions
-        logging.info("🔍 === CHECKING FOR DUPLICATE ALERTS ===")
+        # 🔥 MINIMAL DUPLICATE DETECTION - Only prevent rapid-fire identical alerts
+        logging.info("🔍 === CHECKING FOR RAPID-FIRE DUPLICATES ONLY ===")
         cleanup_old_tracking_data()  # Clean up old data first
         
         if is_duplicate_alert(symbol, action, data):
-            logging.warning(f"🚫 DUPLICATE/FREQUENT ALERT REJECTED: {symbol} {action}")
-            logging.warning(f"🚫 Reason: Too similar to recent alert or completed trade")
+            logging.warning(f"🚫 RAPID-FIRE DUPLICATE BLOCKED: {symbol} {action}")
+            logging.warning(f"🚫 Reason: Identical alert within 30 seconds")
             return {
                 "status": "rejected", 
-                "reason": "duplicate_alert",
-                "message": f"Duplicate or too frequent alert for {symbol} {action}"
+                "reason": "rapid_fire_duplicate",
+                "message": f"Rapid-fire duplicate alert blocked for {symbol} {action}"
             }
         
-        logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with trade")
+        logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
         
-        # 🔥 TRADE COMPLETION DETECTION: Check if this is right after a successful completion
-        # If we just closed positions and this is the same direction, it might be a completion duplicate
-        try:
-            current_positions = await client.get_positions()
-            if not current_positions:  # No positions = recently completed trade                logging.info("🔍 No open positions detected - checking for post-completion duplicate")
-                # Additional check for completion-based duplicates
-                if symbol in completed_trades:
-                    last_completed = completed_trades[symbol]
-                    time_since_completion = (datetime.now() - last_completed["completion_time"]).total_seconds()
-                    if (last_completed.get("last_completed_direction") == action.lower() and 
-                        time_since_completion < 180):  # 3 minutes post-completion protection
-                        logging.warning(f"🚫 POST-COMPLETION DUPLICATE REJECTED: {symbol} {action}")
-                        logging.warning(f"🚫 Same direction completed {time_since_completion:.1f}s ago")
-                        return {
-                            "status": "rejected",
-                            "reason": "post_completion_duplicate", 
-                            "message": f"Trade completed recently, preventing duplicate"
-                        }
-        except Exception as e:
-            logging.warning(f"Position check failed during duplicate detection: {e}")
-            # Continue anyway - don't let position check errors block trading
-
+        # 🔥 REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
+        # Every new alert will now automatically flatten existing positions and place new orders
+        
         # STEP 1: Close all existing positions to prevent over-leveraging  
-        logging.info("🔥🔥🔥 === CLOSING ALL EXISTING POSITIONS === 🔥🔥🔥")
+        logging.info("🔥🔥🔥 === AUTOMATED FLATTENING: CLOSING ALL EXISTING POSITIONS === 🔥🔥🔥")
         try:
             success = await client.force_close_all_positions_immediately()
             if success:
