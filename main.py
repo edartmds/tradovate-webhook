@@ -449,11 +449,10 @@ async def webhook(req: Request):
         if not all([symbol, action, price, t1, stop]):
             missing = [k for k, v in {"symbol": symbol, "action": action, "PRICE": price, "T1": t1, "STOP": stop}.items() if not v]
             logging.error(f"Missing required fields: {missing}")
-            raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")        # Map TradingView symbol to Tradovate symbol and get active contract
+            raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")        # Map TradingView symbol to Tradovate symbol
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
-            # Get the current active NQ contract instead of using expired NQM5
-            symbol = await client.get_active_contract_symbol("NQ")
-            logging.info(f"Mapped to active contract: {symbol}")
+            symbol = "NQM5"
+            logging.info(f"Mapped symbol to: {symbol}")
         
         # 🔥 MINIMAL DUPLICATE DETECTION - Only prevent rapid-fire identical alerts
         logging.info("🔍 === CHECKING FOR RAPID-FIRE DUPLICATES ONLY ===")
@@ -468,29 +467,12 @@ async def webhook(req: Request):
                 "message": f"Rapid-fire duplicate alert blocked for {symbol} {action}"
             }
         
-        logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
-          # Determine optimal order type based on current market conditions
-        logging.info("🔍 Analyzing market conditions for optimal order type...")
-        try:
-            order_config = await client.determine_optimal_order_type(symbol, action, price)
-            order_type = order_config["orderType"]
-            order_price = order_config.get("price")
-            stop_price = order_config.get("stopPrice")
-            
-            logging.info(f"💡 OPTIMAL ORDER TYPE: {order_type}")
-            if order_type == "Stop":
-                logging.info(f"📊 STOP ORDER: Will trigger when price reaches {stop_price}")
-            else:
-                logging.info(f"📊 LIMIT ORDER: Will execute at price {order_price}")
-                
-        except Exception as e:
-            # 🔥 FALLBACK: If intelligent selection fails, default to traditional approach
-            logging.warning(f"⚠️ Intelligent order type selection failed: {e}")
-            logging.info("🔄 FALLBACK: Using traditional Stop order entry")
-            order_type = "Stop"
-            stop_price = price
-            order_price = None
-            logging.info(f"🔄 FALLBACK STOP ORDER: Will trigger at stopPrice={stop_price}")
+        logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")        # 🔥 SPEED OPTIMIZATION: Use Stop order for fastest entry execution
+        logging.info("⚡ SPEED MODE: Using Stop order for fastest breakout execution")
+        order_type = "Stop"
+        stop_price = price
+        order_price = None
+        logging.info(f"🎯 STOP ORDER: Will trigger at stopPrice={stop_price}")
         
         # 🔥 REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
         # Every new alert will now automatically flatten existing positions and place new orders
