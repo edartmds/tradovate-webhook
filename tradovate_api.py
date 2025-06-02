@@ -494,7 +494,7 @@ class TradovateClient:
 
     async def force_close_all_positions_immediately(self):
         """
-        Aggressively closes all positions and cancels all orders using multiple strategies.
+        Aggressively closes all positions and cancels all orders, including take profit limit orders, using multiple strategies.
         """
         if not self.access_token:
             await self.authenticate()
@@ -506,10 +506,24 @@ class TradovateClient:
 
         logging.info("🔥 Starting aggressive position and order cleanup")
 
-        # Step 1: Cancel all pending orders
+        # Step 1: Cancel all pending orders, including take profit limit orders
         try:
-            cancelled_orders = await self.cancel_all_pending_orders()
-            logging.info(f"✅ Cancelled {len(cancelled_orders)} pending orders")
+            pending_orders = await self.get_pending_orders()
+            cancelled_orders = []
+
+            for order in pending_orders:
+                order_id = order.get("id")
+                if order_id:
+                    try:
+                        async with httpx.AsyncClient() as client:
+                            response = await client.post(f"{BASE_URL}/order/cancel/{order_id}", headers=headers)
+                            response.raise_for_status()
+                            cancelled_orders.append(order_id)
+                            logging.info(f"✅ Cancelled order {order_id}")
+                    except Exception as e:
+                        logging.error(f"❌ Failed to cancel order {order_id}: {e}")
+
+            logging.info(f"✅ Cancelled {len(cancelled_orders)} pending orders, including take profit limit orders")
         except Exception as e:
             logging.error(f"❌ Failed to cancel all orders: {e}")
 
