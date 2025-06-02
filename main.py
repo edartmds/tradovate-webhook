@@ -1,678 +1,635 @@
-import httpx
 import os
 import logging
-import json  # Added for pretty-printing JSON responses
-import asyncio  # Added for retry logic
-import httpx  # Added for HTTP requests
-from dotenv import load_dotenv
-from fastapi import HTTPException
+import json
+import asyncio
+import traceback
+import time
+from datetime import datetime, timedelta
+from fastapi import FastAPI, Request, HTTPException
+from tradovate_api import TradovateClient
+import uvicorn
+import httpx
+import hashlib
 
-load_dotenv()
+# 🔥 RELAXED DUPLICATE DETECTION FOR AUTOMATED TRADING
+last_alert = {}  # {symbol: {"direction": "buy"/"sell", "timestamp": datetime, "alert_hash": str}}
+completed_trades = {}  # {symbol: {"last_completed_direction": "buy"/"sell", "completion_time": datetime}}
+active_orders = []  # Track active order IDs to manage cancellation
+DUPLICATE_THRESHOLD_SECONDS = 30  # 30 seconds - only prevent rapid-fire identical alerts
+COMPLETED_TRADE_COOLDOWN = 30  # 30 seconds - minimal cooldown for automated trading
 
-TRADOVATE_DEMO = os.getenv("TRADOVATE_DEMO", "true") == "true"
-BASE_URL = "https://demo-api.tradovate.com/v1" if TRADOVATE_DEMO else "https://live-api.tradovate.com/v1"
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
+logging.info(f"Loaded WEBHOOK_SECRET: {WEBHOOK_SECRET}")
 
-class TradovateClient:
-    def __init__(self):
-        self.access_token = None
-        self.account_id = None
-        self.account_spec = None
+LOG_DIR = "logs"
+os.makedirs(LOG_DIR, exist_ok=True)
 
-    async def authenticate(self):
-        url = f"{BASE_URL}/auth/accesstokenrequest"
-        auth_payload = {
-            "name": os.getenv("TRADOVATE_USERNAME"),
-            "password": os.getenv("TRADOVATE_PASSWORD"),
-            "appId": os.getenv("TRADOVATE_APP_ID"),
-            "appVersion": os.getenv("TRADOVATE_APP_VERSION"),
-            "cid": os.getenv("TRADOVATE_CLIENT_ID"),
-            "sec": os.getenv("TRADOVATE_CLIENT_SECRET"),
-            "deviceId": os.getenv("TRADOVATE_DEVICE_ID")
-        }
-        max_retries = 5
-        backoff_factor = 2
+log_file = os.path.join(LOG_DIR, "webhook_trades.log")
+logging.basicConfig(
+    handlers=[
+        logging.FileHandler(log_file),
+        logging.StreamHandler()
+    ],
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
+app = FastAPI()
+client = TradovateClient()
+
+
+@app.on_event("startup")
+async def startup_event():
+    logging.info("=== APPLICATION STARTING UP ===")
+    try:
+        await client.authenticate()
+        logging.info(f"=== AUTHENTICATION SUCCESSFUL ===")
+        logging.info(f"Account ID: {client.account_id}")
+        logging.info(f"Account Spec: {client.account_spec}")
+        logging.info(f"Access Token: {'***' if client.access_token else 'None'}")
+          # Close any existing positions and cancel pending orders on startup to start clean
+        logging.info("=== CLEANING UP EXISTING POSITIONS AND ORDERS ON STARTUP ===")
+        try:
+            # Close all positions first
+            closed_positions = await client.close_all_positions()
+            logging.info(f"Startup cleanup: Closed {len(closed_positions)} existing positions")
+            
+            # Cancel all pending orders
+            cancelled_orders = await client.cancel_all_pending_orders()
+            logging.info(f"Startup cleanup: Cancelled {len(cancelled_orders)} existing pending orders")
+        except Exception as e:
+            logging.warning(f"Startup cleanup failed (non-critical): {e}")
+            
+    except Exception as e:
+        logging.error(f"=== AUTHENTICATION FAILED ===")
+        logging.error(f"Error: {e}")
+        import traceback
+        logging.error(f"Traceback: {traceback.format_exc()}")
+        raise
+
+
+async def cancel_all_orders(symbol):
+    # Cancel all open orders for the symbol, regardless of status, and double-check after
+    list_url = f"https://demo-api.tradovate.com/v1/order/list"
+    cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel"
+    headers = {"Authorization": f"Bearer {client.access_token}"}
+    async with httpx.AsyncClient() as http_client:
+        # Repeat cancel attempts until no open orders remain (with a max retry limit)
+        max_retries = 8
         for attempt in range(max_retries):
-            try:
-                async with httpx.AsyncClient() as client:
-                    logging.debug(f"Sending authentication payload: {json.dumps(auth_payload, indent=2)}")
-                    r = await client.post(url, json=auth_payload)
-                    r.raise_for_status()
-                    data = r.json()
-                    logging.info(f"Authentication response: {json.dumps(data, indent=2)}")
-                    self.access_token = data["accessToken"]
-
-                    # Fetch account ID
-                    headers = {"Authorization": f"Bearer {self.access_token}"}
-                    acc_res = await client.get(f"{BASE_URL}/account/list", headers=headers)
-                    acc_res.raise_for_status()
-                    account_data = acc_res.json()
-                    logging.info(f"Account list response: {json.dumps(account_data, indent=2)}")
-                    self.account_id = account_data[0]["id"]
-                    self.account_spec = account_data[0].get("name")
-
-                    # Use hardcoded values from .env if available
-                    self.account_id = int(os.getenv("TRADOVATE_ACCOUNT_ID", self.account_id))
-                    self.account_spec = os.getenv("TRADOVATE_ACCOUNT_SPEC", self.account_spec)
-
-                    logging.info(f"Using account_id: {self.account_id} and account_spec: {self.account_spec} from environment variables.")
-
-                    if not self.account_spec:
-                        logging.error("Failed to retrieve accountSpec. accountSpec is None.")
-                        raise HTTPException(status_code=400, detail="Failed to retrieve accountSpec")
-
-                    logging.info(f"Retrieved accountSpec: {self.account_spec}")
-                    logging.info(f"Retrieved accountId: {self.account_id}")
-
-                    if not self.account_id:
-                        logging.error("Failed to retrieve account ID. Account ID is None.")
-                        raise HTTPException(status_code=400, detail="Failed to retrieve account ID")
-
-                    logging.info("Authentication successful. Access token, accountSpec, and account ID retrieved.")
-                    return  # Exit the retry loop on success
-
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code == 429:  # Handle rate-limiting
-                    retry_after = int(e.response.headers.get("Retry-After", backoff_factor * (attempt + 1)))
-                    logging.warning(f"Rate-limited (429). Retrying after {retry_after} seconds...")
-                    await asyncio.sleep(retry_after)
-                else:
-                    logging.error(f"Authentication failed: {e.response.text}")
-                    raise HTTPException(status_code=e.response.status_code, detail="Authentication failed")
-            except Exception as e:
-                logging.error(f"Unexpected error during authentication: {e}")
-                raise HTTPException(status_code=500, detail="Internal server error during authentication")
-
-        logging.error("Max retries reached. Authentication failed.")
-        raise HTTPException(status_code=429, detail="Authentication failed after maximum retries")
-
-    async def place_order(self, symbol: str, action: str, quantity: int = 1, order_data: dict = None):
-        if not self.access_token:
-            await self.authenticate()
-
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json"
-        }
-
-        # Use the provided order_data if available, otherwise construct a default payload
-        order_payload = order_data or {
-            "accountId": self.account_id,
-            "action": action.capitalize(),  # Ensure "Buy" or "Sell"
-            "symbol": symbol,
-            "orderQty": quantity,
-            "orderType": "limit",
-            "timeInForce": "GTC",
-            "isAutomated": True  # Optional field for automation
-        }
-
-        if not order_payload.get("accountId"):
-            logging.error("Missing accountId in order payload.")
-            raise HTTPException(status_code=400, detail="Missing accountId in order payload")
-
-        try:
-            async with httpx.AsyncClient() as client:
-                logging.debug(f"Sending order payload: {json.dumps(order_payload, indent=2)}")
-                r = await client.post(f"{BASE_URL}/order/placeorder", json=order_payload, headers=headers)
-                r.raise_for_status()
-                response_data = r.json()
-                logging.info(f"Order placement response: {json.dumps(response_data, indent=2)}")
-                return response_data
-        except httpx.HTTPStatusError as e:
-            logging.error(f"Order placement failed: {e.response.text}")
-            raise HTTPException(status_code=e.response.status_code, detail=f"Order placement failed: {e.response.text}")
-        except Exception as e:
-            logging.error(f"Unexpected error during order placement: {e}")
-            raise HTTPException(status_code=500, detail="Internal server error during order placement")
-
-    async def place_oso_order(self, initial_order: dict):
-        """
-        Places an Order Sends Order (OSO) order on Tradovate.
-
-        Args:
-            initial_order (dict): The JSON payload for the initial order with brackets.
-
-        Returns:
-            dict: The response from the Tradovate API.
-        """
-        if not self.access_token:
-            await self.authenticate()
-
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json"
-        }
-
-        try:
-            async with httpx.AsyncClient() as client:
-                logging.debug(f"Sending OSO order payload: {json.dumps(initial_order, indent=2)}")
-                response = await client.post(f"{BASE_URL}/order/placeoso", json=initial_order, headers=headers)
-                response.raise_for_status()
-                response_data = response.json()
-                logging.info(f"OSO order response: {json.dumps(response_data, indent=2)}")
-                return response_data
-        except httpx.HTTPStatusError as e:
-            logging.error(f"OSO order placement failed: {e.response.text}")
-            raise HTTPException(status_code=e.response.status_code, detail=f"OSO order placement failed: {e.response.text}")
-        except Exception as e:
-            logging.error(f"Unexpected error during OSO order placement: {e}")
-            raise HTTPException(status_code=500, detail="Internal server error during OSO order placement")
-
-    async def place_stop_order(self, entry_order_id: int, stop_price: float):
-        """
-        Places a STOP order after the ENTRY order is filled.
-
-        Args:
-            entry_order_id (int): The ID of the ENTRY order.
-            stop_price (float): The price for the STOP order.
-
-        Returns:
-            dict: The response from the Tradovate API.
-        """
-        if not self.access_token:
-            await self.authenticate()
-
-        if not entry_order_id:
-            logging.error("Invalid ENTRY order ID. Cannot place STOP order.")
-            raise HTTPException(status_code=400, detail="Invalid ENTRY order ID")
-
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json"
-        }
-
-        stop_order_payload = {
-            "accountId": self.account_id,
-            "action": "Sell",  # Assuming STOP orders are for selling
-            "linkedOrderId": entry_order_id,
-            "orderType": "stop",
-            "price": stop_price,
-            "timeInForce": "GTC",
-            "isAutomated": True
-        }
-
-        try:
-            async with httpx.AsyncClient() as client:
-                logging.debug(f"Sending STOP order payload: {json.dumps(stop_order_payload, indent=2)}")
-                response = await client.post(f"{BASE_URL}/order/placeorder", json=stop_order_payload, headers=headers)
-                response.raise_for_status()
-                response_data = response.json()
-                logging.info(f"STOP order response: {json.dumps(response_data, indent=2)}")
-                return response_data
-        except httpx.HTTPStatusError as e:
-            logging.error(f"STOP order placement failed: {e.response.text}")
-            raise HTTPException(status_code=e.response.status_code, detail=f"STOP order placement failed: {e.response.text}")
-        except Exception as e:
-            logging.error(f"Unexpected error during STOP order placement: {e}")
-            raise HTTPException(status_code=500, detail="Internal server error during STOP order placement")
-
-    async def get_pending_orders(self):
-        """
-        Retrieves all pending orders for the authenticated account.
-
-        Returns:
-            list: List of pending orders.
-        """
-        if not self.access_token:
-            await self.authenticate()
-
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json"
-        }
-
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(f"{BASE_URL}/order/list", headers=headers)
-                response.raise_for_status()
-                orders = response.json()
-                
-                # Filter for pending orders only
-                pending_orders = [order for order in orders if order.get("ordStatus") in ["Pending", "Working", "Submitted"]]
-                logging.info(f"Found {len(pending_orders)} pending orders")
-                logging.debug(f"Pending orders: {json.dumps(pending_orders, indent=2)}")
-                return pending_orders
-                
-        except httpx.HTTPStatusError as e:
-            logging.error(f"Failed to get orders: {e.response.text}")
-            raise HTTPException(status_code=e.response.status_code, detail=f"Failed to get orders: {e.response.text}")
-        except Exception as e:
-            logging.error(f"Unexpected error getting orders: {e}")
-            raise HTTPException(status_code=500, detail="Internal server error getting orders")
-
-    async def cancel_order(self, order_id: int):
-        """
-        Cancels a specific order by ID.
-
-        Args:
-            order_id (int): The ID of the order to cancel.
-
-        Returns:
-            dict: The response from the Tradovate API.
-        """
-        if not self.access_token:
-            await self.authenticate()
-
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json"
-        }
-
-        cancel_payload = {
-            "orderId": order_id
-        }
-
-        try:
-            async with httpx.AsyncClient() as client:
-                logging.debug(f"Canceling order {order_id}")
-                response = await client.post(f"{BASE_URL}/order/cancelorder", json=cancel_payload, headers=headers)
-                response.raise_for_status()
-                response_data = response.json()
-                logging.info(f"Order {order_id} cancelled successfully: {json.dumps(response_data, indent=2)}")
-                return response_data
-                
-        except httpx.HTTPStatusError as e:
-            logging.error(f"Failed to cancel order {order_id}: {e.response.text}")
-            raise HTTPException(status_code=e.response.status_code, detail=f"Failed to cancel order: {e.response.text}")
-        except Exception as e:
-            logging.error(f"Unexpected error canceling order {order_id}: {e}")
-            raise HTTPException(status_code=500, detail="Internal server error canceling order")
-
-    async def cancel_all_pending_orders(self):
-        """
-        Cancels all pending orders for the authenticated account.
-
-        Returns:
-            list: List of cancelled order responses.
-        """
-        try:
-            pending_orders = await self.get_pending_orders()
-            cancelled_orders = []
-            
-            for order in pending_orders:
-                order_id = order.get("id")
-                if order_id:
+            resp = await http_client.get(list_url, headers=headers)
+            resp.raise_for_status()
+            orders = resp.json()
+            # Cancel ALL orders for the symbol, regardless of status (except Filled/Cancelled/Rejected)
+            open_orders = [o for o in orders if o.get("symbol") == symbol and o.get("status") not in ("Filled", "Cancelled", "Rejected")]
+            if not open_orders:
+                break
+            for order in open_orders:
+                oid = order.get("id")
+                if oid:
                     try:
-                        result = await self.cancel_order(order_id)
-                        cancelled_orders.append(result)
-                        logging.info(f"Successfully cancelled order {order_id}")
+                        await http_client.post(f"{cancel_url}/{oid}", headers=headers)
+                        logging.info(f"Cancelled order {oid} for {symbol} (status: {order.get('status')})")
                     except Exception as e:
-                        logging.error(f"Failed to cancel order {order_id}: {e}")
-                        
-            logging.info(f"Cancelled {len(cancelled_orders)} out of {len(pending_orders)} pending orders")
-            return cancelled_orders
-            
-        except Exception as e:
-            logging.error(f"Error cancelling all pending orders: {e}")
-            raise HTTPException(status_code=500, detail="Internal server error cancelling orders")
+                        logging.error(f"Failed to cancel order {oid} for {symbol}: {e}")
+            await asyncio.sleep(0.5)
+        # Final check and log if any remain
+        resp = await http_client.get(list_url, headers=headers)
+        resp.raise_for_status()
+        orders = resp.json()
+        open_orders = [o for o in orders if o.get("symbol") == symbol and o.get("status") not in ("Filled", "Cancelled", "Rejected")]
+        if open_orders:
+            logging.error(f"After repeated cancel attempts, still found open orders for {symbol}: {[o.get('id') for o in open_orders]} (statuses: {[o.get('status') for o in open_orders]})")
 
-    async def place_oco_order(self, order1: dict, order2: dict):
-        """
-        Places an Order Cancels Order (OCO) order on Tradovate.
+async def flatten_position(symbol):
+    url = f"https://demo-api.tradovate.com/v1/position/closeposition"
+    headers = {"Authorization": f"Bearer {client.access_token}"}
+    async with httpx.AsyncClient() as http_client:
+        await http_client.post(url, headers=headers, json={"symbol": symbol})
+
+async def wait_until_no_open_orders(symbol, timeout=10):
+    """
+    Poll Tradovate until there are no open orders for the symbol, or until timeout (seconds).
+    """
+    url = f"https://demo-api.tradovate.com/v1/order/list"
+    headers = {"Authorization": f"Bearer {client.access_token}"}
+    start = asyncio.get_event_loop().time()
+    while True:
+        async with httpx.AsyncClient() as http_client:
+            resp = await http_client.get(url, headers=headers)
+            resp.raise_for_status()
+            orders = resp.json()
+            open_orders = [o for o in orders if o.get("symbol") == symbol and o.get("status") in ("Working", "Accepted")]
+            if not open_orders:
+                return
+        if asyncio.get_event_loop().time() - start > timeout:
+            logging.warning(f"Timeout waiting for all open orders to clear for {symbol}.")
+            return
+        await asyncio.sleep(0.5)
+
+def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
+    logging.info(f"Raw alert text: {alert_text}")
+    parsed_data = {}
+    if alert_text.startswith("="):
+        try:
+            json_part, remaining_text = alert_text[1:].split("\n", 1)
+            json_data = json.loads(json_part)
+            parsed_data.update(json_data)
+            alert_text = remaining_text
+        except (json.JSONDecodeError, ValueError) as e:
+            raise ValueError(f"Error parsing JSON-like structure: {e}")
+
+    for line in alert_text.split("\n"):
+        if "=" in line:
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            parsed_data[key] = value
+            logging.info(f"Parsed {key} = {value}")
+        elif line.strip().upper() in ["BUY", "SELL"]:
+            parsed_data["action"] = line.strip().capitalize()
+            logging.info(f"Parsed action = {parsed_data['action']}")
+
+    logging.info(f"Complete parsed alert data: {parsed_data}")
+
+    required_fields = ["symbol", "action"]
+    for field in required_fields:
+        if field not in parsed_data or not parsed_data[field]:
+            raise ValueError(f"Missing or invalid field: {field}")
+
+    for target in ["T1", "STOP", "PRICE"]:
+        if target in parsed_data:
+            parsed_data[target] = float(parsed_data[target])
+            logging.info(f"Converted {target} to float: {parsed_data[target]}")
+
+    return parsed_data
+
+def hash_alert(data: dict) -> str:
+    """Generate a unique hash for an alert to detect duplicates."""
+    # Only include essential trading fields for duplicate detection
+    essential_fields = {
+        "symbol": data.get("symbol"),
+        "action": data.get("action"), 
+        "PRICE": data.get("PRICE"),
+        "T1": data.get("T1"),
+        "STOP": data.get("STOP")
+    }
+    alert_string = json.dumps(essential_fields, sort_keys=True)
+    return hashlib.sha256(alert_string.encode()).hexdigest()
+
+def is_duplicate_alert(symbol: str, action: str, data: dict) -> bool:
+    """
+    🔥 RELAXED DUPLICATE DETECTION FOR AUTOMATED TRADING
+    
+    Only blocks truly rapid-fire identical alerts within 30 seconds.
+    Allows direction changes and new signals for automated flattening strategy.
+    
+    Returns True ONLY if:
+    1. IDENTICAL alert hash received within 30 seconds (prevents accidental spam)
+    """
+    current_time = datetime.now()
+    alert_hash = hash_alert(data)
+    
+    # ONLY Check for rapid-fire identical alerts (same exact parameters)
+    if symbol in last_alert:
+        last_alert_data = last_alert[symbol]
+        time_diff = (current_time - last_alert_data["timestamp"]).total_seconds()
         
-        Args:
-            order1 (dict): First order payload
-            order2 (dict): Second order payload
-            
-        Returns:
-            dict: The response from the Tradovate API.
-        """
-        if not self.access_token:
-            await self.authenticate()
+        # Only block if EXACT same alert within 30 seconds
+        if (last_alert_data.get("alert_hash") == alert_hash and 
+            time_diff < DUPLICATE_THRESHOLD_SECONDS):
+            logging.warning(f"🚫 RAPID-FIRE DUPLICATE BLOCKED: {symbol} {action}")
+            logging.warning(f"🚫 Identical alert received {time_diff:.1f} seconds ago")
+            return True
+    
+    # 🔥 REMOVED: Direction-based blocking - allow all direction changes
+    # 🔥 REMOVED: Post-completion blocking - allow immediate new signals
+    # This enables full automated trading with position flattening
+    
+    # Update tracking for rapid-fire detection only
+    last_alert[symbol] = {
+        "direction": action.lower(),
+        "timestamp": current_time,
+        "alert_hash": alert_hash
+    }
+    
+    logging.info(f"✅ ALERT ACCEPTED: {symbol} {action} - Automated trading enabled")
+    return False
 
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json"
-        }
+def mark_trade_completed(symbol: str, direction: str):
+    """Mark a trade as completed to prevent immediate duplicates."""
+    completed_trades[symbol] = {
+        "last_completed_direction": direction.lower(),
+        "completion_time": datetime.now()
+    }
+    logging.info(f"🏁 TRADE COMPLETION MARKED: {symbol} {direction}")
+    
+def cleanup_old_tracking_data():
+    """Clean up old tracking data to prevent memory leaks."""
+    current_time = datetime.now()
+    cutoff_time = current_time - timedelta(seconds=max(DUPLICATE_THRESHOLD_SECONDS, COMPLETED_TRADE_COOLDOWN) * 2)
+    
+    # Clean old alerts
+    symbols_to_remove = []
+    for symbol, data in last_alert.items():
+        if data["timestamp"] < cutoff_time:
+            symbols_to_remove.append(symbol)
+    for symbol in symbols_to_remove:
+        del last_alert[symbol]
+        
+    # Clean old completed trades
+    symbols_to_remove = []
+    for symbol, data in completed_trades.items():
+        if data["completion_time"] < cutoff_time:
+            symbols_to_remove.append(symbol)
+    for symbol in symbols_to_remove:
+        del completed_trades[symbol]
 
-        # OCO requires a different format - orders as an array
-        oco_payload = {
-            "orders": [order1, order2]
-        }
-
+# Direct API function to place a stop loss order (DEPRECATED - using OCO/OSO instead)
+async def place_stop_loss_order_legacy(stop_order_data):
+    """
+    DEPRECATED: This function is kept for reference only.
+    We now use OCO/OSO bracket orders instead of manual stop loss placement.
+    """
+    logging.warning("DEPRECATED: place_stop_loss_order_legacy called - use OCO/OSO instead")
+    return None, "DEPRECATED: Use OCO/OSO bracket orders instead"
+async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
+    """
+    🔥 ENHANCED ORDER MONITORING with trade completion detection
+    
+    Monitor all orders and manage their relationships:
+    - If ENTRY is filled, place the STOP order and keep TP active
+    - If TP is filled, cancel STOP and mark trade as completed
+    - If STOP is filled, cancel TP and mark trade as completed
+    - Track completion to prevent immediate duplicate alerts
+    """
+    logging.info(f"Starting comprehensive order monitoring for {symbol}")
+    entry_filled = False
+    stop_placed = False
+    monitoring_start_time = asyncio.get_event_loop().time()
+    max_monitoring_time = 3600  # 1 hour timeout
+    
+    # Extra check for stop_order_data
+    if not stop_order_data:
+        logging.error("CRITICAL: No stop_order_data provided when starting monitoring")
+    else:
+        logging.info(f"Will use this STOP data when entry fills: {stop_order_data}")
+    
+    # Check orders every second
+    poll_interval = 1
+    
+    while True:
         try:
-            async with httpx.AsyncClient() as client:
-                logging.debug(f"Sending OCO order payload: {json.dumps(oco_payload, indent=2)}")
-                response = await client.post(f"{BASE_URL}/order/placeoco", json=oco_payload, headers=headers)
-                response.raise_for_status()
-                response_data = response.json()
-                logging.info(f"OCO order response: {json.dumps(response_data, indent=2)}")
-                return response_data
-        except httpx.HTTPStatusError as e:
-            logging.error(f"OCO order placement failed: {e.response.text}")
-            raise HTTPException(status_code=e.response.status_code, detail=f"OCO order placement failed: {e.response.text}")
+            headers = {"Authorization": f"Bearer {client.access_token}"}
+            active_orders = {}
+            logging.info(f"Order tracking state: {order_tracking}")
+            
+            # Check status of all tracked orders
+            for label, order_id in order_tracking.items():
+                if order_id is None:
+                    continue
+                    
+                url = f"https://demo-api.tradovate.com/v1/order/{order_id}"
+                async with httpx.AsyncClient() as http_client:
+                    response = await http_client.get(url, headers=headers)
+                    response.raise_for_status()
+                    order_status = response.json()
+                    
+                status = order_status.get("status")
+                
+                # Special focus on ENTRY order status
+                if label == "ENTRY":
+                    logging.info(f"CRITICAL: ENTRY order (ID: {order_id}) status: {status}")
+                else:
+                    logging.info(f"Order {label} (ID: {order_id}) status: {status}")
+                
+                if status and status.lower() == "filled":
+                    # CRITICAL: If ENTRY is filled and we haven't placed stop loss yet
+                    if label == "ENTRY" and not entry_filled:
+                        entry_filled = True
+
+                        # Prepare the OSO payload for stop loss and take profit
+                        if stop_order_data and "T1" in stop_order_data:
+                            oso_payload = {
+                                "accountSpec": client.account_spec,
+                                "accountId": client.account_id,
+                                "action": stop_order_data.get("action"),
+                                "symbol": stop_order_data.get("symbol"),
+                                "orderQty": stop_order_data.get("orderQty", 1),
+                                "orderType": "Stop",
+                                "price": stop_order_data.get("stopPrice"),
+                                "isAutomated": True,
+                                "bracket1": {
+                                    "action": "Sell" if stop_order_data.get("action") == "Buy" else "Buy",
+                                    "orderType": "Limit",
+                                    "price": stop_order_data.get("T1"),
+                                    "timeInForce": "GTC"
+                                }
+                            }
+
+                            try:
+                                # Place the OSO order
+                                async with httpx.AsyncClient() as http_client:
+                                    response = await http_client.post(
+                                        f"https://demo-api.tradovate.com/v1/order/placeOSO",
+                                        headers={"Authorization": f"Bearer {client.access_token}", "Content-Type": "application/json"},
+                                        json=oso_payload
+                                    )
+                                    response.raise_for_status()
+                                    oso_result = response.json()
+
+                                    if "orderId" in oso_result:
+                                        logging.info(f"OSO order placed successfully: {oso_result}")
+                                        stop_placed = True
+                                    else:
+                                        raise ValueError(f"Failed to place OSO order: {oso_result}")
+                            except Exception as e:
+                                logging.error(f"Error placing OSO order: {e}")
+                        else:
+                            logging.error("Missing stop_order_data or T1 for OSO placement.")
+                    
+                    # 🔥 CRITICAL: If TP1 is filled, cancel the stop loss and mark trade completion
+                    elif label == "TP1" and entry_filled:
+                        logging.info(f"🏁 TP1 order filled! Trade completed successfully - PROFIT TARGET HIT")
+                        trade_direction = stop_order_data.get("action", "unknown") if stop_order_data else "unknown"
+                        
+                        # Mark trade as completed to prevent immediate duplicates
+                        mark_trade_completed(symbol, trade_direction)
+                        logging.info(f"✅ Trade completion recorded: {symbol} {trade_direction} via Take Profit")
+                        
+                        if order_tracking.get("STOP"):
+                            cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{order_tracking['STOP']}"
+                            try:
+                                async with httpx.AsyncClient() as http_client:
+                                    resp = await http_client.post(cancel_url, headers=headers)
+                                    if resp.status_code == 200:
+                                        logging.info(f"STOP order {order_tracking['STOP']} cancelled after TP1 fill.")
+                                    else:
+                                        logging.warning(f"Failed to cancel STOP order after TP1 fill. Status: {resp.status_code}")
+                            except Exception as e:
+                                logging.error(f"Exception while cancelling STOP order after TP1 fill: {e}")
+                        return  # Exit monitoring
+                    
+                    # 🔥 CRITICAL: If stop loss is filled, cancel the take profit and mark trade completion
+                    elif label == "STOP" and entry_filled:
+                        logging.info(f"🛑 STOP order filled! Trade completed - STOP LOSS HIT")
+                        trade_direction = stop_order_data.get("action", "unknown") if stop_order_data else "unknown"
+                        
+                        # Mark trade as completed to prevent immediate duplicates
+                        mark_trade_completed(symbol, trade_direction)
+                        logging.info(f"✅ Trade completion recorded: {symbol} {trade_direction} via Stop Loss")
+                        
+                        if order_tracking.get("TP1"):
+                            cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{order_tracking['TP1']}"
+                            try:
+                                async with httpx.AsyncClient() as http_client:
+                                    resp = await http_client.post(cancel_url, headers=headers)
+                                    if resp.status_code == 200:
+                                        logging.info(f"TP1 order {order_tracking['TP1']} cancelled after STOP fill.")
+                                    else:
+                                        logging.warning(f"Failed to cancel TP1 order after STOP fill. Status: {resp.status_code}")
+                            except Exception as e:
+                                logging.error(f"Exception while cancelling TP1 order after STOP fill: {e}")
+                        return  # Exit monitoring
+                        
+                elif status in ["Working", "Accepted"]:
+                    active_orders[label] = order_id
+                    
+            # Check if we've been monitoring too long
+            if asyncio.get_event_loop().time() - monitoring_start_time > max_monitoring_time:
+                logging.warning(f"Order monitoring timeout reached for {symbol}. Stopping.")
+                return
+            
+            # If no active orders remain, stop monitoring
+            if not active_orders:
+                logging.info("No active orders remaining. Stopping monitoring.")
+                return
+            
+            # Check 2x per second if entry has been filled
+            if not entry_filled:
+                poll_interval = 0.5
+            else:
+                poll_interval = 1
+                
+            await asyncio.sleep(poll_interval)
+            
         except Exception as e:
-            logging.error(f"Unexpected error during OCO order placement: {e}")
-            raise HTTPException(status_code=500, detail="Internal server error during OCO order placement")
+            logging.error(f"Error in order monitoring: {e}")
+            await asyncio.sleep(2)
 
-    async def get_positions(self):
-        """
-        Retrieves all open positions for the authenticated account.
 
-        Returns:
-            list: List of open positions.
-        """
-        if not self.access_token:
-            await self.authenticate()
+@app.post("/webhook")
+async def webhook(req: Request):
+    logging.info("=== WEBHOOK ENDPOINT HIT ===")
+    try:
+        # Parse the incoming request
+        content_type = req.headers.get("content-type")
+        raw_body = await req.body()
+        logging.info(f"Content-Type: {content_type}")
+        logging.info(f"Raw body: {raw_body.decode('utf-8')}")
 
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json"
-        }
+        if content_type == "application/json":
+            data = await req.json()
+        elif content_type.startswith("text/plain"):
+            text_data = raw_body.decode("utf-8")
+            data = parse_alert_to_tradovate_json(text_data, client.account_id)
+        else:
+            logging.error(f"Unsupported content type: {content_type}")
+            raise HTTPException(status_code=400, detail="Unsupported content type")
 
+        logging.info(f"=== PARSED ALERT DATA: {data} ===")        # Extract required fields
+        symbol = data.get("symbol")
+        action = data.get("action")
+        price = data.get("PRICE")
+        t1 = data.get("T1")
+        stop = data.get("STOP")
+
+        logging.info(f"Extracted fields - Symbol: {symbol}, Action: {action}, Price: {price}, T1: {t1}, Stop: {stop}")
+
+        if not all([symbol, action, price, t1, stop]):
+            missing = [k for k, v in {"symbol": symbol, "action": action, "PRICE": price, "T1": t1, "STOP": stop}.items() if not v]
+            logging.error(f"Missing required fields: {missing}")
+            raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")        # Map TradingView symbol to Tradovate symbol
+        if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
+            symbol = "NQM5"
+            logging.info(f"Mapped symbol to: {symbol}")
+        
+        # 🔥 MINIMAL DUPLICATE DETECTION - Only prevent rapid-fire identical alerts
+        logging.info("🔍 === CHECKING FOR RAPID-FIRE DUPLICATES ONLY ===")
+        cleanup_old_tracking_data()  # Clean up old data first
+        
+        if is_duplicate_alert(symbol, action, data):
+            logging.warning(f"🚫 RAPID-FIRE DUPLICATE BLOCKED: {symbol} {action}")
+            logging.warning(f"🚫 Reason: Identical alert within 30 seconds")
+            return {
+                "status": "rejected", 
+                "reason": "rapid_fire_duplicate",
+                "message": f"Rapid-fire duplicate alert blocked for {symbol} {action}"
+            }
+        
+        logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
+          # Determine optimal order type based on current market conditions
+        logging.info("🔍 Analyzing market conditions for optimal order type...")
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(f"{BASE_URL}/position/list", headers=headers)
-                response.raise_for_status()
-                positions = response.json()
+            order_config = await client.determine_optimal_order_type(symbol, action, price)
+            order_type = order_config["orderType"]
+            order_price = order_config.get("price")
+            stop_price = order_config.get("stopPrice")
+            
+            logging.info(f"💡 OPTIMAL ORDER TYPE: {order_type}")
+            if order_type == "Stop":
+                logging.info(f"📊 STOP ORDER: Will trigger when price reaches {stop_price}")
+            else:
+                logging.info(f"📊 LIMIT ORDER: Will execute at price {order_price}")
                 
-                # 🔥 ENHANCED POSITION DEBUGGING: Log all position objects for analysis
-                logging.info(f"🔍 RAW POSITIONS RESPONSE: {json.dumps(positions, indent=2)}")
-                
-                # Filter for open positions only (netPos != 0)
-                open_positions = [pos for pos in positions if pos.get("netPos", 0) != 0]
-                logging.info(f"Found {len(open_positions)} open positions")
-                
-                # 🔥 ENHANCED DEBUGGING: Log each open position structure
-                for i, pos in enumerate(open_positions):
-                    logging.info(f"🔍 OPEN POSITION {i+1}: {json.dumps(pos, indent=2)}")
-                    # Log all available fields for debugging
-                    all_fields = list(pos.keys())
-                    logging.info(f"🔍 Available fields in position {i+1}: {all_fields}")
-                
-                return open_positions
-                
-        except httpx.HTTPStatusError as e:
-            logging.error(f"Failed to get positions: {e.response.text}")
-            raise HTTPException(status_code=e.response.status_code, detail=f"Failed to get positions: {e.response.text}")
         except Exception as e:
-            logging.error(f"Unexpected error getting positions: {e}")
-            raise HTTPException(status_code=500, detail="Internal server error getting positions")
-
-    async def close_position(self, symbol: str):
-        """
-        Closes a specific position by symbol using a market order.
-
-        Args:
-            symbol (str): The symbol of the position to close.
-
-        Returns:
-            dict: The response from the Tradovate API.
-        """
-        if not self.access_token:
-            await self.authenticate()
-
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json"
-        }
-
-        # First, get the current position for this symbol
+            # 🔥 FALLBACK: If intelligent selection fails, default to traditional approach
+            logging.warning(f"⚠️ Intelligent order type selection failed: {e}")
+            logging.info("🔄 FALLBACK: Using traditional Stop order entry")
+            order_type = "Stop"
+            stop_price = price
+            order_price = None
+            logging.info(f"🔄 FALLBACK STOP ORDER: Will trigger at stopPrice={stop_price}")
+        
+        # 🔥 REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
+        # Every new alert will now automatically flatten existing positions and place new orders
+        
+        # STEP 1: Close all existing positions to prevent over-leveraging  
+        logging.info("🔥🔥🔥 === AUTOMATED FLATTENING: CLOSING ALL EXISTING POSITIONS === 🔥🔥🔥")
         try:
-            positions = await self.get_positions()
-            target_position = None
-            
-            for position in positions:
-                if position.get("symbol") == symbol:
-                    target_position = position
-                    break
-            
-            if not target_position:
-                logging.info(f"No open position found for symbol {symbol}")
-                return {"status": "no_position", "message": f"No open position for {symbol}"}
-            
-            net_pos = target_position.get("netPos", 0)
-            if net_pos == 0:
-                logging.info(f"Position for {symbol} already closed (netPos = 0)")
-                return {"status": "already_closed", "message": f"Position for {symbol} already closed"}
-            
-            # Determine the action needed to close the position
-            # If netPos > 0 (long position), we need to sell to close
-            # If netPos < 0 (short position), we need to buy to close
-            close_action = "Sell" if net_pos > 0 else "Buy"
-            close_quantity = abs(net_pos)
-            
-            logging.info(f"Closing position for {symbol}: netPos={net_pos}, action={close_action}, qty={close_quantity}")
-            
-            # Create market order to close position
-            close_order = {
-                "accountSpec": self.account_spec,
-                "accountId": self.account_id,
-                "action": close_action,
+            success = await client.force_close_all_positions_immediately()
+            if success:
+                logging.info("✅ All existing positions successfully closed")
+            else:
+                logging.error("❌ CRITICAL: Failed to close all positions - proceeding anyway")
+        except Exception as e:
+            logging.error(f"❌ CRITICAL ERROR closing positions: {e}")
+            # Continue anyway - user wants new orders placed regardless
+
+        # STEP 2: Cancel all existing pending orders to prevent over-leveraging
+        logging.info("=== CANCELLING ALL PENDING ORDERS ===")
+        try:
+            cancelled_orders = await client.cancel_all_pending_orders()
+            logging.info(f"Successfully cancelled {len(cancelled_orders)} pending orders")
+        except Exception as e:
+            logging.warning(f"Failed to cancel some orders: {e}")
+            # Continue with new order placement even if cancellation partially fails        # STEP 3: Place entry order with automatic bracket orders (OSO)
+        logging.info(f"=== PLACING OSO BRACKET ORDER WITH INTELLIGENT ORDER TYPE ===")
+        logging.info(f"Symbol: {symbol}, Order Type: {order_type}, Entry: {price}, TP: {t1}, SL: {stop}")
+        
+        # 🔥 SPEED OPTIMIZATION: For STOP orders, prioritize fastest possible execution
+        if order_type == "Stop":
+            logging.info("⚡ SPEED MODE: STOP order detected - optimizing for fastest execution")
+            # For breakout/breakdown strategies, speed is critical
+        else:
+            logging.info("📊 LIMIT order - using standard execution path")
+        
+        # Determine opposite action for take profit and stop loss
+        opposite_action = "Sell" if action.lower() == "buy" else "Buy"
+          # Build OSO payload with intelligent order type selection
+        oso_payload = {
+            "accountSpec": client.account_spec,
+            "accountId": client.account_id,
+            "action": action.capitalize(),  # "Buy" or "Sell"
+            "symbol": symbol,
+            "orderQty": 1,
+            "orderType": order_type,   # Intelligently selected based on market conditions
+            "timeInForce": "GTC",
+            "isAutomated": True,
+            # Take Profit bracket (bracket1)
+            "bracket1": {
+                "accountSpec": client.account_spec,
+                "accountId": client.account_id,
+                "action": opposite_action,
                 "symbol": symbol,
-                "orderQty": close_quantity,
-                "orderType": "Market",
+                "orderQty": 1,
+                "orderType": "Limit",
+                "price": t1,
+                "timeInForce": "GTC",
+                "isAutomated": True
+            },
+            # Stop Loss bracket (bracket2)
+            "bracket2": {
+                "accountSpec": client.account_spec,
+                "accountId": client.account_id,
+                "action": opposite_action,
+                "symbol": symbol,
+                "orderQty": 1,
+                "orderType": "Stop",
+                "stopPrice": stop,
                 "timeInForce": "GTC",
                 "isAutomated": True
             }
-            
-            # Place the closing order
-            async with httpx.AsyncClient() as client:
-                logging.debug(f"Placing position close order: {json.dumps(close_order, indent=2)}")
-                response = await client.post(f"{BASE_URL}/order/placeorder", json=close_order, headers=headers)
-                response.raise_for_status()
-                response_data = response.json()
-                logging.info(f"Position close order placed: {json.dumps(response_data, indent=2)}")
-                return response_data
-                
-        except httpx.HTTPStatusError as e:
-            logging.error(f"Failed to close position for {symbol}: {e.response.text}")
-            raise HTTPException(status_code=e.response.status_code, detail=f"Failed to close position: {e.response.text}")
-        except Exception as e:
-            logging.error(f"Unexpected error closing position for {symbol}: {e}")
-            raise HTTPException(status_code=500, detail="Internal server error closing position")
-
-    async def close_all_positions(self):
-        """
-        Closes all open positions for the authenticated account.
-
-        Returns:
-            list: List of close order responses.
-        """
-        try:
-            positions = await self.get_positions()
-            closed_positions = []
-            
-            for position in positions:
-                symbol = position.get("symbol")
-                net_pos = position.get("netPos", 0)
-                
-                if symbol and net_pos != 0:
-                    try:
-                        result = await self.close_position(symbol)
-                        closed_positions.append(result)
-                        logging.info(f"Successfully closed position for {symbol}")
-                    except Exception as e:
-                        logging.error(f"Failed to close position for {symbol}: {e}")
-                        
-            logging.info(f"Closed {len(closed_positions)} positions")
-            return closed_positions
-            
-        except Exception as e:
-            logging.error(f"Error closing all positions: {e}")
-            raise HTTPException(status_code=500, detail="Internal server error closing positions")
-
-    async def force_close_all_positions_immediately(self):
-        """
-        Aggressively closes all positions and cancels all orders, including take profit limit orders, using multiple strategies.
-        """
-        if not self.access_token:
-            await self.authenticate()
-
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json"
         }
-
-        logging.info("🔥 Starting aggressive position and order cleanup")
-
-        # Step 1: Cancel all pending orders, including take profit limit orders
+        
+        # 🔥 CRITICAL: Add dynamic price/stopPrice fields based on intelligent order type
+        if order_type == "Stop":
+            # Stop order needs stopPrice field
+            oso_payload["stopPrice"] = stop_price
+            logging.info(f"🎯 STOP ORDER: Entry will trigger at stopPrice={stop_price}")
+        else:
+            # Limit order needs price field  
+            oso_payload["price"] = order_price
+            logging.info(f"🎯 LIMIT ORDER: Entry will execute at price={order_price}")
+        
+        logging.info(f"=== OSO PAYLOAD ===")
+        logging.info(f"{json.dumps(oso_payload, indent=2)}")        # STEP 4: Place OSO bracket order with speed optimizations
+        logging.info("=== PLACING OSO BRACKET ORDER ===")
+        
+        # 🔥 SPEED OPTIMIZATION: Validate payload before submission to prevent rejection delays
+        required_fields = ['accountSpec', 'accountId', 'action', 'symbol', 'orderQty', 'orderType', 'timeInForce']
+        for field in required_fields:
+            if field not in oso_payload:
+                raise HTTPException(status_code=400, detail=f"Missing required OSO field: {field}")
+        
         try:
-            pending_orders = await self.get_pending_orders()
-            cancelled_orders = []
-
-            for order in pending_orders:
-                order_id = order.get("id")
-                if order_id:
-                    try:
-                        async with httpx.AsyncClient() as client:
-                            response = await client.post(f"{BASE_URL}/order/cancel/{order_id}", headers=headers)
-                            response.raise_for_status()
-                            cancelled_orders.append(order_id)
-                            logging.info(f"✅ Cancelled order {order_id}")
-                    except Exception as e:
-                        logging.error(f"❌ Failed to cancel order {order_id}: {e}")
-
-            logging.info(f"✅ Cancelled {len(cancelled_orders)} pending orders, including take profit limit orders")
-        except Exception as e:
-            logging.error(f"❌ Failed to cancel all orders: {e}")
-
-        max_attempts = 3
-
-        for attempt in range(max_attempts):
-            try:
-                logging.info(f"🔥 Attempt {attempt + 1}/{max_attempts} to close all positions")
-
-                positions = await self.get_positions()
-                if not positions:
-                    logging.info("✅ No open positions found")
-                    return True
-
-                for position in positions:
-                    net_pos = position.get("netPos", 0)
-                    if net_pos == 0:
-                        continue
-
-                    symbol = position.get("symbol") or str(position.get("contractId"))
-                    if not symbol:
-                        logging.error(f"❌ Could not identify symbol for position: {position}")
-                        continue
-
-                    try:
-                        close_action = "Sell" if net_pos > 0 else "Buy"
-                        close_order = {
-                            "accountSpec": self.account_spec,
-                            "accountId": self.account_id,
-                            "action": close_action,
-                            "symbol": symbol,
-                            "orderQty": abs(net_pos),
-                            "orderType": "Market",
-                            "timeInForce": "IOC",
-                            "isAutomated": True
-                        }
-
-                        async with httpx.AsyncClient() as client:
-                            response = await client.post(f"{BASE_URL}/order/placeorder", json=close_order, headers=headers)
-                            response.raise_for_status()
-                            logging.info(f"✅ Closed position for {symbol}")
-                    except Exception as e:
-                        logging.error(f"❌ Failed to close position for {symbol}: {e}")
-
-                await asyncio.sleep(2)
-
-            except Exception as e:
-                logging.error(f"❌ Error during position closure attempt {attempt + 1}: {e}")
-
-        # Final verification
-        try:
-            remaining_positions = await self.get_positions()
-            if remaining_positions:
-                logging.error(f"❌ {len(remaining_positions)} positions still open after all attempts")
-                return False
-            logging.info("✅ All positions successfully closed")
-            return True
-        except Exception as e:
-            logging.error(f"❌ Error verifying positions: {e}")
-            return False
-
-    async def liquidate_position(self, symbol: str):
-        """
-        🔥 CRITICAL: Liquidates a specific position using the official Tradovate liquidation endpoint.
-        This is the most aggressive way to close a position immediately.
-
-        Args:
-            symbol (str): The symbol of the position to liquidate.
-
-        Returns:
-            dict: The response from the Tradovate API.
-        """
-        if not self.access_token:
-            await self.authenticate()
-
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json"
-        }
-
-        # First, get the current position for this symbol
-        try:
-            positions = await self.get_positions()
-            target_position = None
+            # 🚀 FASTEST EXECUTION: Place OSO order immediately
+            start_time = time.time()
+            oso_result = await client.place_oso_order(oso_payload)
+            execution_time = (time.time() - start_time) * 1000  # Convert to milliseconds
             
-            for position in positions:
-                if position.get("symbol") == symbol:
-                    target_position = position
-                    break
+            logging.info(f"✅ OSO BRACKET ORDER PLACED SUCCESSFULLY in {execution_time:.2f}ms")
+            logging.info(f"OSO Result: {oso_result}")
             
-            if not target_position:
-                logging.info(f"No open position found for symbol {symbol}")
-                return {"status": "no_position", "message": f"No open position for {symbol}"}
+            # 🔥 MARK SUCCESSFUL TRADE PLACEMENT - This helps prevent immediate duplicates
+            # When this trade completes (hits TP or SL), we'll prevent duplicate signals for a period
+            logging.info(f"📝 Recording successful trade placement: {symbol} {action}")
+            # Note: We mark completion when the trade actually completes, not just when placed
             
-            net_pos = target_position.get("netPos", 0)
-            if net_pos == 0:
-                logging.info(f"Position for {symbol} already closed (netPos = 0)")
-                return {"status": "already_closed", "message": f"Position for {symbol} already closed"}
-            
-            logging.info(f"🔥 LIQUIDATING position for {symbol}: netPos={net_pos}")
-            
-            # Use the official liquidation endpoint
-            liquidation_payload = {
+            return {
+                "status": "success", 
+                "order": oso_result,
+                "execution_time_ms": execution_time,
+                "order_type": order_type,
                 "symbol": symbol
             }
             
-            # Place the liquidation order
-            async with httpx.AsyncClient() as client:
-                logging.debug(f"Placing liquidation order: {json.dumps(liquidation_payload, indent=2)}")
-                response = await client.post(f"{BASE_URL}/order/liquidateposition", json=liquidation_payload, headers=headers)
-                response.raise_for_status()
-                response_data = response.json()
-                logging.info(f"✅ Position liquidation order placed: {json.dumps(response_data, indent=2)}")
-                return response_data
-                
-        except httpx.HTTPStatusError as e:
-            logging.error(f"Failed to liquidate position for {symbol}: {e.response.text}")
-            raise HTTPException(status_code=e.response.status_code, detail=f"Failed to liquidate position: {e.response.text}")
         except Exception as e:
-            logging.error(f"Unexpected error liquidating position for {symbol}: {e}")
-            raise HTTPException(status_code=500, detail="Internal server error liquidating position")
-
-    async def liquidate_all_positions(self):
-        """
-        🔥 CRITICAL: Liquidates ALL open positions using the official Tradovate liquidation endpoint.
-        This is the most aggressive way to close all positions immediately.
-
-        Returns:
-            list: List of liquidation responses.
-        """
-        try:
-            positions = await self.get_positions()
-            liquidated_positions = []
+            execution_time = (time.time() - start_time) * 1000 if 'start_time' in locals() else 0
+            logging.error(f"❌ OSO placement failed after {execution_time:.2f}ms: {e}")
             
-            for position in positions:
-                symbol = position.get("symbol")
-                net_pos = position.get("netPos", 0)
-                
-                if symbol and net_pos != 0:
-                    try:
-                        result = await self.liquidate_position(symbol)
-                        liquidated_positions.append(result)
-                        logging.info(f"✅ Successfully liquidated position for {symbol}")
-                    except Exception as e:
-                        logging.error(f"❌ Failed to liquidate position for {symbol}: {e}")
-                        
-            logging.info(f"🔥 Liquidated {len(liquidated_positions)} positions")
-            return liquidated_positions
+            # 🔥 SMART ERROR HANDLING: Provide specific guidance based on error type
+            error_msg = str(e).lower()
+            if "price is already at or past this level" in error_msg:
+                logging.error("🎯 PRICE LEVEL ERROR: The intelligent order type selection may need adjustment")
+                logging.error(f"🎯 Entry price: {price}, Current market data needed for diagnosis")
+            elif "insufficient buying power" in error_msg:
+                logging.error("💰 MARGIN ERROR: Insufficient buying power for position size")
+            elif "invalid symbol" in error_msg:
+                logging.error(f"📊 SYMBOL ERROR: Contract symbol {symbol} may be expired or invalid")
             
-        except Exception as e:
-            logging.error(f"Error liquidating all positions: {e}")
-            raise HTTPException(status_code=500, detail="Internal server error liquidating positions")
+            # Log the detailed error for debugging
+            import traceback
+            logging.error(f"OSO Error traceback: {traceback.format_exc()}")
+            raise HTTPException(status_code=500, detail=f"OSO order placement failed: {str(e)}")
+
+    except Exception as e:
+        logging.error(f"=== ERROR IN WEBHOOK ===")
+        logging.error(f"Error: {e}")
+        import traceback
+        logging.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 10000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
