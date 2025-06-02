@@ -242,9 +242,7 @@ class TradovateClient:
 
     async def cancel_order(self, order_id: int):
         """
-        Cancels a specific order by ID.
-
-        Args:
+        Cancels a specific order by ID.        Args:
             order_id (int): The ID of the order to cancel.
 
         Returns:
@@ -272,8 +270,12 @@ class TradovateClient:
                 return response_data
                 
         except httpx.HTTPStatusError as e:
-            logging.error(f"Failed to cancel order {order_id}: {e.response.text}")
-            raise HTTPException(status_code=e.response.status_code, detail=f"Failed to cancel order: {e.response.text}")
+            if e.response.status_code == 404:
+                logging.info(f"Order {order_id} already filled/cancelled (404 - not found)")
+                return {"status": "already_handled", "message": "Order already filled or cancelled"}
+            else:
+                logging.error(f"Failed to cancel order {order_id}: {e.response.text}")
+                raise HTTPException(status_code=e.response.status_code, detail=f"Failed to cancel order: {e.response.text}")
         except Exception as e:
             logging.error(f"Unexpected error canceling order {order_id}: {e}")
             raise HTTPException(status_code=500, detail="Internal server error canceling order")
@@ -296,6 +298,13 @@ class TradovateClient:
                         result = await self.cancel_order(order_id)
                         cancelled_orders.append(result)
                         logging.info(f"Successfully cancelled order {order_id}")
+                    except HTTPException as e:
+                        # If it's a 404, the order is already handled (filled/cancelled)
+                        if e.status_code == 404:
+                            logging.info(f"Order {order_id} already filled/cancelled (404)")
+                            cancelled_orders.append({"id": order_id, "status": "already_handled"})
+                        else:
+                            logging.error(f"Failed to cancel order {order_id}: {e.detail}")
                     except Exception as e:
                         logging.error(f"Failed to cancel order {order_id}: {e}")
                         
@@ -504,13 +513,11 @@ class TradovateClient:
             "Content-Type": "application/json"
         }
 
-        logging.info("🔥 Starting aggressive position and order cleanup")
-
-        # Step 1: Cancel all pending orders, including take profit limit orders
+        logging.info("🔥 Starting aggressive position and order cleanup")        # Step 1: Cancel all pending orders, including take profit limit orders
         try:
             pending_orders = await self.get_pending_orders()
             cancelled_orders = []
-
+            
             for order in pending_orders:
                 order_id = order.get("id")
                 if order_id:
@@ -520,6 +527,12 @@ class TradovateClient:
                             response.raise_for_status()
                             cancelled_orders.append(order_id)
                             logging.info(f"✅ Cancelled order {order_id}")
+                    except httpx.HTTPStatusError as e:
+                        if e.response.status_code == 404:
+                            logging.info(f"✅ Order {order_id} already filled/cancelled (404)")
+                            cancelled_orders.append(order_id)
+                        else:
+                            logging.error(f"❌ Failed to cancel order {order_id}: {e}")
                     except Exception as e:
                         logging.error(f"❌ Failed to cancel order {order_id}: {e}")
 
@@ -676,3 +689,41 @@ class TradovateClient:
         except Exception as e:
             logging.error(f"Error liquidating all positions: {e}")
             raise HTTPException(status_code=500, detail="Internal server error liquidating positions")
+
+    async def determine_optimal_order_type(self, symbol: str, action: str, target_price: float) -> dict:
+        """
+        Intelligently determines whether to use Stop or Limit orders based on market conditions.
+        
+        Args:
+            symbol (str): Trading symbol
+            action (str): "Buy" or "Sell"
+            target_price (float): The target entry price
+            
+        Returns:
+            dict: Order configuration with orderType, price/stopPrice
+        """
+        try:
+            # For now, use a simple fallback strategy
+            # This can be enhanced with real market data in the future
+            
+            # Default to Stop orders for breakout strategies
+            if action.lower() == "buy":
+                # For BUY orders, use Stop order (breakout above current price)
+                return {
+                    "orderType": "Stop",
+                    "stopPrice": target_price
+                }
+            else:
+                # For SELL orders, use Stop order (breakdown below current price)  
+                return {
+                    "orderType": "Stop",
+                    "stopPrice": target_price
+                }
+                
+        except Exception as e:
+            logging.error(f"Error in determine_optimal_order_type: {e}")
+            # Fallback to Stop orders
+            return {
+                "orderType": "Stop", 
+                "stopPrice": target_price
+            }
