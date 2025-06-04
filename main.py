@@ -425,6 +425,7 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
 
 
 
+@app.post("/")
 @app.post("/webhook")
 async def webhook(req: Request):
     logging.info("=== WEBHOOK ENDPOINT HIT ===")
