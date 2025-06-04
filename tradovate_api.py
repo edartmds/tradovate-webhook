@@ -7,16 +7,20 @@ import httpx  # Added for HTTP requests
 from dotenv import load_dotenv
 from fastapi import HTTPException
 
+
 load_dotenv()
+
 
 TRADOVATE_DEMO = os.getenv("TRADOVATE_DEMO", "true") == "true"
 BASE_URL = "https://demo-api.tradovate.com/v1" if TRADOVATE_DEMO else "https://live-api.tradovate.com/v1"
+
 
 class TradovateClient:
     def __init__(self):
         self.access_token = None
         self.account_id = None
         self.account_spec = None
+
 
     async def authenticate(self):
         url = f"{BASE_URL}/auth/accesstokenrequest"
@@ -32,6 +36,7 @@ class TradovateClient:
         max_retries = 5
         backoff_factor = 2
 
+
         for attempt in range(max_retries):
             try:
                 async with httpx.AsyncClient() as client:
@@ -42,6 +47,7 @@ class TradovateClient:
                     logging.info(f"Authentication response: {json.dumps(data, indent=2)}")
                     self.access_token = data["accessToken"]
 
+
                     # Fetch account ID
                     headers = {"Authorization": f"Bearer {self.access_token}"}
                     acc_res = await client.get(f"{BASE_URL}/account/list", headers=headers)
@@ -51,25 +57,32 @@ class TradovateClient:
                     self.account_id = account_data[0]["id"]
                     self.account_spec = account_data[0].get("name")
 
+
                     # Use hardcoded values from .env if available
                     self.account_id = int(os.getenv("TRADOVATE_ACCOUNT_ID", self.account_id))
                     self.account_spec = os.getenv("TRADOVATE_ACCOUNT_SPEC", self.account_spec)
 
+
                     logging.info(f"Using account_id: {self.account_id} and account_spec: {self.account_spec} from environment variables.")
+
 
                     if not self.account_spec:
                         logging.error("Failed to retrieve accountSpec. accountSpec is None.")
                         raise HTTPException(status_code=400, detail="Failed to retrieve accountSpec")
 
+
                     logging.info(f"Retrieved accountSpec: {self.account_spec}")
                     logging.info(f"Retrieved accountId: {self.account_id}")
+
 
                     if not self.account_id:
                         logging.error("Failed to retrieve account ID. Account ID is None.")
                         raise HTTPException(status_code=400, detail="Failed to retrieve account ID")
 
+
                     logging.info("Authentication successful. Access token, accountSpec, and account ID retrieved.")
                     return  # Exit the retry loop on success
+
 
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 429:  # Handle rate-limiting
@@ -83,17 +96,21 @@ class TradovateClient:
                 logging.error(f"Unexpected error during authentication: {e}")
                 raise HTTPException(status_code=500, detail="Internal server error during authentication")
 
+
         logging.error("Max retries reached. Authentication failed.")
         raise HTTPException(status_code=429, detail="Authentication failed after maximum retries")
+
 
     async def place_order(self, symbol: str, action: str, quantity: int = 1, order_data: dict = None):
         if not self.access_token:
             await self.authenticate()
 
+
         headers = {
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json"
         }
+
 
         # Use the provided order_data if available, otherwise construct a default payload
         order_payload = order_data or {
@@ -106,9 +123,11 @@ class TradovateClient:
             "isAutomated": True  # Optional field for automation
         }
 
+
         if not order_payload.get("accountId"):
             logging.error("Missing accountId in order payload.")
             raise HTTPException(status_code=400, detail="Missing accountId in order payload")
+
 
         try:
             async with httpx.AsyncClient() as client:
@@ -125,12 +144,15 @@ class TradovateClient:
             logging.error(f"Unexpected error during order placement: {e}")
             raise HTTPException(status_code=500, detail="Internal server error during order placement")
 
+
     async def place_oso_order(self, initial_order: dict):
         """
         Places an Order Sends Order (OSO) order on Tradovate.
 
+
         Args:
             initial_order (dict): The JSON payload for the initial order with brackets.
+
 
         Returns:
             dict: The response from the Tradovate API.
@@ -138,10 +160,12 @@ class TradovateClient:
         if not self.access_token:
             await self.authenticate()
 
+
         headers = {
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json"
         }
+
 
         try:
             async with httpx.AsyncClient() as client:
@@ -158,13 +182,16 @@ class TradovateClient:
             logging.error(f"Unexpected error during OSO order placement: {e}")
             raise HTTPException(status_code=500, detail="Internal server error during OSO order placement")
 
+
     async def place_stop_order(self, entry_order_id: int, stop_price: float):
         """
         Places a STOP order after the ENTRY order is filled.
 
+
         Args:
             entry_order_id (int): The ID of the ENTRY order.
             stop_price (float): The price for the STOP order.
+
 
         Returns:
             dict: The response from the Tradovate API.
@@ -172,14 +199,17 @@ class TradovateClient:
         if not self.access_token:
             await self.authenticate()
 
+
         if not entry_order_id:
             logging.error("Invalid ENTRY order ID. Cannot place STOP order.")
             raise HTTPException(status_code=400, detail="Invalid ENTRY order ID")
+
 
         headers = {
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json"
         }
+
 
         stop_order_payload = {
             "accountId": self.account_id,
@@ -190,6 +220,7 @@ class TradovateClient:
             "timeInForce": "GTC",
             "isAutomated": True
         }
+
 
         try:
             async with httpx.AsyncClient() as client:
@@ -206,9 +237,11 @@ class TradovateClient:
             logging.error(f"Unexpected error during STOP order placement: {e}")
             raise HTTPException(status_code=500, detail="Internal server error during STOP order placement")
 
+
     async def get_pending_orders(self):
         """
         Retrieves all pending orders for the authenticated account.
+
 
         Returns:
             list: List of pending orders.
@@ -216,23 +249,25 @@ class TradovateClient:
         if not self.access_token:
             await self.authenticate()
 
+
         headers = {
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json"
         }
+
 
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(f"{BASE_URL}/order/list", headers=headers)
                 response.raise_for_status()
                 orders = response.json()
-                
+               
                 # Filter for pending orders only
                 pending_orders = [order for order in orders if order.get("ordStatus") in ["Pending", "Working", "Submitted"]]
                 logging.info(f"Found {len(pending_orders)} pending orders")
                 logging.debug(f"Pending orders: {json.dumps(pending_orders, indent=2)}")
                 return pending_orders
-                
+               
         except httpx.HTTPStatusError as e:
             logging.error(f"Failed to get orders: {e.response.text}")
             raise HTTPException(status_code=e.response.status_code, detail=f"Failed to get orders: {e.response.text}")
@@ -240,10 +275,12 @@ class TradovateClient:
             logging.error(f"Unexpected error getting orders: {e}")
             raise HTTPException(status_code=500, detail="Internal server error getting orders")
 
+
     async def cancel_order(self, order_id: int):
         """
         Cancels a specific order by ID.        Args:
             order_id (int): The ID of the order to cancel.
+
 
         Returns:
             dict: The response from the Tradovate API.
@@ -251,14 +288,17 @@ class TradovateClient:
         if not self.access_token:
             await self.authenticate()
 
+
         headers = {
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json"
         }
 
+
         cancel_payload = {
             "orderId": order_id
         }
+
 
         try:
             async with httpx.AsyncClient() as client:
@@ -268,7 +308,7 @@ class TradovateClient:
                 response_data = response.json()
                 logging.info(f"Order {order_id} cancelled successfully: {json.dumps(response_data, indent=2)}")
                 return response_data
-                
+               
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
                 logging.info(f"Order {order_id} already filled/cancelled (404 - not found)")
@@ -280,9 +320,11 @@ class TradovateClient:
             logging.error(f"Unexpected error canceling order {order_id}: {e}")
             raise HTTPException(status_code=500, detail="Internal server error canceling order")
 
+
     async def cancel_all_pending_orders(self):
         """
         Cancels all pending orders for the authenticated account.
+
 
         Returns:
             list: List of cancelled order responses.
@@ -290,7 +332,7 @@ class TradovateClient:
         try:
             pending_orders = await self.get_pending_orders()
             cancelled_orders = []
-            
+           
             for order in pending_orders:
                 order_id = order.get("id")
                 if order_id:
@@ -307,37 +349,41 @@ class TradovateClient:
                             logging.error(f"Failed to cancel order {order_id}: {e.detail}")
                     except Exception as e:
                         logging.error(f"Failed to cancel order {order_id}: {e}")
-                        
+                       
             logging.info(f"Cancelled {len(cancelled_orders)} out of {len(pending_orders)} pending orders")
             return cancelled_orders
-            
+           
         except Exception as e:
             logging.error(f"Error cancelling all pending orders: {e}")
             raise HTTPException(status_code=500, detail="Internal server error cancelling orders")
 
+
     async def place_oco_order(self, order1: dict, order2: dict):
         """
         Places an Order Cancels Order (OCO) order on Tradovate.
-        
+       
         Args:
             order1 (dict): First order payload
             order2 (dict): Second order payload
-            
+           
         Returns:
             dict: The response from the Tradovate API.
         """
         if not self.access_token:
             await self.authenticate()
 
+
         headers = {
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json"
         }
 
+
         # OCO requires a different format - orders as an array
         oco_payload = {
             "orders": [order1, order2]
         }
+
 
         try:
             async with httpx.AsyncClient() as client:
@@ -354,9 +400,11 @@ class TradovateClient:
             logging.error(f"Unexpected error during OCO order placement: {e}")
             raise HTTPException(status_code=500, detail="Internal server error during OCO order placement")
 
+
     async def get_positions(self):
         """
         Retrieves all open positions for the authenticated account.
+
 
         Returns:
             list: List of open positions.
@@ -364,33 +412,35 @@ class TradovateClient:
         if not self.access_token:
             await self.authenticate()
 
+
         headers = {
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json"
         }
+
 
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(f"{BASE_URL}/position/list", headers=headers)
                 response.raise_for_status()
                 positions = response.json()
-                
+               
                 # 🔥 ENHANCED POSITION DEBUGGING: Log all position objects for analysis
                 logging.info(f"🔍 RAW POSITIONS RESPONSE: {json.dumps(positions, indent=2)}")
-                
+               
                 # Filter for open positions only (netPos != 0)
                 open_positions = [pos for pos in positions if pos.get("netPos", 0) != 0]
                 logging.info(f"Found {len(open_positions)} open positions")
-                
+               
                 # 🔥 ENHANCED DEBUGGING: Log each open position structure
                 for i, pos in enumerate(open_positions):
                     logging.info(f"🔍 OPEN POSITION {i+1}: {json.dumps(pos, indent=2)}")
                     # Log all available fields for debugging
                     all_fields = list(pos.keys())
                     logging.info(f"🔍 Available fields in position {i+1}: {all_fields}")
-                
+               
                 return open_positions
-                
+               
         except httpx.HTTPStatusError as e:
             logging.error(f"Failed to get positions: {e.response.text}")
             raise HTTPException(status_code=e.response.status_code, detail=f"Failed to get positions: {e.response.text}")
@@ -398,12 +448,15 @@ class TradovateClient:
             logging.error(f"Unexpected error getting positions: {e}")
             raise HTTPException(status_code=500, detail="Internal server error getting positions")
 
+
     async def close_position(self, symbol: str):
         """
         Closes a specific position by symbol using a market order.
 
+
         Args:
             symbol (str): The symbol of the position to close.
+
 
         Returns:
             dict: The response from the Tradovate API.
@@ -411,38 +464,40 @@ class TradovateClient:
         if not self.access_token:
             await self.authenticate()
 
+
         headers = {
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json"
         }
 
+
         # First, get the current position for this symbol
         try:
             positions = await self.get_positions()
             target_position = None
-            
+           
             for position in positions:
                 if position.get("symbol") == symbol:
                     target_position = position
                     break
-            
+           
             if not target_position:
                 logging.info(f"No open position found for symbol {symbol}")
                 return {"status": "no_position", "message": f"No open position for {symbol}"}
-            
+           
             net_pos = target_position.get("netPos", 0)
             if net_pos == 0:
                 logging.info(f"Position for {symbol} already closed (netPos = 0)")
                 return {"status": "already_closed", "message": f"Position for {symbol} already closed"}
-            
+           
             # Determine the action needed to close the position
             # If netPos > 0 (long position), we need to sell to close
             # If netPos < 0 (short position), we need to buy to close
             close_action = "Sell" if net_pos > 0 else "Buy"
             close_quantity = abs(net_pos)
-            
+           
             logging.info(f"Closing position for {symbol}: netPos={net_pos}, action={close_action}, qty={close_quantity}")
-            
+           
             # Create market order to close position
             close_order = {
                 "accountSpec": self.account_spec,
@@ -454,7 +509,7 @@ class TradovateClient:
                 "timeInForce": "GTC",
                 "isAutomated": True
             }
-            
+           
             # Place the closing order
             async with httpx.AsyncClient() as client:
                 logging.debug(f"Placing position close order: {json.dumps(close_order, indent=2)}")
@@ -463,7 +518,7 @@ class TradovateClient:
                 response_data = response.json()
                 logging.info(f"Position close order placed: {json.dumps(response_data, indent=2)}")
                 return response_data
-                
+               
         except httpx.HTTPStatusError as e:
             logging.error(f"Failed to close position for {symbol}: {e.response.text}")
             raise HTTPException(status_code=e.response.status_code, detail=f"Failed to close position: {e.response.text}")
@@ -471,9 +526,11 @@ class TradovateClient:
             logging.error(f"Unexpected error closing position for {symbol}: {e}")
             raise HTTPException(status_code=500, detail="Internal server error closing position")
 
+
     async def close_all_positions(self):
         """
         Closes all open positions for the authenticated account.
+
 
         Returns:
             list: List of close order responses.
@@ -481,11 +538,11 @@ class TradovateClient:
         try:
             positions = await self.get_positions()
             closed_positions = []
-            
+           
             for position in positions:
                 symbol = position.get("symbol")
                 net_pos = position.get("netPos", 0)
-                
+               
                 if symbol and net_pos != 0:
                     try:
                         result = await self.close_position(symbol)
@@ -493,13 +550,14 @@ class TradovateClient:
                         logging.info(f"Successfully closed position for {symbol}")
                     except Exception as e:
                         logging.error(f"Failed to close position for {symbol}: {e}")
-                        
+                       
             logging.info(f"Closed {len(closed_positions)} positions")
             return closed_positions
-            
+           
         except Exception as e:
             logging.error(f"Error closing all positions: {e}")
             raise HTTPException(status_code=500, detail="Internal server error closing positions")
+
 
     async def force_close_all_positions_immediately(self):
         """
@@ -508,16 +566,18 @@ class TradovateClient:
         if not self.access_token:
             await self.authenticate()
 
+
         headers = {
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json"
         }
 
+
         logging.info("🔥 Starting aggressive position and order cleanup")        # Step 1: Cancel all pending orders, including take profit limit orders
         try:
             pending_orders = await self.get_pending_orders()
             cancelled_orders = []
-            
+           
             for order in pending_orders:
                 order_id = order.get("id")
                 if order_id:
@@ -536,30 +596,37 @@ class TradovateClient:
                     except Exception as e:
                         logging.error(f"❌ Failed to cancel order {order_id}: {e}")
 
+
             logging.info(f"✅ Cancelled {len(cancelled_orders)} pending orders, including take profit limit orders")
         except Exception as e:
             logging.error(f"❌ Failed to cancel all orders: {e}")
 
+
         max_attempts = 3
+
 
         for attempt in range(max_attempts):
             try:
                 logging.info(f"🔥 Attempt {attempt + 1}/{max_attempts} to close all positions")
+
 
                 positions = await self.get_positions()
                 if not positions:
                     logging.info("✅ No open positions found")
                     return True
 
+
                 for position in positions:
                     net_pos = position.get("netPos", 0)
                     if net_pos == 0:
                         continue
 
+
                     symbol = position.get("symbol") or str(position.get("contractId"))
                     if not symbol:
                         logging.error(f"❌ Could not identify symbol for position: {position}")
                         continue
+
 
                     try:
                         close_action = "Sell" if net_pos > 0 else "Buy"
@@ -574,6 +641,7 @@ class TradovateClient:
                             "isAutomated": True
                         }
 
+
                         async with httpx.AsyncClient() as client:
                             response = await client.post(f"{BASE_URL}/order/placeorder", json=close_order, headers=headers)
                             response.raise_for_status()
@@ -581,10 +649,13 @@ class TradovateClient:
                     except Exception as e:
                         logging.error(f"❌ Failed to close position for {symbol}: {e}")
 
+
                 await asyncio.sleep(2)
+
 
             except Exception as e:
                 logging.error(f"❌ Error during position closure attempt {attempt + 1}: {e}")
+
 
         # Final verification
         try:
@@ -598,13 +669,16 @@ class TradovateClient:
             logging.error(f"❌ Error verifying positions: {e}")
             return False
 
+
     async def liquidate_position(self, symbol: str):
         """
         🔥 CRITICAL: Liquidates a specific position using the official Tradovate liquidation endpoint.
         This is the most aggressive way to close a position immediately.
 
+
         Args:
             symbol (str): The symbol of the position to liquidate.
+
 
         Returns:
             dict: The response from the Tradovate API.
@@ -612,37 +686,39 @@ class TradovateClient:
         if not self.access_token:
             await self.authenticate()
 
+
         headers = {
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json"
         }
 
+
         # First, get the current position for this symbol
         try:
             positions = await self.get_positions()
             target_position = None
-            
+           
             for position in positions:
                 if position.get("symbol") == symbol:
                     target_position = position
                     break
-            
+           
             if not target_position:
                 logging.info(f"No open position found for symbol {symbol}")
                 return {"status": "no_position", "message": f"No open position for {symbol}"}
-            
+           
             net_pos = target_position.get("netPos", 0)
             if net_pos == 0:
                 logging.info(f"Position for {symbol} already closed (netPos = 0)")
                 return {"status": "already_closed", "message": f"Position for {symbol} already closed"}
-            
+           
             logging.info(f"🔥 LIQUIDATING position for {symbol}: netPos={net_pos}")
-            
+           
             # Use the official liquidation endpoint
             liquidation_payload = {
                 "symbol": symbol
             }
-            
+           
             # Place the liquidation order
             async with httpx.AsyncClient() as client:
                 logging.debug(f"Placing liquidation order: {json.dumps(liquidation_payload, indent=2)}")
@@ -651,7 +727,7 @@ class TradovateClient:
                 response_data = response.json()
                 logging.info(f"✅ Position liquidation order placed: {json.dumps(response_data, indent=2)}")
                 return response_data
-                
+               
         except httpx.HTTPStatusError as e:
             logging.error(f"Failed to liquidate position for {symbol}: {e.response.text}")
             raise HTTPException(status_code=e.response.status_code, detail=f"Failed to liquidate position: {e.response.text}")
@@ -659,10 +735,12 @@ class TradovateClient:
             logging.error(f"Unexpected error liquidating position for {symbol}: {e}")
             raise HTTPException(status_code=500, detail="Internal server error liquidating position")
 
+
     async def liquidate_all_positions(self):
         """
         🔥 CRITICAL: Liquidates ALL open positions using the official Tradovate liquidation endpoint.
         This is the most aggressive way to close all positions immediately.
+
 
         Returns:
             list: List of liquidation responses.
@@ -670,11 +748,11 @@ class TradovateClient:
         try:
             positions = await self.get_positions()
             liquidated_positions = []
-            
+           
             for position in positions:
                 symbol = position.get("symbol")
                 net_pos = position.get("netPos", 0)
-                
+               
                 if symbol and net_pos != 0:
                     try:
                         result = await self.liquidate_position(symbol)
@@ -682,30 +760,31 @@ class TradovateClient:
                         logging.info(f"✅ Successfully liquidated position for {symbol}")
                     except Exception as e:
                         logging.error(f"❌ Failed to liquidate position for {symbol}: {e}")
-                        
+                       
             logging.info(f"🔥 Liquidated {len(liquidated_positions)} positions")
             return liquidated_positions
-            
+           
         except Exception as e:
             logging.error(f"Error liquidating all positions: {e}")
             raise HTTPException(status_code=500, detail="Internal server error liquidating positions")
 
+
     async def determine_optimal_order_type(self, symbol: str, action: str, target_price: float) -> dict:
         """
         Intelligently determines whether to use Stop or Limit orders based on market conditions.
-        
+       
         Args:
             symbol (str): Trading symbol
             action (str): "Buy" or "Sell"
             target_price (float): The target entry price
-            
+           
         Returns:
             dict: Order configuration with orderType, price/stopPrice
         """
         try:
             # For now, use a simple fallback strategy
             # This can be enhanced with real market data in the future
-            
+           
             # Default to Stop orders for breakout strategies
             if action.lower() == "buy":
                 # For BUY orders, use Stop order (breakout above current price)
@@ -719,11 +798,12 @@ class TradovateClient:
                     "orderType": "Stop",
                     "stopPrice": target_price
                 }
-                
+               
         except Exception as e:
             logging.error(f"Error in determine_optimal_order_type: {e}")
             # Fallback to Stop orders
             return {
-                "orderType": "Stop", 
+                "orderType": "Stop",
                 "stopPrice": target_price
             }
+
