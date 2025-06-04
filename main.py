@@ -38,6 +38,40 @@ app = FastAPI()
 client = TradovateClient()
 
 
+@app.get("/")
+async def root():
+    """Health check endpoint for monitoring services"""
+    return {
+        "status": "online",
+        "service": "tradovate-webhook",
+        "timestamp": datetime.now().isoformat(),
+        "endpoints": {
+            "webhook": "/webhook",
+            "health": "/"
+        }
+    }
+
+
+@app.get("/health")
+async def health_check():
+    """Detailed health check endpoint"""
+    try:
+        # Check if client is authenticated
+        auth_status = "authenticated" if client.access_token else "not_authenticated"
+        return {
+            "status": "healthy",
+            "authentication": auth_status,
+            "account_id": client.account_id,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        return {
+            "status": "unhealthy",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+
 @app.on_event("startup")
 async def startup_event():
     logging.info("=== APPLICATION STARTING UP ===")
@@ -386,6 +420,10 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
 @app.post("/webhook")
 async def webhook(req: Request):
     logging.info("=== WEBHOOK ENDPOINT HIT ===")
+    logging.info(f"Request method: {req.method}")
+    logging.info(f"Request URL: {req.url}")
+    logging.info(f"Request headers: {dict(req.headers)}")
+    logging.info(f"Client IP: {req.client.host if req.client else 'unknown'}")
     try:
         # Parse the incoming request
         content_type = req.headers.get("content-type")
