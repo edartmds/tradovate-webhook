@@ -43,38 +43,6 @@ app = FastAPI()
 client = TradovateClient()
 
 
-@app.get("/")
-async def root():
-    """Health check endpoint for monitoring services"""
-    return {
-        "status": "online",
-        "service": "tradovate-webhook",
-        "timestamp": datetime.now().isoformat(),
-        "endpoints": {
-            "webhook": "/webhook",
-            "health": "/health"
-        }
-    }
-
-
-@app.get("/health")
-async def health_check():
-    """Detailed health check endpoint"""
-    try:
-        # Check if client is authenticated
-        auth_status = "authenticated" if client.access_token else "not_authenticated"
-        return {
-            "status": "healthy",
-            "authentication": auth_status,
-            "account_id": client.account_id,
-            "timestamp": datetime.now().isoformat()
-        }
-    except Exception as e:
-        return {
-            "status": "unhealthy",
-            "error": str(e),
-            "timestamp": datetime.now().isoformat()
-        }
 
 
 @app.on_event("startup")
@@ -86,20 +54,19 @@ async def startup_event():
         logging.info(f"Account ID: {client.account_id}")
         logging.info(f"Account Spec: {client.account_spec}")
         logging.info(f"Access Token: {'***' if client.access_token else 'None'}")
-        
-        # Close any existing positions and cancel pending orders on startup to start clean
+          # Close any existing positions and cancel pending orders on startup to start clean
         logging.info("=== CLEANING UP EXISTING POSITIONS AND ORDERS ON STARTUP ===")
         try:
             # Close all positions first
             closed_positions = await client.close_all_positions()
             logging.info(f"Startup cleanup: Closed {len(closed_positions)} existing positions")
-            
+           
             # Cancel all pending orders
             cancelled_orders = await client.cancel_all_pending_orders()
             logging.info(f"Startup cleanup: Cancelled {len(cancelled_orders)} existing pending orders")
         except Exception as e:
             logging.warning(f"Startup cleanup failed (non-critical): {e}")
-            
+           
     except Exception as e:
         logging.error(f"=== AUTHENTICATION FAILED ===")
         logging.error(f"Error: {e}")
@@ -680,3 +647,6 @@ async def webhook(req: Request):
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     uvicorn.run("main:app", host="0.0.0.0", port=port)
+
+
+
