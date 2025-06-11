@@ -1,0 +1,279 @@
+{
+  "configs": {
+    "MACD_12_26_9": {
+      "name": "MACD Standard",
+      "description": "Standard MACD with 12,26,9 settings",
+      "parameters": {
+        "fast": 12,
+        "slow": 26,
+        "signal": 9
+      },
+      "start_time": "2025-06-10T17:34:11.049371",
+      "status": "active"
+    },
+    "MACD_8_21_5": {
+      "name": "MACD Fast",
+      "description": "Faster MACD with 8,21,5 settings",
+      "parameters": {
+        "fast": 8,
+        "slow": 21,
+        "signal": 5
+      },
+      "start_time": "2025-06-10T17:34:11.050346",
+      "status": "active"
+    },
+    "MACD_19_39_9": {
+      "name": "MACD Slow",
+      "description": "Slower MACD with 19,39,9 settings",
+      "parameters": {
+        "fast": 19,
+        "slow": 39,
+        "signal": 9
+      },
+      "start_time": "2025-06-10T17:34:11.051223",
+      "status": "active"
+    },
+    "MACD_10_30_7": {
+      "name": "MACD Custom1",
+      "description": "Custom MACD with 10,30,7 settings",
+      "parameters": {
+        "fast": 10,
+        "slow": 30,
+        "signal": 7
+      },
+      "start_time": "2025-06-10T17:34:11.052114",
+      "status": "active"
+    },
+    "MACD_15_35_10": {
+      "name": "MACD Custom2",
+      "description": "Custom MACD with 15,35,10 settings",
+      "parameters": {
+        "fast": 15,
+        "slow": 35,
+        "signal": 10
+      },
+      "start_time": "2025-06-10T17:34:11.053230",
+      "status": "active"
+    },
+    "RSI_14_30_70": {
+      "name": "RSI Standard",
+      "description": "Standard RSI with 14 period, 30/70 levels",
+      "parameters": {
+        "period": 14,
+        "oversold": 30,
+        "overbought": 70
+      },
+      "start_time": "2025-06-10T17:34:11.054209",
+      "status": "active"
+    },
+    "RSI_9_25_75": {
+      "name": "RSI Fast",
+      "description": "Fast RSI with 9 period, 25/75 levels",
+      "parameters": {
+        "period": 9,
+        "oversold": 25,
+        "overbought": 75
+      },
+      "start_time": "2025-06-10T17:34:11.055561",
+      "status": "active"
+    },
+    "RSI_21_35_65": {
+      "name": "RSI Slow",
+      "description": "Slow RSI with 21 period, 35/65 levels",
+      "parameters": {
+        "period": 21,
+        "oversold": 35,
+        "overbought": 65
+      },
+      "start_time": "2025-06-10T17:34:11.056587",
+      "status": "active"
+    },
+    "BB_20_2.0": {
+      "name": "BB Standard",
+      "description": "Standard BB with 20 period, 2.0 deviation",
+      "parameters": {
+        "period": 20,
+        "deviation": 2.0
+      },
+      "start_time": "2025-06-10T17:34:11.057802",
+      "status": "active"
+    },
+    "BB_10_1.5": {
+      "name": "BB Tight",
+      "description": "Tight BB with 10 period, 1.5 deviation",
+      "parameters": {
+        "period": 10,
+        "deviation": 1.5
+      },
+      "start_time": "2025-06-10T17:34:11.059483",
+      "status": "active"
+    },
+    "BB_30_2.5": {
+      "name": "BB Wide",
+      "description": "Wide BB with 30 period, 2.5 deviation",
+      "parameters": {
+        "period": 30,
+        "deviation": 2.5
+      },
+      "start_time": "2025-06-10T17:34:11.060807",
+      "status": "active"
+    }
+  },
+  "results": {
+    "MACD_12_26_9": {
+      "trades": [],
+      "metrics": {
+        "total_trades": 0,
+        "winning_trades": 0,
+        "losing_trades": 0,
+        "total_pnl": 0.0,
+        "win_rate": 0.0,
+        "avg_win": 0.0,
+        "avg_loss": 0.0,
+        "profit_factor": 0.0,
+        "max_drawdown": 0.0
+      }
+    },
+    "MACD_8_21_5": {
+      "trades": [],
+      "metrics": {
+        "total_trades": 0,
+        "winning_trades": 0,
+        "losing_trades": 0,
+        "total_pnl": 0.0,
+        "win_rate": 0.0,
+        "avg_win": 0.0,
+        "avg_loss": 0.0,
+        "profit_factor": 0.0,
+        "max_drawdown": 0.0
+      }
+    },
+    "MACD_19_39_9": {
+      "trades": [],
+      "metrics": {
+        "total_trades": 0,
+        "winning_trades": 0,
+        "losing_trades": 0,
+        "total_pnl": 0.0,
+        "win_rate": 0.0,
+        "avg_win": 0.0,
+        "avg_loss": 0.0,
+        "profit_factor": 0.0,
+        "max_drawdown": 0.0
+      }
+    },
+    "MACD_10_30_7": {
+      "trades": [],
+      "metrics": {
+        "total_trades": 0,
+        "winning_trades": 0,
+        "losing_trades": 0,
+        "total_pnl": 0.0,
+        "win_rate": 0.0,
+        "avg_win": 0.0,
+        "avg_loss": 0.0,
+        "profit_factor": 0.0,
+        "max_drawdown": 0.0
+      }
+    },
+    "MACD_15_35_10": {
+      "trades": [],
+      "metrics": {
+        "total_trades": 0,
+        "winning_trades": 0,
+        "losing_trades": 0,
+        "total_pnl": 0.0,
+        "win_rate": 0.0,
+        "avg_win": 0.0,
+        "avg_loss": 0.0,
+        "profit_factor": 0.0,
+        "max_drawdown": 0.0
+      }
+    },
+    "RSI_14_30_70": {
+      "trades": [],
+      "metrics": {
+        "total_trades": 0,
+        "winning_trades": 0,
+        "losing_trades": 0,
+        "total_pnl": 0.0,
+        "win_rate": 0.0,
+        "avg_win": 0.0,
+        "avg_loss": 0.0,
+        "profit_factor": 0.0,
+        "max_drawdown": 0.0
+      }
+    },
+    "RSI_9_25_75": {
+      "trades": [],
+      "metrics": {
+        "total_trades": 0,
+        "winning_trades": 0,
+        "losing_trades": 0,
+        "total_pnl": 0.0,
+        "win_rate": 0.0,
+        "avg_win": 0.0,
+        "avg_loss": 0.0,
+        "profit_factor": 0.0,
+        "max_drawdown": 0.0
+      }
+    },
+    "RSI_21_35_65": {
+      "trades": [],
+      "metrics": {
+        "total_trades": 0,
+        "winning_trades": 0,
+        "losing_trades": 0,
+        "total_pnl": 0.0,
+        "win_rate": 0.0,
+        "avg_win": 0.0,
+        "avg_loss": 0.0,
+        "profit_factor": 0.0,
+        "max_drawdown": 0.0
+      }
+    },
+    "BB_20_2.0": {
+      "trades": [],
+      "metrics": {
+        "total_trades": 0,
+        "winning_trades": 0,
+        "losing_trades": 0,
+        "total_pnl": 0.0,
+        "win_rate": 0.0,
+        "avg_win": 0.0,
+        "avg_loss": 0.0,
+        "profit_factor": 0.0,
+        "max_drawdown": 0.0
+      }
+    },
+    "BB_10_1.5": {
+      "trades": [],
+      "metrics": {
+        "total_trades": 0,
+        "winning_trades": 0,
+        "losing_trades": 0,
+        "total_pnl": 0.0,
+        "win_rate": 0.0,
+        "avg_win": 0.0,
+        "avg_loss": 0.0,
+        "profit_factor": 0.0,
+        "max_drawdown": 0.0
+      }
+    },
+    "BB_30_2.5": {
+      "trades": [],
+      "metrics": {
+        "total_trades": 0,
+        "winning_trades": 0,
+        "losing_trades": 0,
+        "total_pnl": 0.0,
+        "win_rate": 0.0,
+        "avg_win": 0.0,
+        "avg_loss": 0.0,
+        "profit_factor": 0.0,
+        "max_drawdown": 0.0
+      }
+    }
+  },
+  "positions": {}
+}

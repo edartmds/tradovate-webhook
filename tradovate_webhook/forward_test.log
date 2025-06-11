@@ -1,0 +1,16 @@
+2025-06-10 17:34:11,049 - INFO - Registered test config: MACD_12_26_9 - MACD Standard
+2025-06-10 17:34:11,050 - INFO - Registered test config: MACD_8_21_5 - MACD Fast
+2025-06-10 17:34:11,051 - INFO - Registered test config: MACD_19_39_9 - MACD Slow
+2025-06-10 17:34:11,052 - INFO - Registered test config: MACD_10_30_7 - MACD Custom1
+2025-06-10 17:34:11,053 - INFO - Registered test config: MACD_15_35_10 - MACD Custom2
+2025-06-10 17:34:11,054 - INFO - Registered test config: RSI_14_30_70 - RSI Standard
+2025-06-10 17:34:11,055 - INFO - Registered test config: RSI_9_25_75 - RSI Fast
+2025-06-10 17:34:11,056 - INFO - Registered test config: RSI_21_35_65 - RSI Slow
+2025-06-10 17:34:11,057 - INFO - Registered test config: BB_20_2.0 - BB Standard
+2025-06-10 17:34:11,059 - INFO - Registered test config: BB_10_1.5 - BB Tight
+2025-06-10 17:34:11,060 - INFO - Registered test config: BB_30_2.5 - BB Wide
+2025-06-10 18:09:52,894 - INFO - Loaded 11 test configurations
+2025-06-10 18:09:52,895 - INFO - Loaded 11 test configurations
+2025-06-10 18:10:35,911 - INFO - Loaded 11 test configurations
+2025-06-10 21:12:06,809 - INFO - Loaded 11 test configurations
+2025-06-10 21:12:06,810 - INFO - No leaderboard data to export.
