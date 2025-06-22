@@ -644,6 +644,18 @@ async def webhook(req: Request):
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
+@app.post("/")
+async def root_webhook(req: Request):
+    """Handle webhook signals sent to root path instead of /webhook"""
+    logging.info("=== WEBHOOK RECEIVED AT ROOT PATH (/) ===")
+    return await webhook(req)
+
+@app.post("/tradingview")
+async def tradingview_webhook(req: Request):
+    """Alternative webhook endpoint for TradingView"""
+    logging.info("=== WEBHOOK RECEIVED AT /tradingview ===")
+    return await webhook(req)
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     uvicorn.run("main:app", host="0.0.0.0", port=port)
