@@ -535,24 +535,23 @@ async def webhook(req: Request):
             # For breakout/breakdown strategies, speed is critical
         else:
             logging.info("📊 LIMIT order - using standard execution path")
-       
-        # Determine opposite action for take profit and stop loss
-        opposite_action = "Sell" if action.lower() == "buy" else "Buy"
+         # ALWAYS USE THE OPPOSITE ACTION FOR ENTRY
+        entry_action = "Sell" if action.lower() == "buy" else "Buy"
+        bracket_action = "Buy" if action.lower() == "buy" else "Sell"
           # Build OSO payload with intelligent order type selection
         oso_payload = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
-            "action": action.capitalize(),  # "Buy" or "Sell"
+            "action": entry_action,  # Opposite of the alert action
             "symbol": symbol,
             "orderQty": 1,
             "orderType": order_type,   # Intelligently selected based on market conditions
             "timeInForce": "GTC",
-            "isAutomated": True,
-            # Take Profit bracket (bracket1)
+            "isAutomated": True,            # Take Profit bracket (bracket1)
             "bracket1": {
                 "accountSpec": client.account_spec,
                 "accountId": client.account_id,
-                "action": opposite_action,
+                "action": bracket_action,
                 "symbol": symbol,
                 "orderQty": 1,
                 "orderType": "Limit",
@@ -564,7 +563,7 @@ async def webhook(req: Request):
             "bracket2": {
                 "accountSpec": client.account_spec,
                 "accountId": client.account_id,
-                "action": opposite_action,
+                "action": bracket_action,
                 "symbol": symbol,
                 "orderQty": 1,
                 "orderType": "Stop",
