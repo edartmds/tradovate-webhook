@@ -448,19 +448,32 @@ async def webhook(req: Request):
 
         logging.info(f"=== PARSED ALERT DATA: {data} ===")        # Extract required fields
         symbol = data.get("symbol")
-        action = data.get("action")
+        original_action = data.get("action")
         price = data.get("PRICE")
-        t1 = data.get("T1")
-        stop = data.get("STOP")
+        original_t1 = data.get("T1")
+        original_stop = data.get("STOP")
 
+        logging.info(f"Original fields - Symbol: {symbol}, Action: {original_action}, Price: {price}, T1: {original_t1}, Stop: {original_stop}")
 
-        logging.info(f"Extracted fields - Symbol: {symbol}, Action: {action}, Price: {price}, T1: {t1}, Stop: {stop}")
+        # REVERSE THE ORDERS: BUY alerts become SELL orders, SELL alerts become BUY orders
+        # Also swap T1 and STOP values (T1 becomes stop loss, STOP becomes take profit)
+        if original_action.lower() == "buy":
+            action = "Sell"
+            t1 = original_stop  # Original stop becomes our take profit
+            stop = original_t1  # Original T1 becomes our stop loss
+        else:  # original_action.lower() == "sell"
+            action = "Buy"
+            t1 = original_stop  # Original stop becomes our take profit  
+            stop = original_t1  # Original T1 becomes our stop loss
 
+        logging.info(f"REVERSED ORDERS - Original: {original_action} -> New: {action}")
+        logging.info(f"SWAPPED LEVELS - Original T1: {original_t1} -> New Stop: {stop}, Original Stop: {original_stop} -> New T1: {t1}")
+        logging.info(f"Final fields - Symbol: {symbol}, Action: {action}, Price: {price}, T1: {t1}, Stop: {stop}")
 
         if not all([symbol, action, price, t1, stop]):
             missing = [k for k, v in {"symbol": symbol, "action": action, "PRICE": price, "T1": t1, "STOP": stop}.items() if not v]
             logging.error(f"Missing required fields: {missing}")
-            raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")        # Map TradingView symbol to Tradovate symbol
+            raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")# Map TradingView symbol to Tradovate symbol
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
             symbol = "NQU5"
             logging.info(f"Mapped symbol to: {symbol}")
