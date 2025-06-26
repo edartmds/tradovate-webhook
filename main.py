@@ -185,9 +185,10 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
 def hash_alert(data: dict) -> str:
     """Generate a unique hash for an alert to detect duplicates."""
     # Only include essential trading fields for duplicate detection
+    # For flipped strategies, we use the ACTION being checked (not the flipped one)
     essential_fields = {
         "symbol": data.get("symbol"),
-        "action": data.get("action"),
+        "action": data.get("action"),  # This will be original for duplicate check, flipped for tracking
         "PRICE": data.get("PRICE"),
         "T1": data.get("T1"),
         "STOP": data.get("STOP")
@@ -198,13 +199,16 @@ def hash_alert(data: dict) -> str:
 
 def is_duplicate_alert(symbol: str, action: str, data: dict) -> bool:
     """
-    🔥 RELAXED DUPLICATE DETECTION FOR AUTOMATED TRADING
+    🔥 RELAXED DUPLICATE DETECTION FOR FLIPPED AUTOMATED TRADING
    
-    Only blocks truly rapid-fire identical alerts within 30 seconds.
+    Only blocks truly rapid-fire identical alerts within 5 seconds.
     Allows direction changes and new signals for automated flattening strategy.
    
     Returns True ONLY if:
-    1. IDENTICAL alert hash received within 30 seconds (prevents accidental spam)
+    1. IDENTICAL alert hash received within 5 seconds (prevents accidental spam)
+    
+    NOTE: This function checks ORIGINAL alerts, but tracking will be updated 
+    with FLIPPED actions after this check passes.
     """
     current_time = datetime.now()
     alert_hash = hash_alert(data)
@@ -214,23 +218,22 @@ def is_duplicate_alert(symbol: str, action: str, data: dict) -> bool:
         last_alert_data = last_alert[symbol]
         time_diff = (current_time - last_alert_data["timestamp"]).total_seconds()
        
-        # Only block if EXACT same alert within 30 seconds
+        # Only block if EXACT same alert within threshold seconds
         if (last_alert_data.get("alert_hash") == alert_hash and
             time_diff < DUPLICATE_THRESHOLD_SECONDS):
             logging.warning(f"🚫 RAPID-FIRE DUPLICATE BLOCKED: {symbol} {action}")
             logging.warning(f"🚫 Identical alert received {time_diff:.1f} seconds ago")
             return True
+            
+        # 🔥 ALLOW FLIPPED STRATEGIES: Different alert types should always be allowed
+        # Even if we recently placed a BUY (flipped from SELL alert), 
+        # a new SELL alert should be allowed (will flip to BUY)
+        logging.info(f"🔄 DIRECTION CHANGE DETECTED: Previous was {last_alert_data.get('original_direction', 'unknown')}, new is {action.lower()}")
+        logging.info(f"🔄 This will result in trade direction change - ALLOWING")
    
     # 🔥 REMOVED: Direction-based blocking - allow all direction changes
     # 🔥 REMOVED: Post-completion blocking - allow immediate new signals
-    # This enables full automated trading with position flattening
-   
-    # Update tracking for rapid-fire detection only
-    last_alert[symbol] = {
-        "direction": action.lower(),
-        "timestamp": current_time,
-        "alert_hash": alert_hash
-    }
+    # This enables full automated trading with position flattening and signal alternation
    
     logging.info(f"✅ ALERT ACCEPTED: {symbol} {action} - Automated trading enabled")
     return False
@@ -483,9 +486,29 @@ async def webhook(req: Request):
         flipped_action = "Sell" if action.lower() == "buy" else "Buy"  # FLIP the alert direction
         opposite_action = "Buy" if action.lower() == "buy" else "Sell"  # Opposite of flipped action
         
+        # 🔥 IMPORTANT: Update duplicate tracking with FLIPPED action for proper signal alternation
+        # This ensures BUY→SELL and SELL→BUY flips are recognized as different trades
+        logging.info(f"🔄 UPDATING DUPLICATE TRACKING: Original {action} → Flipped {flipped_action}")
+        
+        # Create flipped data for proper duplicate detection of actual trades placed
+        flipped_data = data.copy()
+        flipped_data["action"] = flipped_action  # Track the actual action being placed
+        flipped_data["original_action"] = action  # Keep original for reference
+        
+        # Update the tracking with the FLIPPED action to allow proper signal alternation
+        current_time = datetime.now()
+        flipped_hash = hash_alert(flipped_data)
+        last_alert[symbol] = {
+            "direction": flipped_action.lower(),  # Track the actual trade direction
+            "timestamp": current_time,
+            "alert_hash": flipped_hash,
+            "original_direction": action.lower()  # Keep original for reference
+        }
+        
         logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with FLIPPED automated trading")
         logging.info(f"🔄 STRATEGY: Will place {flipped_action} order instead of {action}")
         logging.info(f"🔄 BRACKETS: TP={stop}, SL={t1} (swapped from original)")
+        logging.info(f"🔄 TRACKING: Now tracking {flipped_action} direction for future duplicate detection")
         
         # Determine optimal order type based on current market conditions
         logging.info("🔍 Analyzing market conditions for optimal order type...")
