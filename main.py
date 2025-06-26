@@ -269,6 +269,97 @@ def cleanup_old_tracking_data():
         del completed_trades[symbol]
 
 
+async def monitor_entry_and_place_brackets(entry_order_id: str, symbol: str, bracket_data: dict):
+    """
+    Monitor entry order for fill, then place flipped bracket orders.
+    """
+    logging.info(f"🔍 Starting bracket monitoring for entry order {entry_order_id}")
+    
+    max_monitoring_time = 3600  # 1 hour timeout
+    start_time = asyncio.get_event_loop().time()
+    
+    while True:
+        try:
+            # Check if entry order is filled
+            headers = {"Authorization": f"Bearer {client.access_token}"}
+            url = f"https://demo-api.tradovate.com/v1/order/{entry_order_id}"
+            
+            async with httpx.AsyncClient() as http_client:
+                response = await http_client.get(url, headers=headers)
+                response.raise_for_status()
+                order_status = response.json()
+                
+                status = order_status.get("status", "").lower()
+                logging.info(f"📊 Entry order {entry_order_id} status: {status}")
+                
+                if status == "filled":
+                    logging.info(f"🎉 ENTRY FILLED! Placing flipped bracket orders for {symbol}")
+                    
+                    # Place Take Profit (Limit) order - Original STOP becomes TP
+                    tp_payload = {
+                        "accountSpec": bracket_data["account_spec"],
+                        "accountId": bracket_data["account_id"],
+                        "action": bracket_data["opposite_action"],  # Opposite of entry action
+                        "symbol": symbol,
+                        "orderQty": 1,
+                        "orderType": "Limit",
+                        "price": bracket_data["take_profit_price"],  # Original STOP
+                        "timeInForce": "GTC",
+                        "isAutomated": True
+                    }
+                    
+                    # Place Stop Loss order - Original T1 becomes SL
+                    sl_payload = {
+                        "accountSpec": bracket_data["account_spec"],
+                        "accountId": bracket_data["account_id"],
+                        "action": bracket_data["opposite_action"],  # Opposite of entry action
+                        "symbol": symbol,
+                        "orderQty": 1,
+                        "orderType": "Stop",
+                        "stopPrice": bracket_data["stop_loss_price"],  # Original T1
+                        "timeInForce": "GTC",
+                        "isAutomated": True
+                    }
+                    
+                    # Place both bracket orders
+                    try:
+                        # Place Take Profit
+                        tp_result = await client.place_order(tp_payload)
+                        logging.info(f"✅ TAKE PROFIT placed: {tp_result}")
+                        
+                        # Place Stop Loss
+                        sl_result = await client.place_order(sl_payload)
+                        logging.info(f"✅ STOP LOSS placed: {sl_result}")
+                        
+                        logging.info(f"🔥 FLIPPED BRACKETS COMPLETE: {symbol}")
+                        logging.info(f"🔥 TP: {bracket_data['take_profit_price']} (was original STOP)")
+                        logging.info(f"🔥 SL: {bracket_data['stop_loss_price']} (was original T1)")
+                        
+                        # Mark trade as properly set up
+                        mark_trade_completed(symbol, bracket_data["flipped_action"])
+                        
+                    except Exception as e:
+                        logging.error(f"❌ Failed to place bracket orders: {e}")
+                    
+                    return  # Exit monitoring
+                    
+                elif status in ["cancelled", "rejected"]:
+                    logging.warning(f"⚠️ Entry order {entry_order_id} was {status} - no brackets will be placed")
+                    return  # Exit monitoring
+                    
+            # Check timeout
+            if asyncio.get_event_loop().time() - start_time > max_monitoring_time:
+                logging.warning(f"⏰ Monitoring timeout for entry order {entry_order_id}")
+                return
+                
+            # Wait before next check
+            await asyncio.sleep(2)
+            
+        except Exception as e:
+            logging.error(f"❌ Error in bracket monitoring: {e}")
+            await asyncio.sleep(5)
+
+
 # Direct API function to place a stop loss order (DEPRECATED - using OCO/OSO instead)
 async def place_stop_loss_order_legacy(stop_order_data):
     """
@@ -593,8 +684,8 @@ async def webhook(req: Request):
             if t1 <= price:
                 logging.warning(f"⚠️ PRICE CONFLICT: SELL SL ({t1}) should be above entry ({price})")
         
-        # Build OSO payload with FLIPPED action and SWAPPED brackets
-        oso_payload = {
+        # 🔥 FIRST: Place simple entry order only (no brackets yet)
+        entry_payload = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
             "action": flipped_action,  # FLIPPED: Use opposite of alert action
@@ -602,83 +693,87 @@ async def webhook(req: Request):
             "orderQty": 1,
             "orderType": order_type,   # Intelligently selected based on market conditions
             "timeInForce": "GTC",
-            "isAutomated": True,
-            # Take Profit bracket (bracket1) - NOW USES ORIGINAL STOP as TP
-            "bracket1": {
-                "accountSpec": client.account_spec,
-                "accountId": client.account_id,
-                "action": opposite_action,
-                "symbol": symbol,
-                "orderQty": 1,
-                "orderType": "Limit",
-                "price": stop,  # SWAPPED: Original stop becomes take profit
-                "timeInForce": "GTC",
-                "isAutomated": True
-            },
-            # Stop Loss bracket (bracket2) - NOW USES ORIGINAL T1 as SL
-            "bracket2": {
-                "accountSpec": client.account_spec,
-                "accountId": client.account_id,
-                "action": opposite_action,
-                "symbol": symbol,
-                "orderQty": 1,
-                "orderType": "Stop",
-                "stopPrice": t1,  # SWAPPED: Original take profit becomes stop loss
-                "timeInForce": "GTC",
-                "isAutomated": True
-            }
+            "isAutomated": True
         }
        
         # 🔥 CRITICAL: Add dynamic price/stopPrice fields based on intelligent order type
         if order_type == "Stop":
             # Stop order needs stopPrice field
-            oso_payload["stopPrice"] = stop_price
+            entry_payload["stopPrice"] = stop_price
             logging.info(f"🎯 STOP ORDER: Entry will trigger at stopPrice={stop_price}")
         elif order_type == "Market":
             # Market order executes immediately at current market price - no price field needed
             logging.info(f"🎯 MARKET ORDER: Entry will execute immediately at current market price")
         else:
             # Limit order needs price field  
-            oso_payload["price"] = order_price
+            entry_payload["price"] = order_price
             logging.info(f"🎯 LIMIT ORDER: Entry will execute at price={order_price}")
        
-        logging.info(f"=== OSO PAYLOAD ===")
-        logging.info(f"{json.dumps(oso_payload, indent=2)}")        # STEP 4: Place OSO bracket order with speed optimizations
-        logging.info("=== PLACING OSO BRACKET ORDER ===")
+        logging.info(f"=== ENTRY ORDER PAYLOAD ===")
+        logging.info(f"{json.dumps(entry_payload, indent=2)}")
+        
+        # 🔥 PREPARE BRACKET DATA for when entry fills
+        bracket_data = {
+            "symbol": symbol,
+            "flipped_action": flipped_action,
+            "opposite_action": opposite_action,
+            "take_profit_price": stop,    # Original STOP becomes TP
+            "stop_loss_price": t1,       # Original T1 becomes SL
+            "account_spec": client.account_spec,
+            "account_id": client.account_id
+        }
+        logging.info(f"🔄 BRACKET DATA PREPARED: TP={stop} (was STOP), SL={t1} (was T1)")
+        
+        # STEP 4: Place entry order and monitor for fill
+        logging.info("=== PLACING ENTRY ORDER (BRACKETS WILL BE PLACED AFTER FILL) ===")
        
         # 🔥 SPEED OPTIMIZATION: Validate payload before submission to prevent rejection delays
         required_fields = ['accountSpec', 'accountId', 'action', 'symbol', 'orderQty', 'orderType', 'timeInForce']
         for field in required_fields:
-            if field not in oso_payload:
-                raise HTTPException(status_code=400, detail=f"Missing required OSO field: {field}")
+            if field not in entry_payload:
+                raise HTTPException(status_code=400, detail=f"Missing required entry field: {field}")
        
         try:
-            # 🚀 FASTEST EXECUTION: Place OSO order immediately
+            # 🚀 FASTEST EXECUTION: Place entry order first
             start_time = time.time()
-            oso_result = await client.place_oso_order(oso_payload)
+            entry_result = await client.place_order(entry_payload)
             execution_time = (time.time() - start_time) * 1000  # Convert to milliseconds
            
-            logging.info(f"✅ OSO BRACKET ORDER PLACED SUCCESSFULLY in {execution_time:.2f}ms")
-            logging.info(f"🎉 TRADE EXECUTED: {flipped_action} {symbol} | TP: {stop} | SL: {t1}")
+            logging.info(f"✅ ENTRY ORDER PLACED SUCCESSFULLY in {execution_time:.2f}ms")
+            logging.info(f"🎉 ENTRY TRADE: {flipped_action} {symbol} (brackets will be placed after fill)")
             logging.info(f"📊 Original Alert: {action} → Flipped to: {flipped_action}")
-            logging.info(f"OSO Result: {oso_result}")
+            logging.info(f"Entry Result: {entry_result}")
+            
+            # 🔥 START MONITORING for entry fill and bracket placement
+            if 'orderId' in entry_result:
+                entry_order_id = entry_result['orderId']
+                logging.info(f"🔍 Starting monitoring for entry order {entry_order_id}")
+                
+                # Start background task to monitor and place brackets
+                asyncio.create_task(monitor_entry_and_place_brackets(
+                    entry_order_id, 
+                    symbol, 
+                    bracket_data
+                ))
+            else:
+                logging.warning("⚠️ No orderId in entry result - cannot monitor for brackets")
            
             # 🔥 MARK SUCCESSFUL TRADE PLACEMENT - Recording FLIPPED trade details
-            # When this trade completes (hits TP or SL), we'll prevent duplicate signals for a period
             logging.info(f"📝 Recording successful FLIPPED trade placement: {symbol} {flipped_action}")
             logging.info(f"📝 Original alert was {action}, placed {flipped_action} instead")
-            # Note: We mark completion when the trade actually completes, not just when placed
            
             return {
                 "status": "success",
-                "order": oso_result,
+                "entry_order": entry_result,
                 "execution_time_ms": execution_time,
                 "order_type": order_type,
                 "symbol": symbol,
                 "original_alert": action,
                 "flipped_action": flipped_action,
-                "swapped_tp": stop,
-                "swapped_sl": t1
+                "pending_brackets": {
+                    "take_profit": stop,
+                    "stop_loss": t1
+                }
             }
            
         except Exception as e:
