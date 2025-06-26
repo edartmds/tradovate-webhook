@@ -493,28 +493,51 @@ async def webhook(req: Request):
             }
        
         logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
-          # Determine optimal order type based on current market conditions
-        logging.info("🔍 Analyzing market conditions for optimal order type...")
+          # Get current market price to validate order placement
+        logging.info("🔍 Getting current market price for order validation...")
         try:
-            order_config = await client.determine_optimal_order_type(symbol, action, price)
-            order_type = order_config["orderType"]
-            order_price = order_config.get("price")
-            stop_price = order_config.get("stopPrice")
-           
-            logging.info(f"💡 OPTIMAL ORDER TYPE: {order_type}")
+            current_price = await client.get_current_price(symbol)
+            logging.info(f"� CURRENT MARKET PRICE for {symbol}: {current_price}")
+            
+            # Validate stop order placement based on market direction
+            if action.lower() == "buy":
+                # BUY stop orders should trigger ABOVE current market price
+                if price <= current_price:
+                    logging.warning(f"⚠️ BUY stop price {price} is at/below current price {current_price}")
+                    logging.info("🔄 Converting to MARKET order for immediate execution")
+                    order_type = "Market"
+                    stop_price = None
+                    order_price = None
+                else:
+                    order_type = "Stop"
+                    stop_price = price
+                    order_price = None
+            else:  # action.lower() == "sell"
+                # SELL stop orders should trigger BELOW current market price
+                if price >= current_price:
+                    logging.warning(f"⚠️ SELL stop price {price} is at/above current price {current_price}")
+                    logging.info("🔄 Converting to MARKET order for immediate execution")
+                    order_type = "Market"
+                    stop_price = None
+                    order_price = None
+                else:
+                    order_type = "Stop"
+                    stop_price = price
+                    order_price = None
+                    
+            logging.info(f"💡 FINAL ORDER TYPE: {order_type}")
             if order_type == "Stop":
                 logging.info(f"📊 STOP ORDER: Will trigger when price reaches {stop_price}")
-            else:
-                logging.info(f"📊 LIMIT ORDER: Will execute at price {order_price}")
-               
+            elif order_type == "Market":
+                logging.info(f"📊 MARKET ORDER: Will execute immediately at current market price")
+                
         except Exception as e:
-            # 🔥 FALLBACK: If intelligent selection fails, default to traditional approach
-            logging.warning(f"⚠️ Intelligent order type selection failed: {e}")
-            logging.info("🔄 FALLBACK: Using traditional Stop order entry")
-            order_type = "Stop"
-            stop_price = price
+            # 🔥 FALLBACK: If price check fails, use market order for safety
+            logging.warning(f"⚠️ Could not get current market price: {e}")
+            logging.info("🔄 FALLBACK: Using MARKET order for immediate execution")
+            order_type = "Market"
+            stop_price = None
             order_price = None
-            logging.info(f"🔄 FALLBACK STOP ORDER: Will trigger at stopPrice={stop_price}")
        
         # 🔥 REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
         # Every new alert will now automatically flatten existing positions and place new orders
@@ -588,11 +611,14 @@ async def webhook(req: Request):
             }
         }
        
-        # 🔥 CRITICAL: Add dynamic price/stopPrice fields based on intelligent order type
+        # 🔥 CRITICAL: Add dynamic price/stopPrice fields based on order type
         if order_type == "Stop":
             # Stop order needs stopPrice field
             oso_payload["stopPrice"] = stop_price
             logging.info(f"🎯 STOP ORDER: Entry will trigger at stopPrice={stop_price}")
+        elif order_type == "Market":
+            # Market order executes immediately - no price/stopPrice needed
+            logging.info(f"🎯 MARKET ORDER: Entry will execute immediately")
         else:
             # Limit order needs price field  
             oso_payload["price"] = order_price
