@@ -16,7 +16,7 @@ import hashlib
 last_alert = {}  # {symbol: {"direction": "buy"/"sell", "timestamp": datetime, "alert_hash": str}}
 completed_trades = {}  # {symbol: {"last_completed_direction": "buy"/"sell", "completion_time": datetime}}
 active_orders = []  # Track active order IDs to manage cancellation
-DUPLICATE_THRESHOLD_SECONDS = 30  # 30 seconds - only prevent rapid-fire identical alerts
+DUPLICATE_THRESHOLD_SECONDS = 5  # 5 seconds - only prevent rapid-fire identical alerts
 COMPLETED_TRADE_COOLDOWN = 30  # 30 seconds - minimal cooldown for automated trading
 
 
@@ -471,11 +471,12 @@ async def webhook(req: Request):
        
         if is_duplicate_alert(symbol, action, data):
             logging.warning(f"🚫 RAPID-FIRE DUPLICATE BLOCKED: {symbol} {action}")
-            logging.warning(f"🚫 Reason: Identical alert within 30 seconds")
+            logging.warning(f"🚫 Reason: Identical alert within {DUPLICATE_THRESHOLD_SECONDS} seconds")
             return {
                 "status": "rejected",
-                "reason": "rapid_fire_duplicate",
-                "message": f"Rapid-fire duplicate alert blocked for {symbol} {action}"
+                "reason": "rapid_fire_duplicate", 
+                "message": f"Rapid-fire duplicate alert blocked for {symbol} {action}",
+                "threshold_seconds": DUPLICATE_THRESHOLD_SECONDS
             }
        
         # 🔄 DEFINE FLIPPED STRATEGY VARIABLES EARLY
@@ -612,6 +613,8 @@ async def webhook(req: Request):
             execution_time = (time.time() - start_time) * 1000  # Convert to milliseconds
            
             logging.info(f"✅ OSO BRACKET ORDER PLACED SUCCESSFULLY in {execution_time:.2f}ms")
+            logging.info(f"🎉 TRADE EXECUTED: {flipped_action} {symbol} | TP: {stop} | SL: {t1}")
+            logging.info(f"📊 Original Alert: {action} → Flipped to: {flipped_action}")
             logging.info(f"OSO Result: {oso_result}")
            
             # 🔥 MARK SUCCESSFUL TRADE PLACEMENT - Recording FLIPPED trade details
