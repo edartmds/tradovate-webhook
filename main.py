@@ -510,28 +510,29 @@ async def webhook(req: Request):
         logging.info(f"🔄 BRACKETS: TP={stop}, SL={t1} (swapped from original)")
         logging.info(f"🔄 TRACKING: Now tracking {flipped_action} direction for future duplicate detection")
         
-        # Determine optimal order type based on current market conditions
+        # 🔥 CRITICAL FIX: Use FLIPPED action for order type selection since that's what we're actually placing
         logging.info("🔍 Analyzing market conditions for optimal order type...")
+        logging.info(f"🔄 Using FLIPPED action '{flipped_action}' for order type analysis (not original '{action}')")
         try:
-            order_config = await client.determine_optimal_order_type(symbol, action, price)
+            order_config = await client.determine_optimal_order_type(symbol, flipped_action, price)
             order_type = order_config["orderType"]
             order_price = order_config.get("price")
             stop_price = order_config.get("stopPrice")
            
-            logging.info(f"💡 OPTIMAL ORDER TYPE: {order_type}")
+            logging.info(f"💡 OPTIMAL ORDER TYPE: {order_type} (for {flipped_action} trade)")
             if order_type == "Stop":
                 logging.info(f"📊 STOP ORDER: Will trigger when price reaches {stop_price}")
             else:
                 logging.info(f"📊 LIMIT ORDER: Will execute at price {order_price}")
                
         except Exception as e:
-            # 🔥 FALLBACK: If intelligent selection fails, default to traditional approach
+            # 🔥 FALLBACK: If intelligent selection fails, use simple market order approach
             logging.warning(f"⚠️ Intelligent order type selection failed: {e}")
-            logging.info("🔄 FALLBACK: Using traditional Stop order entry")
-            order_type = "Stop"
-            stop_price = price
+            logging.info("🔄 FALLBACK: Using Market order for immediate execution")
+            order_type = "Market"
+            stop_price = None
             order_price = None
-            logging.info(f"🔄 FALLBACK STOP ORDER: Will trigger at stopPrice={stop_price}")
+            logging.info(f"🔄 FALLBACK MARKET ORDER: Will execute at current market price")
        
         # 🔥 REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
         # Every new alert will now automatically flatten existing positions and place new orders
@@ -572,6 +573,25 @@ async def webhook(req: Request):
         # 🔄 FLIPPED STRATEGY: Variables already defined above, just use them in OSO payload
         logging.info(f"🔄 ALERT FLIP: Original={action} → Flipped={flipped_action}")
         logging.info(f"🔄 BRACKET SWAP: Original TP={t1}, SL={stop} → Swapped TP={stop}, SL={t1}")
+        
+        # 🔥 VALIDATE BRACKET PRICES to prevent Tradovate rejections
+        logging.info(f"🔍 VALIDATING BRACKET PRICES:")
+        logging.info(f"   Entry Price: {price}")
+        logging.info(f"   Swapped TP (was SL): {stop}")  
+        logging.info(f"   Swapped SL (was TP): {t1}")
+        
+        # For BUY orders: TP should be ABOVE entry, SL should be BELOW entry
+        # For SELL orders: TP should be BELOW entry, SL should be ABOVE entry
+        if flipped_action.lower() == "buy":
+            if stop <= price:
+                logging.warning(f"⚠️ PRICE CONFLICT: BUY TP ({stop}) should be above entry ({price})")
+            if t1 >= price:
+                logging.warning(f"⚠️ PRICE CONFLICT: BUY SL ({t1}) should be below entry ({price})")
+        else:  # SELL
+            if stop >= price:
+                logging.warning(f"⚠️ PRICE CONFLICT: SELL TP ({stop}) should be below entry ({price})")
+            if t1 <= price:
+                logging.warning(f"⚠️ PRICE CONFLICT: SELL SL ({t1}) should be above entry ({price})")
         
         # Build OSO payload with FLIPPED action and SWAPPED brackets
         oso_payload = {
@@ -614,6 +634,9 @@ async def webhook(req: Request):
             # Stop order needs stopPrice field
             oso_payload["stopPrice"] = stop_price
             logging.info(f"🎯 STOP ORDER: Entry will trigger at stopPrice={stop_price}")
+        elif order_type == "Market":
+            # Market order executes immediately at current market price - no price field needed
+            logging.info(f"🎯 MARKET ORDER: Entry will execute immediately at current market price")
         else:
             # Limit order needs price field  
             oso_payload["price"] = order_price
