@@ -478,8 +478,10 @@ async def webhook(req: Request):
                 "message": f"Rapid-fire duplicate alert blocked for {symbol} {action}"
             }
        
-        logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
-          # Determine optimal order type based on current market conditions
+        logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with FLIPPED automated trading")
+        logging.info(f"🔄 STRATEGY: Will place {action.lower() == 'buy' and 'SELL' or 'BUY'} order instead")
+        logging.info(f"🔄 BRACKETS: TP={stop}, SL={t1} (swapped from original)")
+        # Determine optimal order type based on current market conditions
         logging.info("🔍 Analyzing market conditions for optimal order type...")
         try:
             order_config = await client.determine_optimal_order_type(symbol, action, price)
@@ -526,8 +528,10 @@ async def webhook(req: Request):
         except Exception as e:
             logging.warning(f"Failed to cancel some orders: {e}")
             # Continue with new order placement even if cancellation partially fails        # STEP 3: Place entry order with automatic bracket orders (OSO)
-        logging.info(f"=== PLACING OSO BRACKET ORDER WITH INTELLIGENT ORDER TYPE ===")
-        logging.info(f"Symbol: {symbol}, Order Type: {order_type}, Entry: {price}, TP: {t1}, SL: {stop}")
+        logging.info(f"=== PLACING OSO BRACKET ORDER WITH FLIPPED STRATEGY ===")
+        logging.info(f"Original Alert: {action} {symbol} at {price}")
+        logging.info(f"FLIPPED ORDER: {flipped_action} {symbol} | TP: {stop} | SL: {t1}")
+        logging.info(f"Order Type: {order_type}, Entry: {price}")
        
         # 🔥 SPEED OPTIMIZATION: For STOP orders, prioritize fastest possible execution
         if order_type == "Stop":
@@ -536,19 +540,24 @@ async def webhook(req: Request):
         else:
             logging.info("📊 LIMIT order - using standard execution path")
        
-        # Determine opposite action for take profit and stop loss
-        opposite_action = "Sell" if action.lower() == "buy" else "Buy"
-          # Build OSO payload with intelligent order type selection
+        # 🔄 FLIPPED STRATEGY: Place OPPOSITE orders with SWAPPED take profit and stop loss
+        flipped_action = "Sell" if action.lower() == "buy" else "Buy"  # FLIP the alert direction
+        opposite_action = "Buy" if action.lower() == "buy" else "Sell"  # Opposite of flipped action
+        
+        logging.info(f"🔄 ALERT FLIP: Original={action} → Flipped={flipped_action}")
+        logging.info(f"🔄 BRACKET SWAP: Original TP={t1}, SL={stop} → Swapped TP={stop}, SL={t1}")
+        
+        # Build OSO payload with FLIPPED action and SWAPPED brackets
         oso_payload = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
-            "action": action.capitalize(),  # "Buy" or "Sell"
+            "action": flipped_action,  # FLIPPED: Use opposite of alert action
             "symbol": symbol,
             "orderQty": 1,
             "orderType": order_type,   # Intelligently selected based on market conditions
             "timeInForce": "GTC",
             "isAutomated": True,
-            # Take Profit bracket (bracket1)
+            # Take Profit bracket (bracket1) - NOW USES ORIGINAL STOP as TP
             "bracket1": {
                 "accountSpec": client.account_spec,
                 "accountId": client.account_id,
@@ -556,11 +565,11 @@ async def webhook(req: Request):
                 "symbol": symbol,
                 "orderQty": 1,
                 "orderType": "Limit",
-                "price": t1,
+                "price": stop,  # SWAPPED: Original stop becomes take profit
                 "timeInForce": "GTC",
                 "isAutomated": True
             },
-            # Stop Loss bracket (bracket2)
+            # Stop Loss bracket (bracket2) - NOW USES ORIGINAL T1 as SL
             "bracket2": {
                 "accountSpec": client.account_spec,
                 "accountId": client.account_id,
@@ -568,7 +577,7 @@ async def webhook(req: Request):
                 "symbol": symbol,
                 "orderQty": 1,
                 "orderType": "Stop",
-                "stopPrice": stop,
+                "stopPrice": t1,  # SWAPPED: Original take profit becomes stop loss
                 "timeInForce": "GTC",
                 "isAutomated": True
             }
@@ -603,9 +612,10 @@ async def webhook(req: Request):
             logging.info(f"✅ OSO BRACKET ORDER PLACED SUCCESSFULLY in {execution_time:.2f}ms")
             logging.info(f"OSO Result: {oso_result}")
            
-            # 🔥 MARK SUCCESSFUL TRADE PLACEMENT - This helps prevent immediate duplicates
+            # 🔥 MARK SUCCESSFUL TRADE PLACEMENT - Recording FLIPPED trade details
             # When this trade completes (hits TP or SL), we'll prevent duplicate signals for a period
-            logging.info(f"📝 Recording successful trade placement: {symbol} {action}")
+            logging.info(f"📝 Recording successful FLIPPED trade placement: {symbol} {flipped_action}")
+            logging.info(f"📝 Original alert was {action}, placed {flipped_action} instead")
             # Note: We mark completion when the trade actually completes, not just when placed
            
             return {
@@ -613,7 +623,11 @@ async def webhook(req: Request):
                 "order": oso_result,
                 "execution_time_ms": execution_time,
                 "order_type": order_type,
-                "symbol": symbol
+                "symbol": symbol,
+                "original_alert": action,
+                "flipped_action": flipped_action,
+                "swapped_tp": stop,
+                "swapped_sl": t1
             }
            
         except Exception as e:
