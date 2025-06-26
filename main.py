@@ -21,9 +21,12 @@ COMPLETED_TRADE_COOLDOWN = 30  # 30 seconds - minimal cooldown for automated tra
 
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
+logging.info(f"Loaded WEBHOOK_SECRET: {WEBHOOK_SECRET}")
+
 
 LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
+
 
 log_file = os.path.join(LOG_DIR, "webhook_trades.log")
 logging.basicConfig(
@@ -32,12 +35,8 @@ logging.basicConfig(
         logging.StreamHandler()
     ],
     level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    force=True  # Force reconfiguration
+    format="%(asctime)s - %(levelname)s - %(message)s"
 )
-
-logging.info(f"Loaded WEBHOOK_SECRET: {WEBHOOK_SECRET}")
-logging.info("Logging system initialized")
 
 
 app = FastAPI()
@@ -449,32 +448,19 @@ async def webhook(req: Request):
 
         logging.info(f"=== PARSED ALERT DATA: {data} ===")        # Extract required fields
         symbol = data.get("symbol")
-        original_action = data.get("action")
+        action = data.get("action")
         price = data.get("PRICE")
-        original_t1 = data.get("T1")
-        original_stop = data.get("STOP")
+        t1 = data.get("T1")
+        stop = data.get("STOP")
 
-        logging.info(f"Original fields - Symbol: {symbol}, Action: {original_action}, Price: {price}, T1: {original_t1}, Stop: {original_stop}")
 
-        # REVERSE THE ORDERS: BUY alerts become SELL orders, SELL alerts become BUY orders
-        # Also swap T1 and STOP values (T1 becomes stop loss, STOP becomes take profit)
-        if original_action.lower() == "buy":
-            action = "Sell"
-            t1 = original_stop  # Original stop becomes our take profit
-            stop = original_t1  # Original T1 becomes our stop loss
-        else:  # original_action.lower() == "sell"
-            action = "Buy"
-            t1 = original_stop  # Original stop becomes our take profit  
-            stop = original_t1  # Original T1 becomes our stop loss
+        logging.info(f"Extracted fields - Symbol: {symbol}, Action: {action}, Price: {price}, T1: {t1}, Stop: {stop}")
 
-        logging.info(f"REVERSED ORDERS - Original: {original_action} -> New: {action}")
-        logging.info(f"SWAPPED LEVELS - Original T1: {original_t1} -> New Stop: {stop}, Original Stop: {original_stop} -> New T1: {t1}")
-        logging.info(f"Final fields - Symbol: {symbol}, Action: {action}, Price: {price}, T1: {t1}, Stop: {stop}")
 
         if not all([symbol, action, price, t1, stop]):
             missing = [k for k, v in {"symbol": symbol, "action": action, "PRICE": price, "T1": t1, "STOP": stop}.items() if not v]
             logging.error(f"Missing required fields: {missing}")
-            raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")# Map TradingView symbol to Tradovate symbol
+            raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")        # Map TradingView symbol to Tradovate symbol
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
             symbol = "NQU5"
             logging.info(f"Mapped symbol to: {symbol}")
@@ -493,51 +479,28 @@ async def webhook(req: Request):
             }
        
         logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
-          # Get current market price to validate order placement
-        logging.info("🔍 Getting current market price for order validation...")
+          # Determine optimal order type based on current market conditions
+        logging.info("🔍 Analyzing market conditions for optimal order type...")
         try:
-            current_price = await client.get_current_price(symbol)
-            logging.info(f"� CURRENT MARKET PRICE for {symbol}: {current_price}")
-            
-            # Validate stop order placement based on market direction
-            if action.lower() == "buy":
-                # BUY stop orders should trigger ABOVE current market price
-                if price <= current_price:
-                    logging.warning(f"⚠️ BUY stop price {price} is at/below current price {current_price}")
-                    logging.info("🔄 Converting to MARKET order for immediate execution")
-                    order_type = "Market"
-                    stop_price = None
-                    order_price = None
-                else:
-                    order_type = "Stop"
-                    stop_price = price
-                    order_price = None
-            else:  # action.lower() == "sell"
-                # SELL stop orders should trigger BELOW current market price
-                if price >= current_price:
-                    logging.warning(f"⚠️ SELL stop price {price} is at/above current price {current_price}")
-                    logging.info("🔄 Converting to MARKET order for immediate execution")
-                    order_type = "Market"
-                    stop_price = None
-                    order_price = None
-                else:
-                    order_type = "Stop"
-                    stop_price = price
-                    order_price = None
-                    
-            logging.info(f"💡 FINAL ORDER TYPE: {order_type}")
+            order_config = await client.determine_optimal_order_type(symbol, action, price)
+            order_type = order_config["orderType"]
+            order_price = order_config.get("price")
+            stop_price = order_config.get("stopPrice")
+           
+            logging.info(f"💡 OPTIMAL ORDER TYPE: {order_type}")
             if order_type == "Stop":
                 logging.info(f"📊 STOP ORDER: Will trigger when price reaches {stop_price}")
-            elif order_type == "Market":
-                logging.info(f"📊 MARKET ORDER: Will execute immediately at current market price")
-                
+            else:
+                logging.info(f"📊 LIMIT ORDER: Will execute at price {order_price}")
+               
         except Exception as e:
-            # 🔥 FALLBACK: If price check fails, use market order for safety
-            logging.warning(f"⚠️ Could not get current market price: {e}")
-            logging.info("🔄 FALLBACK: Using MARKET order for immediate execution")
-            order_type = "Market"
-            stop_price = None
+            # 🔥 FALLBACK: If intelligent selection fails, default to traditional approach
+            logging.warning(f"⚠️ Intelligent order type selection failed: {e}")
+            logging.info("🔄 FALLBACK: Using traditional Stop order entry")
+            order_type = "Stop"
+            stop_price = price
             order_price = None
+            logging.info(f"🔄 FALLBACK STOP ORDER: Will trigger at stopPrice={stop_price}")
        
         # 🔥 REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
         # Every new alert will now automatically flatten existing positions and place new orders
@@ -611,14 +574,11 @@ async def webhook(req: Request):
             }
         }
        
-        # 🔥 CRITICAL: Add dynamic price/stopPrice fields based on order type
+        # 🔥 CRITICAL: Add dynamic price/stopPrice fields based on intelligent order type
         if order_type == "Stop":
             # Stop order needs stopPrice field
             oso_payload["stopPrice"] = stop_price
             logging.info(f"🎯 STOP ORDER: Entry will trigger at stopPrice={stop_price}")
-        elif order_type == "Market":
-            # Market order executes immediately - no price/stopPrice needed
-            logging.info(f"🎯 MARKET ORDER: Entry will execute immediately")
         else:
             # Limit order needs price field  
             oso_payload["price"] = order_price
