@@ -21,12 +21,9 @@ COMPLETED_TRADE_COOLDOWN = 30  # 30 seconds - minimal cooldown for automated tra
 
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
-logging.info(f"Loaded WEBHOOK_SECRET: {WEBHOOK_SECRET}")
-
 
 LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
-
 
 log_file = os.path.join(LOG_DIR, "webhook_trades.log")
 logging.basicConfig(
@@ -35,8 +32,12 @@ logging.basicConfig(
         logging.StreamHandler()
     ],
     level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    force=True  # Force reconfiguration
 )
+
+logging.info(f"Loaded WEBHOOK_SECRET: {WEBHOOK_SECRET}")
+logging.info("Logging system initialized")
 
 
 app = FastAPI()
