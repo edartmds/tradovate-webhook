@@ -478,9 +478,14 @@ async def webhook(req: Request):
                 "message": f"Rapid-fire duplicate alert blocked for {symbol} {action}"
             }
        
+        # 🔄 DEFINE FLIPPED STRATEGY VARIABLES EARLY
+        flipped_action = "Sell" if action.lower() == "buy" else "Buy"  # FLIP the alert direction
+        opposite_action = "Buy" if action.lower() == "buy" else "Sell"  # Opposite of flipped action
+        
         logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with FLIPPED automated trading")
-        logging.info(f"🔄 STRATEGY: Will place {action.lower() == 'buy' and 'SELL' or 'BUY'} order instead")
+        logging.info(f"🔄 STRATEGY: Will place {flipped_action} order instead of {action}")
         logging.info(f"🔄 BRACKETS: TP={stop}, SL={t1} (swapped from original)")
+        
         # Determine optimal order type based on current market conditions
         logging.info("🔍 Analyzing market conditions for optimal order type...")
         try:
@@ -540,10 +545,7 @@ async def webhook(req: Request):
         else:
             logging.info("📊 LIMIT order - using standard execution path")
        
-        # 🔄 FLIPPED STRATEGY: Place OPPOSITE orders with SWAPPED take profit and stop loss
-        flipped_action = "Sell" if action.lower() == "buy" else "Buy"  # FLIP the alert direction
-        opposite_action = "Buy" if action.lower() == "buy" else "Sell"  # Opposite of flipped action
-        
+        # 🔄 FLIPPED STRATEGY: Variables already defined above, just use them in OSO payload
         logging.info(f"🔄 ALERT FLIP: Original={action} → Flipped={flipped_action}")
         logging.info(f"🔄 BRACKET SWAP: Original TP={t1}, SL={stop} → Swapped TP={stop}, SL={t1}")
         
