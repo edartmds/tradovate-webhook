@@ -771,7 +771,7 @@ class TradovateClient:
 
     async def determine_optimal_order_type(self, symbol: str, action: str, target_price: float) -> dict:
         """
-        Intelligently determines whether to use Stop or Limit orders based on market conditions.
+        Always returns a Limit order type regardless of market conditions to ensure profitability.
        
         Args:
             symbol (str): Trading symbol
@@ -779,31 +779,20 @@ class TradovateClient:
             target_price (float): The target entry price
            
         Returns:
-            dict: Order configuration with orderType, price/stopPrice
+            dict: Order configuration with orderType, price
         """
         try:
-            # For now, use a simple fallback strategy
-            # This can be enhanced with real market data in the future
-           
-            # Default to Stop orders for breakout strategies
-            if action.lower() == "buy":
-                # For BUY orders, use Stop order (breakout above current price)
-                return {
-                    "orderType": "Stop",
-                    "stopPrice": target_price
-                }
-            else:
-                # For SELL orders, use Stop order (breakdown below current price)  
-                return {
-                    "orderType": "Stop",
-                    "stopPrice": target_price
-                }
+            # Always use Limit orders for profitability
+            return {
+                "orderType": "Limit",
+                "price": target_price
+            }
                
         except Exception as e:
             logging.error(f"Error in determine_optimal_order_type: {e}")
-            # Fallback to Stop orders
+            # Fallback to Limit orders
             return {
-                "orderType": "Stop",
-                "stopPrice": target_price
+                "orderType": "Limit",
+                "price": target_price
             }
 
