@@ -559,13 +559,9 @@ class TradovateClient:
             raise HTTPException(status_code=500, detail="Internal server error closing positions")
 
 
-    async def force_close_all_positions_immediately(self, preserve_bracket_orders=True):
+    async def force_close_all_positions_immediately(self):
         """
-        Aggressively closes all positions and optionally preserves take profit and stop loss orders.
-        
-        Args:
-            preserve_bracket_orders (bool): If True, will not cancel take profit and stop loss orders
-                                          for open positions. Default is True.
+        Aggressively closes all positions and cancels all orders, including take profit limit orders, using multiple strategies.
         """
         if not self.access_token:
             await self.authenticate()
@@ -577,69 +573,31 @@ class TradovateClient:
         }
 
 
-        logging.info("🔥 Starting position cleanup" + (" (preserving bracket orders)" if preserve_bracket_orders else ""))
-        
-        # Step 1: Handle orders based on settings
+        logging.info("🔥 Starting aggressive position and order cleanup")        # Step 1: Cancel all pending orders, including take profit limit orders
         try:
             pending_orders = await self.get_pending_orders()
             cancelled_orders = []
-            
-            if preserve_bracket_orders:
-                # Identify which orders are bracket orders (take profit/stop loss)
-                # We'll only cancel initial entry orders, not bracket orders
-                for order in pending_orders:
-                    order_id = order.get("id")
-                    order_type = order.get("orderType", "").lower()
-                    
-                    # Skip TP/SL orders (typically "limit" for TP and "stop" for SL)
-                    # We identify them as being part of an OCO group or having a parentId
-                    if order_id and (
-                        "bracket" in str(order.get("text", "")).lower() or  # Order text contains "bracket"
-                        order.get("parentId") is not None or                # Has parent order (is a child order)
-                        order.get("ocoId") is not None                      # Part of an OCO group
-                    ):
-                        logging.info(f"✅ Preserving bracket order {order_id} (type: {order_type})")
-                        continue
-                    
-                    # Cancel other orders (likely entry orders)
-                    if order_id:
-                        try:
-                            async with httpx.AsyncClient() as client:
-                                response = await client.post(f"{BASE_URL}/order/cancel/{order_id}", headers=headers)
-                                response.raise_for_status()
-                                cancelled_orders.append(order_id)
-                                logging.info(f"✅ Cancelled entry order {order_id}")
-                        except httpx.HTTPStatusError as e:
-                            if e.response.status_code == 404:
-                                logging.info(f"✅ Order {order_id} already filled/cancelled (404)")
-                                cancelled_orders.append(order_id)
-                            else:
-                                logging.error(f"❌ Failed to cancel order {order_id}: {e}")
-                        except Exception as e:
+           
+            for order in pending_orders:
+                order_id = order.get("id")
+                if order_id:
+                    try:
+                        async with httpx.AsyncClient() as client:
+                            response = await client.post(f"{BASE_URL}/order/cancel/{order_id}", headers=headers)
+                            response.raise_for_status()
+                            cancelled_orders.append(order_id)
+                            logging.info(f"✅ Cancelled order {order_id}")
+                    except httpx.HTTPStatusError as e:
+                        if e.response.status_code == 404:
+                            logging.info(f"✅ Order {order_id} already filled/cancelled (404)")
+                            cancelled_orders.append(order_id)
+                        else:
                             logging.error(f"❌ Failed to cancel order {order_id}: {e}")
-                
-                logging.info(f"✅ Cancelled {len(cancelled_orders)} entry orders while preserving bracket orders")
-            else:
-                # Original behavior: cancel all orders
-                for order in pending_orders:
-                    order_id = order.get("id")
-                    if order_id:
-                        try:
-                            async with httpx.AsyncClient() as client:
-                                response = await client.post(f"{BASE_URL}/order/cancel/{order_id}", headers=headers)
-                                response.raise_for_status()
-                                cancelled_orders.append(order_id)
-                                logging.info(f"✅ Cancelled order {order_id}")
-                        except httpx.HTTPStatusError as e:
-                            if e.response.status_code == 404:
-                                logging.info(f"✅ Order {order_id} already filled/cancelled (404)")
-                                cancelled_orders.append(order_id)
-                            else:
-                                logging.error(f"❌ Failed to cancel order {order_id}: {e}")
-                        except Exception as e:
-                            logging.error(f"❌ Failed to cancel order {order_id}: {e}")
-                
-                logging.info(f"✅ Cancelled {len(cancelled_orders)} pending orders (including bracket orders)")
+                    except Exception as e:
+                        logging.error(f"❌ Failed to cancel order {order_id}: {e}")
+
+
+            logging.info(f"✅ Cancelled {len(cancelled_orders)} pending orders, including take profit limit orders")
         except Exception as e:
             logging.error(f"❌ Failed to cancel all orders: {e}")
 
@@ -813,7 +771,7 @@ class TradovateClient:
 
     async def determine_optimal_order_type(self, symbol: str, action: str, target_price: float) -> dict:
         """
-        Always returns a Limit order type regardless of market conditions to ensure profitability.
+        Intelligently determines whether to use Stop or Limit orders based on market conditions.
        
         Args:
             symbol (str): Trading symbol
@@ -821,20 +779,31 @@ class TradovateClient:
             target_price (float): The target entry price
            
         Returns:
-            dict: Order configuration with orderType, price
+            dict: Order configuration with orderType, price/stopPrice
         """
         try:
-            # Always use Limit orders for profitability
-            return {
-                "orderType": "Limit",
-                "price": target_price
-            }
+            # For now, use a simple fallback strategy
+            # This can be enhanced with real market data in the future
+           
+            # Default to Stop orders for breakout strategies
+            if action.lower() == "buy":
+                # For BUY orders, use Stop order (breakout above current price)
+                return {
+                    "orderType": "Stop",
+                    "stopPrice": target_price
+                }
+            else:
+                # For SELL orders, use Stop order (breakdown below current price)  
+                return {
+                    "orderType": "Stop",
+                    "stopPrice": target_price
+                }
                
         except Exception as e:
             logging.error(f"Error in determine_optimal_order_type: {e}")
-            # Fallback to Limit orders
+            # Fallback to Stop orders
             return {
-                "orderType": "Limit",
-                "price": target_price
+                "orderType": "Stop",
+                "stopPrice": target_price
             }
 
