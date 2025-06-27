@@ -462,7 +462,7 @@ async def webhook(req: Request):
             logging.error(f"Missing required fields: {missing}")
             raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")        # Map TradingView symbol to Tradovate symbol
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
-            symbol = "NQM5"
+            symbol = "NQU5"  # Changed from NQM5 to NQU5
             logging.info(f"Mapped symbol to: {symbol}")
        
         # 🔥 MINIMAL DUPLICATE DETECTION - Only prevent rapid-fire identical alerts
@@ -615,11 +615,9 @@ async def webhook(req: Request):
                 "order_type": order_type,
                 "symbol": symbol
             }
-           
         except Exception as e:
             execution_time = (time.time() - start_time) * 1000 if 'start_time' in locals() else 0
             logging.error(f"❌ OSO placement failed after {execution_time:.2f}ms: {e}")
-           
             # 🔥 SMART ERROR HANDLING: Provide specific guidance based on error type
             error_msg = str(e).lower()
             if "price is already at or past this level" in error_msg:
@@ -629,17 +627,13 @@ async def webhook(req: Request):
                 logging.error("💰 MARGIN ERROR: Insufficient buying power for position size")
             elif "invalid symbol" in error_msg:
                 logging.error(f"📊 SYMBOL ERROR: Contract symbol {symbol} may be expired or invalid")
-           
             # Log the detailed error for debugging
-            import traceback
             logging.error(f"OSO Error traceback: {traceback.format_exc()}")
             raise HTTPException(status_code=500, detail=f"OSO order placement failed: {str(e)}")
-
 
     except Exception as e:
         logging.error(f"=== ERROR IN WEBHOOK ===")
         logging.error(f"Error: {e}")
-        import traceback
         logging.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
