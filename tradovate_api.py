@@ -782,27 +782,20 @@ class TradovateClient:
             dict: Order configuration with orderType, price/stopPrice
         """
         try:
-            # For the reversed strategy, we're still using Stop orders
-            # but the logic is now considering the flipped action
+            # For the reversed strategy, we'll now use Limit orders instead of Stop orders
+            # This provides better price execution and reduces slippage
             
-            if action.lower() == "buy":
-                # For flipped BUY orders (original was SELL)
-                return {
-                    "orderType": "Stop",
-                    "stopPrice": target_price
-                }
-            else:
-                # For flipped SELL orders (original was BUY)
-                return {
-                    "orderType": "Stop",
-                    "stopPrice": target_price
-                }
+            # Always use Limit orders for entry
+            return {
+                "orderType": "Limit",
+                "price": target_price
+            }
                
         except Exception as e:
             logging.error(f"Error in determine_optimal_order_type: {e}")
-            # Fallback to Stop orders
+            # Fallback to Limit orders
             return {
-                "orderType": "Stop",
-                "stopPrice": target_price
+                "orderType": "Limit",
+                "price": target_price
             }
 
