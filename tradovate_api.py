@@ -284,13 +284,50 @@ class TradovateClient:
         except Exception as e:
             logging.error(f"Unexpected error getting orders: {e}")
             raise HTTPException(status_code=500, detail="Internal server error getting orders")
+    async def get_order_by_id(self, order_id: str):
+        """
+        Get a specific order by ID using the order/list endpoint.
+        
+        Args:
+            order_id (str): The ID of the order to retrieve.
+            
+        Returns:
+            dict: The order data if found, None if not found.
+        """
+        if not self.access_token:
+            await self.authenticate()
 
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json"
+        }
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"{BASE_URL}/order/list", headers=headers)
+                response.raise_for_status()
+                orders = response.json()
+                
+                # Find the specific order by ID
+                for order in orders:
+                    if str(order.get("id")) == str(order_id):
+                        logging.debug(f"Found order {order_id}: {json.dumps(order, indent=2)}")
+                        return order
+                
+                logging.warning(f"Order {order_id} not found in order list")
+                return None
+                
+        except httpx.HTTPStatusError as e:
+            logging.error(f"Failed to get order {order_id}: {e.response.text}")
+            raise HTTPException(status_code=e.response.status_code, detail=f"Failed to get order: {e.response.text}")
+        except Exception as e:
+            logging.error(f"Unexpected error getting order {order_id}: {e}")
+            raise HTTPException(status_code=500, detail="Internal server error getting order")
 
     async def cancel_order(self, order_id: int):
         """
         Cancels a specific order by ID.        Args:
             order_id (int): The ID of the order to cancel.
-
 
         Returns:
             dict: The response from the Tradovate API.
