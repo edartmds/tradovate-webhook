@@ -446,7 +446,9 @@ async def webhook(req: Request):
             raise HTTPException(status_code=400, detail="Unsupported content type")
 
 
-        logging.info(f"=== PARSED ALERT DATA: {data} ===")        # Extract required fields
+        logging.info(f"=== PARSED ALERT DATA: {data} ===")
+        
+        # Extract required fields
         symbol = data.get("symbol")
         action = data.get("action")
         price = data.get("PRICE")
@@ -460,10 +462,29 @@ async def webhook(req: Request):
         if not all([symbol, action, price, t1, stop]):
             missing = [k for k, v in {"symbol": symbol, "action": action, "PRICE": price, "T1": t1, "STOP": stop}.items() if not v]
             logging.error(f"Missing required fields: {missing}")
-            raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")        # Map TradingView symbol to Tradovate symbol
+            raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")
+            
+        # Map TradingView symbol to Tradovate symbol
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
             symbol = "NQU5"  # Changed from NQM5 to NQU5
             logging.info(f"Mapped symbol to: {symbol}")
+            
+        # 🔄 STRATEGY REVERSAL: Flip the order direction and price targets
+        # If original was BUY, we'll SELL and vice versa
+        original_action = action
+        original_t1 = t1
+        original_stop = stop
+        
+        # Flip the direction: Buy becomes Sell, Sell becomes Buy
+        action = "Sell" if original_action.lower() == "buy" else "Buy"
+        
+        # Flip the targets: STOP becomes T1, T1 becomes STOP
+        t1 = original_stop
+        stop = original_t1
+        
+        logging.info(f"🔄 STRATEGY REVERSAL: Flipped {original_action} to {action}")
+        logging.info(f"🔄 STRATEGY REVERSAL: Flipped T1 from {original_t1} to {t1}")
+        logging.info(f"🔄 STRATEGY REVERSAL: Flipped STOP from {original_stop} to {stop}")
        
         # 🔥 MINIMAL DUPLICATE DETECTION - Only prevent rapid-fire identical alerts
         logging.info("🔍 === CHECKING FOR RAPID-FIRE DUPLICATES ONLY ===")
