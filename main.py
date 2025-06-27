@@ -515,28 +515,12 @@ async def webhook(req: Request):
             }
        
         logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
-          # Determine optimal order type based on current market conditions
-        logging.info("🔍 Analyzing market conditions for optimal order type...")
-        try:
-            order_config = await client.determine_optimal_order_type(symbol, action, price)
-            order_type = order_config["orderType"]
-            order_price = order_config.get("price")
-            stop_price = order_config.get("stopPrice")
-           
-            logging.info(f"💡 OPTIMAL ORDER TYPE: {order_type}")
-            if order_type == "Stop":
-                logging.info(f"📊 STOP ORDER: Will trigger when price reaches {stop_price}")
-            else:
-                logging.info(f"📊 LIMIT ORDER: Will execute at price {order_price}")
-               
-        except Exception as e:
-            # 🔥 FALLBACK: If intelligent selection fails, default to traditional approach
-            logging.warning(f"⚠️ Intelligent order type selection failed: {e}")
-            logging.info("🔄 FALLBACK: Using traditional Stop order entry")
-            order_type = "Stop"
-            stop_price = price
-            order_price = None
-            logging.info(f"🔄 FALLBACK STOP ORDER: Will trigger at stopPrice={stop_price}")
+          # 🔥 FORCE LIMIT ORDER ENTRY - Always use Limit orders for entry
+        logging.info("🎯 FORCING LIMIT ORDER ENTRY - Will activate brackets when filled")
+        order_type = "Limit"
+        order_price = price
+        stop_price = None
+        logging.info(f"📊 LIMIT ORDER: Will execute at price {order_price} and activate brackets")
        
         # 🔥 REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
         # Every new alert will now automatically flatten existing positions and place new orders
@@ -562,15 +546,11 @@ async def webhook(req: Request):
         except Exception as e:
             logging.warning(f"Failed to cancel some orders: {e}")
             # Continue with new order placement even if cancellation partially fails        # STEP 3: Place entry order with automatic bracket orders (OSO)
-        logging.info(f"=== PLACING OSO BRACKET ORDER WITH INTELLIGENT ORDER TYPE ===")
+        logging.info(f"=== PLACING OSO BRACKET ORDER WITH LIMIT ENTRY ===")
         logging.info(f"Symbol: {symbol}, Order Type: {order_type}, Entry: {price}, TP: {t1}, SL: {stop}")
        
-        # 🔥 SPEED OPTIMIZATION: For STOP orders, prioritize fastest possible execution
-        if order_type == "Stop":
-            logging.info("⚡ SPEED MODE: STOP order detected - optimizing for fastest execution")
-            # For breakout/breakdown strategies, speed is critical
-        else:
-            logging.info("📊 LIMIT order - using standard execution path")
+        # 🔥 LIMIT ORDER STRATEGY: Entry executes at exact price, then activates brackets
+        logging.info("📊 LIMIT ORDER STRATEGY: Precise entry execution with bracket activation")
        
         # Place OPPOSITE action - if alert says BUY, we place SELL (and vice versa)
         opposite_alert_action = "Sell" if action.lower() == "buy" else "Buy"
@@ -612,15 +592,10 @@ async def webhook(req: Request):
             }
         }
        
-        # 🔥 CRITICAL: Add dynamic price/stopPrice fields based on intelligent order type
-        if order_type == "Stop":
-            # Stop order needs stopPrice field
-            oso_payload["stopPrice"] = stop_price
-            logging.info(f"🎯 STOP ORDER: Entry will trigger at stopPrice={stop_price}")
-        else:
-            # Limit order needs price field  
-            oso_payload["price"] = order_price
-            logging.info(f"🎯 LIMIT ORDER: Entry will execute at price={order_price}")
+        # 🔥 CRITICAL: Add price field for LIMIT order entry
+        # Limit order needs price field  
+        oso_payload["price"] = order_price
+        logging.info(f"🎯 LIMIT ORDER: Entry will execute at price={order_price} and activate brackets")
        
         logging.info(f"=== OSO PAYLOAD ===")
         logging.info(f"{json.dumps(oso_payload, indent=2)}")        # STEP 4: Place OSO bracket order with speed optimizations
