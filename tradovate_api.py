@@ -782,18 +782,17 @@ class TradovateClient:
             dict: Order configuration with orderType, price/stopPrice
         """
         try:
-            # For now, use a simple fallback strategy
-            # This can be enhanced with real market data in the future
-           
-            # Default to Stop orders for breakout strategies
+            # For the reversed strategy, we're still using Stop orders
+            # but the logic is now considering the flipped action
+            
             if action.lower() == "buy":
-                # For BUY orders, use Stop order (breakout above current price)
+                # For flipped BUY orders (original was SELL)
                 return {
                     "orderType": "Stop",
                     "stopPrice": target_price
                 }
             else:
-                # For SELL orders, use Stop order (breakdown below current price)  
+                # For flipped SELL orders (original was BUY)
                 return {
                     "orderType": "Stop",
                     "stopPrice": target_price
