@@ -555,9 +555,14 @@ async def webhook(req: Request):
                 "flipped_action": flipped_action,
                 "bracket_monitoring": "active" if entry_order_id else "failed",
                 "pending_brackets": {
-                    "take_profit": stop,
-                    "stop_loss": t1
-                }
+                    "take_profit": t1,    # After swapping: new T1 (was original STOP)
+                    "stop_loss": stop     # After swapping: new STOP (was original T1)
+                },
+                "original_levels": {
+                    "original_T1": original_t1,
+                    "original_STOP": original_stop
+                },
+                "bracket_explanation": f"TP: {t1} (was original STOP: {original_stop}), SL: {stop} (was original T1: {original_t1})"
             }
            
         except Exception as e:
