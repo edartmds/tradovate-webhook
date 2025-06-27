@@ -175,8 +175,12 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
 
     for target in ["T1", "STOP", "PRICE"]:
         if target in parsed_data:
-            parsed_data[target] = float(parsed_data[target])
-            logging.info(f"Converted {target} to float: {parsed_data[target]}")
+            try:
+                parsed_data[target] = float(parsed_data[target])
+                logging.info(f"Converted {target} to float: {parsed_data[target]}")
+            except ValueError:
+                logging.error(f"Failed to convert {target} value '{parsed_data[target]}' to float")
+                raise ValueError(f"Invalid {target} value: must be a number")
 
 
     return parsed_data
@@ -482,12 +486,13 @@ async def webhook(req: Request):
           # Determine optimal order type based on current market conditions
         logging.info("🔍 Analyzing market conditions for optimal order type...")
         try:
-            order_config = await client.determine_optimal_order_type(symbol, action, price)
+            # Ensure we're using the exact PRICE from the alert for our limit order
             order_type = "Limit"  # Force to always use Limit order type for profitability
-            order_price = price  # Use the provided price for the limit order
+            order_price = float(price)  # Ensure price is a float
             stop_price = None  # Not needed for limit orders
            
             logging.info(f"💡 OPTIMAL ORDER TYPE: {order_type}")
+            logging.info(f"💡 USING EXACT ALERT PRICE: {order_price}")
             logging.info(f"📊 LIMIT ORDER: Will execute at price {order_price}")
                
         except Exception as e:
@@ -567,12 +572,22 @@ async def webhook(req: Request):
             }
         }
        
-        # Add price field for limit order
-        oso_payload["price"] = order_price
-        logging.info(f"🎯 LIMIT ORDER: Entry will execute at price={order_price}")
+        # Add price field for limit order - ensure it's the exact alert price
+        oso_payload["price"] = order_price  # This is already float from the alert's PRICE value
+        logging.info(f"🎯 LIMIT ORDER: Entry will execute at EXACT price={order_price}")
        
         logging.info(f"=== OSO PAYLOAD ===")
-        logging.info(f"{json.dumps(oso_payload, indent=2)}")        # STEP 4: Place OSO bracket order with speed optimizations
+        logging.info(f"{json.dumps(oso_payload, indent=2)}")
+        
+        # Double-check the price value in the payload
+        logging.info(f"🔍 VERIFYING PRICE: Alert price={price}, Order price={order_price}, Payload price={oso_payload.get('price')}")
+        if oso_payload.get('price') != order_price:
+            logging.error(f"⚠️ PRICE MISMATCH: Payload price {oso_payload.get('price')} doesn't match order price {order_price}")
+            # Explicitly set it again to be sure
+            oso_payload["price"] = order_price
+            logging.info(f"🔧 FIXED: Set payload price to {order_price}")
+            
+        # STEP 4: Place OSO bracket order with speed optimizations
         logging.info("=== PLACING OSO BRACKET ORDER ===")
        
         # 🔥 SPEED OPTIMIZATION: Validate payload before submission to prevent rejection delays
