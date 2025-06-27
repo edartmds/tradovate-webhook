@@ -535,14 +535,14 @@ async def webhook(req: Request):
             # Continue anyway - user wants new orders placed regardless
 
 
-        # STEP 2: Cancel all existing pending orders to prevent over-leveraging
-        # logging.info("=== CANCELLING ALL PENDING ORDERS ===")
-        # try:
-        #     cancelled_orders = await client.cancel_all_pending_orders()
-        #     logging.info(f"Successfully cancelled {len(cancelled_orders)} pending orders")
-        # except Exception as e:
-        #     logging.warning(f"Failed to cancel some orders: {e}")
-        #     # Continue with new order placement even if cancellation partially fails        # STEP 3: Place entry order with automatic bracket orders (OSO)
+        # STEP 2: Cancel any existing open orders for this symbol to avoid duplicates
+        logging.info("=== CANCELLING EXISTING ORDERS FOR SYMBOL ===")
+        try:
+            await cancel_all_orders(symbol)
+            logging.info("✅ Previous orders for symbol cancelled successfully")
+        except Exception as e:
+            logging.warning(f"Failed to cancel existing orders for {symbol}: {e}")
+        # STEP 3: Place entry order with automatic bracket orders (OSO)
         logging.info(f"=== PLACING OSO BRACKET ORDER WITH LIMIT ENTRY ===")
         logging.info(f"Symbol: {symbol}, Order Type: {order_type}, Entry: {order_price}, TP: {t1}, SL: {stop}")
         
