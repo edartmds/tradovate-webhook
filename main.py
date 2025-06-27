@@ -628,12 +628,14 @@ async def webhook(req: Request):
             elif "invalid symbol" in error_msg:
                 logging.error(f"📊 SYMBOL ERROR: Contract symbol {symbol} may be expired or invalid")
             # Log the detailed error for debugging
+            import traceback
             logging.error(f"OSO Error traceback: {traceback.format_exc()}")
             raise HTTPException(status_code=500, detail=f"OSO order placement failed: {str(e)}")
 
     except Exception as e:
         logging.error(f"=== ERROR IN WEBHOOK ===")
         logging.error(f"Error: {e}")
+        import traceback
         logging.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
