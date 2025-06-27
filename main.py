@@ -172,28 +172,19 @@ async def wait_until_no_open_orders(symbol, timeout=10):
 
 
 def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
-    logging.info(f"🔍 DEBUG - Raw alert text: {alert_text}")
-    logging.info(f"🔍 DEBUG - Alert text length: {len(alert_text)} characters")
-    logging.info(f"🔍 DEBUG - Alert text repr: {repr(alert_text)}")
-    
+    logging.info(f"Raw alert text: {alert_text}")
     parsed_data = {}
     if alert_text.startswith("="):
         try:
-            logging.info(f"🔍 DEBUG - Processing JSON part (starts with =)")
             json_part, remaining_text = alert_text[1:].split("\n", 1)
-            logging.info(f"🔍 DEBUG - JSON part: {json_part}")
-            logging.info(f"🔍 DEBUG - Remaining text: {remaining_text}")
             json_data = json.loads(json_part)
             parsed_data.update(json_data)
             alert_text = remaining_text
-            logging.info(f"🔍 DEBUG - Parsed JSON data: {json_data}")
         except (json.JSONDecodeError, ValueError) as e:
-            logging.error(f"🔍 DEBUG - JSON parsing failed: {e}")
             raise ValueError(f"Error parsing JSON-like structure: {e}")
 
-    logging.info(f"🔍 DEBUG - Processing remaining lines")
-    for line_num, line in enumerate(alert_text.split("\n")):
-        logging.info(f"🔍 DEBUG - Line {line_num}: '{line}' (stripped: '{line.strip()}')")
+
+    for line in alert_text.split("\n"):
         if "=" in line:
             key, value = line.split("=", 1)
             key = key.strip()
@@ -204,7 +195,8 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
             parsed_data["action"] = line.strip().capitalize()
             logging.info(f"Parsed action = {parsed_data['action']}")
 
-    logging.info(f"🔍 DEBUG - Complete parsed alert data: {parsed_data}")
+
+    logging.info(f"Complete parsed alert data: {parsed_data}")
 
 
     required_fields = ["symbol", "action"]
@@ -479,16 +471,11 @@ async def webhook(req: Request):
         logging.info(f"Content-Type: {content_type}")
         logging.info(f"Raw body: {raw_body.decode('utf-8')}")
 
-        # 🔥 DEBUG: Log the exact raw body for troubleshooting
-        logging.info(f"🔍 DEBUG - Raw body length: {len(raw_body)} bytes")
-        logging.info(f"🔍 DEBUG - Raw body repr: {repr(raw_body.decode('utf-8'))}")
 
         if content_type == "application/json":
             data = await req.json()
-            logging.info(f"🔍 DEBUG - Parsed as JSON: {data}")
-        elif content_type.startswith("text/plain") or content_type is None:
+        elif content_type.startswith("text/plain"):
             text_data = raw_body.decode("utf-8")
-            logging.info(f"🔍 DEBUG - Processing as text/plain")
             data = parse_alert_to_tradovate_json(text_data, client.account_id)
         else:
             logging.error(f"Unsupported content type: {content_type}")
@@ -528,12 +515,28 @@ async def webhook(req: Request):
             }
        
         logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
-          # 🔥 FORCE LIMIT ORDER ENTRY - Always use Limit orders for entry
-        logging.info("🎯 FORCING LIMIT ORDER ENTRY - Will activate brackets when filled")
-        order_type = "Limit"
-        order_price = price
-        stop_price = None
-        logging.info(f"📊 LIMIT ORDER: Will execute at price {order_price} and activate brackets")
+          # Determine optimal order type based on current market conditions
+        logging.info("🔍 Analyzing market conditions for optimal order type...")
+        try:
+            order_config = await client.determine_optimal_order_type(symbol, action, price)
+            order_type = order_config["orderType"]
+            order_price = order_config.get("price")
+            stop_price = order_config.get("stopPrice")
+           
+            logging.info(f"💡 OPTIMAL ORDER TYPE: {order_type}")
+            if order_type == "Stop":
+                logging.info(f"📊 STOP ORDER: Will trigger when price reaches {stop_price}")
+            else:
+                logging.info(f"📊 LIMIT ORDER: Will execute at price {order_price}")
+               
+        except Exception as e:
+            # 🔥 FALLBACK: If intelligent selection fails, default to traditional approach
+            logging.warning(f"⚠️ Intelligent order type selection failed: {e}")
+            logging.info("🔄 FALLBACK: Using traditional Stop order entry")
+            order_type = "Stop"
+            stop_price = price
+            order_price = None
+            logging.info(f"🔄 FALLBACK STOP ORDER: Will trigger at stopPrice={stop_price}")
        
         # 🔥 REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
         # Every new alert will now automatically flatten existing positions and place new orders
@@ -559,21 +562,23 @@ async def webhook(req: Request):
         except Exception as e:
             logging.warning(f"Failed to cancel some orders: {e}")
             # Continue with new order placement even if cancellation partially fails        # STEP 3: Place entry order with automatic bracket orders (OSO)
-        logging.info(f"=== PLACING OSO BRACKET ORDER WITH LIMIT ENTRY ===")
+        logging.info(f"=== PLACING OSO BRACKET ORDER WITH INTELLIGENT ORDER TYPE ===")
         logging.info(f"Symbol: {symbol}, Order Type: {order_type}, Entry: {price}, TP: {t1}, SL: {stop}")
        
-        # 🔥 LIMIT ORDER STRATEGY: Entry executes at exact price, then activates brackets
-        logging.info("📊 LIMIT ORDER STRATEGY: Precise entry execution with bracket activation")
+        # 🔥 SPEED OPTIMIZATION: For STOP orders, prioritize fastest possible execution
+        if order_type == "Stop":
+            logging.info("⚡ SPEED MODE: STOP order detected - optimizing for fastest execution")
+            # For breakout/breakdown strategies, speed is critical
+        else:
+            logging.info("📊 LIMIT order - using standard execution path")
        
-        # Place OPPOSITE action - if alert says BUY, we place SELL (and vice versa)
-        opposite_alert_action = "Sell" if action.lower() == "buy" else "Buy"
-        # For brackets, use original alert action (reverse of the opposite)
-        bracket_action = action.capitalize()
-        # Build OSO payload with intelligent order type selection
+        # Determine opposite action for take profit and stop loss
+        opposite_action = "Sell" if action.lower() == "buy" else "Buy"
+          # Build OSO payload with intelligent order type selection
         oso_payload = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
-            "action": opposite_alert_action,  # NOW PLACES OPPOSITE OF ALERT
+            "action": action.capitalize(),  # "Buy" or "Sell"
             "symbol": symbol,
             "orderQty": 1,
             "orderType": order_type,   # Intelligently selected based on market conditions
@@ -583,7 +588,7 @@ async def webhook(req: Request):
             "bracket1": {
                 "accountSpec": client.account_spec,
                 "accountId": client.account_id,
-                "action": bracket_action,  # NOW USES ORIGINAL ALERT ACTION
+                "action": opposite_action,
                 "symbol": symbol,
                 "orderQty": 1,
                 "orderType": "Limit",
@@ -595,7 +600,7 @@ async def webhook(req: Request):
             "bracket2": {
                 "accountSpec": client.account_spec,
                 "accountId": client.account_id,
-                "action": bracket_action,  # NOW USES ORIGINAL ALERT ACTION
+                "action": opposite_action,
                 "symbol": symbol,
                 "orderQty": 1,
                 "orderType": "Stop",
@@ -605,10 +610,15 @@ async def webhook(req: Request):
             }
         }
        
-        # 🔥 CRITICAL: Add price field for LIMIT order entry
-        # Limit order needs price field  
-        oso_payload["price"] = order_price
-        logging.info(f"🎯 LIMIT ORDER: Entry will execute at price={order_price} and activate brackets")
+        # 🔥 CRITICAL: Add dynamic price/stopPrice fields based on intelligent order type
+        if order_type == "Stop":
+            # Stop order needs stopPrice field
+            oso_payload["stopPrice"] = stop_price
+            logging.info(f"🎯 STOP ORDER: Entry will trigger at stopPrice={stop_price}")
+        else:
+            # Limit order needs price field  
+            oso_payload["price"] = order_price
+            logging.info(f"🎯 LIMIT ORDER: Entry will execute at price={order_price}")
        
         logging.info(f"=== OSO PAYLOAD ===")
         logging.info(f"{json.dumps(oso_payload, indent=2)}")        # STEP 4: Place OSO bracket order with speed optimizations
