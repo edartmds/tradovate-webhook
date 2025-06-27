@@ -562,8 +562,9 @@ async def webhook(req: Request):
         except Exception as e:
             logging.warning(f"Failed to cancel some orders: {e}")
             # Continue with new order placement even if cancellation partially fails        # STEP 3: Place entry order with automatic bracket orders (OSO)
-        logging.info(f"=== PLACING OSO BRACKET ORDER WITH INTELLIGENT ORDER TYPE ===")
-        logging.info(f"Symbol: {symbol}, Order Type: {order_type}, Entry: {price}, TP: {t1}, SL: {stop}")
+        logging.info(f"=== PLACING OSO BRACKET ORDER WITH FLIPPED LOGIC ===")
+        logging.info(f"Symbol: {symbol}, Order Type: {order_type}, Entry: {flipped_action} at {price}")
+        logging.info(f"Take Profit: {flipped_stop} (was T1), Stop Loss: {flipped_t1} (was STOP)")
        
         # 🔥 SPEED OPTIMIZATION: For STOP orders, prioritize fastest possible execution
         if order_type == "Stop":
@@ -572,13 +573,23 @@ async def webhook(req: Request):
         else:
             logging.info("📊 LIMIT order - using standard execution path")
        
-        # Determine opposite action for take profit and stop loss
-        opposite_action = "Sell" if action.lower() == "buy" else "Buy"
-          # Build OSO payload with intelligent order type selection
+        # 🔄 FLIPPED LOGIC: BUY alert = SELL entry, SELL alert = BUY entry
+        # Also flip T1 and STOP: T1 becomes stop loss, STOP becomes take profit
+        flipped_action = "Sell" if action.lower() == "buy" else "Buy"
+        flipped_t1 = stop  # T1 becomes the stop loss (original STOP value)
+        flipped_stop = t1  # STOP becomes the take profit (original T1 value)
+        
+        logging.info(f"🔄 FLIPPED ORDER LOGIC:")
+        logging.info(f"🔄 Original: {action} entry, T1={t1}, STOP={stop}")
+        logging.info(f"🔄 Flipped:  {flipped_action} entry, T1={flipped_t1}, STOP={flipped_stop}")
+        
+        # Determine opposite action for take profit and stop loss (based on flipped entry)
+        opposite_action = "Sell" if flipped_action.lower() == "buy" else "Buy"
+          # Build OSO payload with flipped logic
         oso_payload = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
-            "action": action.capitalize(),  # "Buy" or "Sell"
+            "action": flipped_action,  # FLIPPED: "Sell" for BUY alert, "Buy" for SELL alert
             "symbol": symbol,
             "orderQty": 1,
             "orderType": order_type,   # Intelligently selected based on market conditions
@@ -588,14 +599,14 @@ async def webhook(req: Request):
             "bracket1": {
                 "action": opposite_action,
                 "orderType": "Limit",
-                "price": t1,
+                "price": flipped_stop,  # FLIPPED: Original T1 becomes take profit
                 "timeInForce": "GTC"
             },
             # Stop Loss bracket (bracket2) - SIMPLIFIED
             "bracket2": {
                 "action": opposite_action,
                 "orderType": "Stop",
-                "stopPrice": stop,
+                "stopPrice": flipped_t1,  # FLIPPED: Original STOP becomes stop loss
                 "timeInForce": "GTC"
             }
         }
