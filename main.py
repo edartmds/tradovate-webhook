@@ -503,25 +503,21 @@ async def webhook(req: Request):
           # Determine optimal order type based on current market conditions
         logging.info("🔍 Analyzing market conditions for optimal order type...")
         try:
+            # Always use Limit orders for entry (modified strategy)
             order_config = await client.determine_optimal_order_type(symbol, action, price)
-            order_type = order_config["orderType"]
+            order_type = order_config["orderType"]  # Will be "Limit"
             order_price = order_config.get("price")
-            stop_price = order_config.get("stopPrice")
            
-            logging.info(f"💡 OPTIMAL ORDER TYPE: {order_type}")
-            if order_type == "Stop":
-                logging.info(f"📊 STOP ORDER: Will trigger when price reaches {stop_price}")
-            else:
-                logging.info(f"📊 LIMIT ORDER: Will execute at price {order_price}")
+            logging.info(f"💡 USING LIMIT ORDER TYPE: {order_type}")
+            logging.info(f"📊 LIMIT ORDER: Will execute at price {order_price}")
                
         except Exception as e:
-            # 🔥 FALLBACK: If intelligent selection fails, default to traditional approach
+            # 🔥 FALLBACK: If intelligent selection fails, default to Limit order
             logging.warning(f"⚠️ Intelligent order type selection failed: {e}")
-            logging.info("🔄 FALLBACK: Using traditional Stop order entry")
-            order_type = "Stop"
-            stop_price = price
-            order_price = None
-            logging.info(f"🔄 FALLBACK STOP ORDER: Will trigger at stopPrice={stop_price}")
+            logging.info("🔄 FALLBACK: Using Limit order entry")
+            order_type = "Limit"
+            order_price = price
+            logging.info(f"🔄 FALLBACK LIMIT ORDER: Will execute at price={order_price}")
        
         # 🔥 REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
         # Every new alert will now automatically flatten existing positions and place new orders
@@ -597,9 +593,10 @@ async def webhook(req: Request):
        
         # 🔥 CRITICAL: Add dynamic price/stopPrice fields based on intelligent order type
         if order_type == "Stop":
-            # Stop order needs stopPrice field
-            oso_payload["stopPrice"] = stop_price
-            logging.info(f"🎯 STOP ORDER: Entry will trigger at stopPrice={stop_price}")
+            # Stop order needs stopPrice field - but we're using Limit orders now
+            # This is kept for code compatibility if order type is ever reverted to Stop
+            oso_payload["stopPrice"] = price
+            logging.info(f"🎯 STOP ORDER: Entry will trigger at stopPrice={price}")
         else:
             # Limit order needs price field  
             oso_payload["price"] = order_price
