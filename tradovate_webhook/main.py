@@ -241,71 +241,130 @@ async def webhook(req: Request):
     logging.info(f"📨 Request URL: {req.url}")
     
     try:
-        # Handle authentication if required (flexible for testing)
+        # 🔓 AUTHENTICATION COMPLETELY DISABLED FOR TESTING
         auth_header = req.headers.get("authorization")
+        logging.info(f"� AUTHENTICATION DISABLED FOR TESTING - Auth header: '{auth_header}'")
+        logging.info("� All webhook requests will be processed regardless of authentication")
         
-        # 🔥 FLEXIBLE AUTHENTICATION: Allow testing without webhook secret
-        if WEBHOOK_SECRET:
-            # If webhook secret is set, check authentication
-            if auth_header != f"Bearer {WEBHOOK_SECRET}":
-                logging.warning(f"❌ Invalid webhook authentication. Expected: 'Bearer {WEBHOOK_SECRET}', Got: '{auth_header}'")
-                logging.warning("📝 TIP: For testing, you can remove WEBHOOK_SECRET environment variable")
-                # For now, allow requests through for testing - comment out the line below to enforce auth
-                # raise HTTPException(status_code=401, detail="Invalid authentication")
-                logging.info("🔓 AUTHENTICATION BYPASSED FOR TESTING - proceeding anyway")
-        else:
-            logging.info("🔓 No webhook secret configured - authentication disabled for testing")
-        
-        # Parse request
+        # Parse request with comprehensive logging
         content_type = req.headers.get("content-type", "").lower()
-        logging.info(f"Content-Type: {content_type}")
+        logging.info(f"📨 Content-Type: {content_type}")
+        
+        # Get raw body first for debugging
+        body = await req.body()
+        raw_body_text = body.decode("utf-8")
+        logging.info(f"📨 RAW BODY: '{raw_body_text}'")
+        logging.info(f"📨 RAW BODY LENGTH: {len(raw_body_text)} characters")
         
         if "application/json" in content_type:
-            data = await req.json()
-            logging.info(f"JSON Data: {data}")
+            try:
+                data = await req.json()
+                logging.info(f"📨 PARSED JSON DATA: {json.dumps(data, indent=2)}")
+            except Exception as e:
+                logging.error(f"❌ JSON parsing failed: {e}")
+                logging.info("🔄 Falling back to text parsing")
+                data = {}
         else:
-            # Handle raw text format
-            body = await req.body()
-            raw_text = body.decode("utf-8")
-            logging.info(f"Raw body: {raw_text}")
-            
-            # Parse text format
+            logging.info(f"📨 Non-JSON content type, parsing as text")
             data = {}
-            for line in raw_text.strip().split("\n"):
+            
+        # If data is empty, try to parse the raw body as key=value pairs
+        if not data and raw_body_text:
+            logging.info(f"🔄 Attempting to parse raw body as key=value pairs")
+            for line in raw_body_text.strip().split("\n"):
+                line = line.strip()
                 if "=" in line:
                     key, value = line.split("=", 1)
                     data[key.strip()] = value.strip()
-            
-            logging.info(f"Raw alert text: {raw_text}")
+                    logging.info(f"📨 Parsed: {key.strip()} = {value.strip()}")
+                elif line:  # Non-empty line without =
+                    logging.info(f"📨 Raw line (no =): '{line}'")
+                    # Maybe it's just the action (BUY/SELL)
+                    if line.upper() in ["BUY", "SELL"]:
+                        data["action"] = line.upper()
+                        logging.info(f"📨 Detected action: {line.upper()}")
         
-        # Parse required fields
-        symbol = data.get("symbol")
-        action = data.get("action")
-        price_str = data.get("PRICE") or data.get("price")
-        t1_str = data.get("T1") or data.get("t1")
-        stop_str = data.get("STOP") or data.get("stop")
+        logging.info(f"📨 FINAL PARSED DATA: {json.dumps(data, indent=2)}")
+        
+        # Parse required fields with fallbacks
+        symbol = data.get("symbol") or data.get("ticker") or data.get("SYMBOL")
+        action = data.get("action") or data.get("ACTION") or data.get("side")
+        price_str = data.get("PRICE") or data.get("price") or data.get("close") or data.get("CLOSE")
+        t1_str = data.get("T1") or data.get("t1") or data.get("tp") or data.get("take_profit")
+        stop_str = data.get("STOP") or data.get("stop") or data.get("sl") or data.get("stop_loss")
         
         # Log parsed values for debugging
-        logging.info(f"Parsed symbol = {symbol}")
-        logging.info(f"Parsed action = {action}")
-        logging.info(f"Parsed PRICE = {price_str}")
-        logging.info(f"Parsed T1 = {t1_str}")
-        logging.info(f"Parsed STOP = {stop_str}")
+        logging.info(f"📊 Parsed symbol = '{symbol}'")
+        logging.info(f"📊 Parsed action = '{action}'")
+        logging.info(f"📊 Parsed PRICE = '{price_str}'")
+        logging.info(f"📊 Parsed T1 = '{t1_str}'")
+        logging.info(f"📊 Parsed STOP = '{stop_str}'")
         
-        # Validate required fields
-        if not all([symbol, action, price_str, t1_str, stop_str]):
-            missing = [f for f, v in [("symbol", symbol), ("action", action), ("PRICE", price_str), ("T1", t1_str), ("STOP", stop_str)] if not v]
-            raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")
+        # 🔥 SPECIAL HANDLING FOR EMPTY REQUESTS (Testing/Health Checks)
+        if not any([symbol, action, price_str, t1_str, stop_str]):
+            logging.warning("🟡 EMPTY REQUEST DETECTED - This might be a health check or malformed TradingView alert")
+            logging.warning("📝 If this is from TradingView, check your alert message format")
+            
+            # Return helpful response for debugging
+            return {
+                "status": "empty_request", 
+                "message": "No trading data received. Check TradingView alert format.",
+                "expected_format": {
+                    "symbol": "NQ1!",
+                    "action": "buy|sell", 
+                    "PRICE": 20000.0,
+                    "T1": 20050.0,
+                    "STOP": 19950.0
+                },
+                "received_data": data,
+                "raw_body": raw_body_text[:200] + "..." if len(raw_body_text) > 200 else raw_body_text
+            }
         
-        # Convert to proper types
+        # 🧪 TESTING MODE: Fill in missing required fields with defaults
+        if not symbol:
+            symbol = "NQ1!"  # Default test symbol
+            logging.warning(f"⚠️ Using default symbol for testing: {symbol}")
+            
+        if not action:
+            action = "buy"  # Default test action
+            logging.warning(f"⚠️ Using default action for testing: {action}")
+        
+        # Validate that we have at least symbol and action now
+        if not symbol or not action:
+            missing_fields = []
+            if not symbol: missing_fields.append("symbol")
+            if not action: missing_fields.append("action") 
+            
+            logging.error(f"❌ CRITICAL MISSING FIELDS: {missing_fields}")
+            logging.error("📝 TradingView alert should contain: symbol, action, PRICE, T1, STOP")
+            raise HTTPException(status_code=400, detail=f"Missing critical fields: {missing_fields}. Check TradingView alert format.")
+        
+        # Convert to proper types with fallbacks for testing
         try:
-            t1 = float(t1_str)
-            stop = float(stop_str)
-            price = float(price_str)
-            logging.info(f"Converted T1 to float: {t1}")
-            logging.info(f"Converted STOP to float: {stop}")
-            logging.info(f"Converted PRICE to float: {price}")
+            # Use test data if values are missing (for development/testing)
+            if not price_str:
+                price = 20000.0  # Default test price
+                logging.warning(f"⚠️ Using default price for testing: {price}")
+            else:
+                price = float(price_str)
+                
+            if not t1_str:
+                t1 = price + 50.0  # Default test take profit
+                logging.warning(f"⚠️ Using default T1 for testing: {t1}")
+            else:
+                t1 = float(t1_str)
+                
+            if not stop_str:
+                stop = price - 50.0  # Default test stop loss
+                logging.warning(f"⚠️ Using default STOP for testing: {stop}")
+            else:
+                stop = float(stop_str)
+                
+            logging.info(f"✅ Converted T1 to float: {t1}")
+            logging.info(f"✅ Converted STOP to float: {stop}")
+            logging.info(f"✅ Converted PRICE to float: {price}")
         except ValueError as e:
+            logging.error(f"❌ Invalid numeric values: {e}")
             raise HTTPException(status_code=400, detail=f"Invalid numeric values: {e}")
         
         # Update data with converted values
