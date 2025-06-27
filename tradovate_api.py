@@ -3,6 +3,7 @@ import os
 import logging
 import json  # Added for pretty-printing JSON responses
 import asyncio  # Added for retry logic
+import httpx  # Added for HTTP requests
 from dotenv import load_dotenv
 from fastapi import HTTPException
 
@@ -100,43 +101,33 @@ class TradovateClient:
         raise HTTPException(status_code=429, detail="Authentication failed after maximum retries")
 
 
-    async def place_order(self, symbol: str = None, action: str = None, quantity: int = 1, order_data: dict = None):
-        """
-        Places an order on Tradovate. Can be called in two ways:
-        1. place_order(symbol, action, quantity, order_data) - traditional way
-        2. place_order(order_data) - pass complete order payload as first argument
-        """
+    async def place_order(self, symbol: str, action: str, quantity: int = 1, order_data: dict = None):
         if not self.access_token:
             await self.authenticate()
+
 
         headers = {
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json"
         }
 
-        # 🔥 HANDLE BOTH CALLING STYLES
-        if isinstance(symbol, dict) and action is None:
-            # Called with: place_order(order_payload)
-            order_payload = symbol
-            logging.info("📝 Using order payload passed as first argument")
-        elif symbol and action:
-            # Called with: place_order(symbol, action, quantity, order_data)
-            order_payload = order_data or {
-                "accountId": self.account_id,
-                "action": action.capitalize(),  # Ensure "Buy" or "Sell"
-                "symbol": symbol,
-                "orderQty": quantity,
-                "orderType": "limit",
-                "timeInForce": "GTC",
-                "isAutomated": True
-            }
-            logging.info("📝 Using traditional symbol/action parameters")
-        else:
-            raise ValueError("Must provide either (symbol, action) or order_data as first parameter")
+
+        # Use the provided order_data if available, otherwise construct a default payload
+        order_payload = order_data or {
+            "accountId": self.account_id,
+            "action": action.capitalize(),  # Ensure "Buy" or "Sell"
+            "symbol": symbol,
+            "orderQty": quantity,
+            "orderType": "limit",
+            "timeInForce": "GTC",
+            "isAutomated": True  # Optional field for automation
+        }
+
 
         if not order_payload.get("accountId"):
             logging.error("Missing accountId in order payload.")
             raise HTTPException(status_code=400, detail="Missing accountId in order payload")
+
 
         try:
             async with httpx.AsyncClient() as client:
@@ -283,50 +274,13 @@ class TradovateClient:
         except Exception as e:
             logging.error(f"Unexpected error getting orders: {e}")
             raise HTTPException(status_code=500, detail="Internal server error getting orders")
-    async def get_order_by_id(self, order_id: str):
-        """
-        Get a specific order by ID using the order/list endpoint.
-        
-        Args:
-            order_id (str): The ID of the order to retrieve.
-            
-        Returns:
-            dict: The order data if found, None if not found.
-        """
-        if not self.access_token:
-            await self.authenticate()
 
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json"
-        }
-
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(f"{BASE_URL}/order/list", headers=headers)
-                response.raise_for_status()
-                orders = response.json()
-                
-                # Find the specific order by ID
-                for order in orders:
-                    if str(order.get("id")) == str(order_id):
-                        logging.debug(f"Found order {order_id}: {json.dumps(order, indent=2)}")
-                        return order
-                
-                logging.warning(f"Order {order_id} not found in order list")
-                return None
-                
-        except httpx.HTTPStatusError as e:
-            logging.error(f"Failed to get order {order_id}: {e.response.text}")
-            raise HTTPException(status_code=e.response.status_code, detail=f"Failed to get order: {e.response.text}")
-        except Exception as e:
-            logging.error(f"Unexpected error getting order {order_id}: {e}")
-            raise HTTPException(status_code=500, detail="Internal server error getting order")
 
     async def cancel_order(self, order_id: int):
         """
         Cancels a specific order by ID.        Args:
             order_id (int): The ID of the order to cancel.
+
 
         Returns:
             dict: The response from the Tradovate API.
