@@ -43,43 +43,11 @@ app = FastAPI()
 client = TradovateClient()
 
 
-@app.get("/")
-async def root():
-    """Root endpoint for health checks and basic info"""
-    return {
-        "status": "active",
-        "message": "Tradovate Webhook Service",
-        "webhook_endpoint": "/webhook",
-        "methods": ["POST"],
-        "timestamp": datetime.now().isoformat()
-    }
-
-
-@app.post("/")
-async def root_webhook(req: Request):
-    """Handle POST requests to root path - redirect to webhook processing"""
-    logging.info("=== POST REQUEST TO ROOT PATH - REDIRECTING TO WEBHOOK LOGIC ===")
-    return await webhook(req)
-
-
-@app.get("/webhook")
-async def webhook_info():
-    """GET endpoint for webhook info"""
-    return {
-        "endpoint": "/webhook",
-        "method": "POST",
-        "status": "ready",
-        "message": "Send POST requests with trading alerts here"
-    }
 
 
 @app.on_event("startup")
 async def startup_event():
     logging.info("=== APPLICATION STARTING UP ===")
-    logging.info(f"Python version: {os.sys.version}")
-    logging.info(f"Current working directory: {os.getcwd()}")
-    logging.info(f"Environment variables loaded: WEBHOOK_SECRET={'SET' if WEBHOOK_SECRET else 'NOT SET'}")
-    
     try:
         await client.authenticate()
         logging.info(f"=== AUTHENTICATION SUCCESSFUL ===")
@@ -460,10 +428,6 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
 @app.post("/webhook")
 async def webhook(req: Request):
     logging.info("=== WEBHOOK ENDPOINT HIT ===")
-    logging.info(f"Request URL: {req.url}")
-    logging.info(f"Request method: {req.method}")
-    logging.info(f"Request headers: {dict(req.headers)}")
-    
     try:
         # Parse the incoming request
         content_type = req.headers.get("content-type")
@@ -498,7 +462,7 @@ async def webhook(req: Request):
             logging.error(f"Missing required fields: {missing}")
             raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")        # Map TradingView symbol to Tradovate symbol
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
-            symbol = "NQU5"
+            symbol = "NQM5"
             logging.info(f"Mapped symbol to: {symbol}")
        
         # 🔥 MINIMAL DUPLICATE DETECTION - Only prevent rapid-fire identical alerts
@@ -515,14 +479,28 @@ async def webhook(req: Request):
             }
        
         logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
-          # 🎯 SIMPLIFIED: Use LIMIT orders for reliable entry execution
-        logging.info("🎯 Using LIMIT order for entry - reliable execution at specified price")
-        order_type = "Limit"
-        order_price = price  # Use the exact price from the alert
-        stop_price = None
-        
-        logging.info(f"💡 ENTRY ORDER TYPE: {order_type}")
-        logging.info(f"📊 LIMIT ORDER: Will execute at price {order_price}")
+          # Determine optimal order type based on current market conditions
+        logging.info("🔍 Analyzing market conditions for optimal order type...")
+        try:
+            order_config = await client.determine_optimal_order_type(symbol, action, price)
+            order_type = order_config["orderType"]
+            order_price = order_config.get("price")
+            stop_price = order_config.get("stopPrice")
+           
+            logging.info(f"💡 OPTIMAL ORDER TYPE: {order_type}")
+            if order_type == "Stop":
+                logging.info(f"📊 STOP ORDER: Will trigger when price reaches {stop_price}")
+            else:
+                logging.info(f"📊 LIMIT ORDER: Will execute at price {order_price}")
+               
+        except Exception as e:
+            # 🔥 FALLBACK: If intelligent selection fails, default to traditional approach
+            logging.warning(f"⚠️ Intelligent order type selection failed: {e}")
+            logging.info("🔄 FALLBACK: Using traditional Stop order entry")
+            order_type = "Stop"
+            stop_price = price
+            order_price = None
+            logging.info(f"🔄 FALLBACK STOP ORDER: Will trigger at stopPrice={stop_price}")
        
         # 🔥 REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
         # Every new alert will now automatically flatten existing positions and place new orders
@@ -548,54 +526,63 @@ async def webhook(req: Request):
         except Exception as e:
             logging.warning(f"Failed to cancel some orders: {e}")
             # Continue with new order placement even if cancellation partially fails        # STEP 3: Place entry order with automatic bracket orders (OSO)
-        logging.info(f"=== PLACING OSO BRACKET ORDER WITH LIMIT ENTRY ===")
-        logging.info(f"Symbol: {symbol}, Order Type: {order_type}, Entry: {flipped_action} LIMIT at {order_price}")
-        logging.info(f"Take Profit: {flipped_stop} (was T1), Stop Loss: {flipped_t1} (was STOP)")
+        logging.info(f"=== PLACING OSO BRACKET ORDER WITH INTELLIGENT ORDER TYPE ===")
+        logging.info(f"Symbol: {symbol}, Order Type: {order_type}, Entry: {price}, TP: {t1}, SL: {stop}")
        
-        # � LIMIT ORDER: Clean and reliable execution
-        logging.info("📊 LIMIT ORDER: Clean execution at specified price level")
+        # 🔥 SPEED OPTIMIZATION: For STOP orders, prioritize fastest possible execution
+        if order_type == "Stop":
+            logging.info("⚡ SPEED MODE: STOP order detected - optimizing for fastest execution")
+            # For breakout/breakdown strategies, speed is critical
+        else:
+            logging.info("📊 LIMIT order - using standard execution path")
        
-        # 🔄 FLIPPED LOGIC: BUY alert = SELL entry, SELL alert = BUY entry
-        # Also flip T1 and STOP: T1 becomes stop loss, STOP becomes take profit
-        flipped_action = "Sell" if action.lower() == "buy" else "Buy"
-        flipped_t1 = stop  # T1 becomes the stop loss (original STOP value)
-        flipped_stop = t1  # STOP becomes the take profit (original T1 value)
-        
-        logging.info(f"🔄 FLIPPED ORDER LOGIC:")
-        logging.info(f"🔄 Original: {action} entry, T1={t1}, STOP={stop}")
-        logging.info(f"🔄 Flipped:  {flipped_action} entry, T1={flipped_t1}, STOP={flipped_stop}")
-        
-        # Determine opposite action for take profit and stop loss (based on flipped entry)
-        opposite_action = "Sell" if flipped_action.lower() == "buy" else "Buy"
-          # Build OSO payload with flipped logic
+        # Determine opposite action for take profit and stop loss
+        opposite_action = "Sell" if action.lower() == "buy" else "Buy"
+          # Build OSO payload with intelligent order type selection
         oso_payload = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
-            "action": flipped_action,  # FLIPPED: "Sell" for BUY alert, "Buy" for SELL alert
+            "action": action.capitalize(),  # "Buy" or "Sell"
             "symbol": symbol,
             "orderQty": 1,
             "orderType": order_type,   # Intelligently selected based on market conditions
             "timeInForce": "GTC",
             "isAutomated": True,
-            # Take Profit bracket (bracket1) - SIMPLIFIED
+            # Take Profit bracket (bracket1)
             "bracket1": {
+                "accountSpec": client.account_spec,
+                "accountId": client.account_id,
                 "action": opposite_action,
+                "symbol": symbol,
+                "orderQty": 1,
                 "orderType": "Limit",
-                "price": flipped_stop,  # FLIPPED: Original T1 becomes take profit
-                "timeInForce": "GTC"
+                "price": t1,
+                "timeInForce": "GTC",
+                "isAutomated": True
             },
-            # Stop Loss bracket (bracket2) - SIMPLIFIED
+            # Stop Loss bracket (bracket2)
             "bracket2": {
+                "accountSpec": client.account_spec,
+                "accountId": client.account_id,
                 "action": opposite_action,
+                "symbol": symbol,
+                "orderQty": 1,
                 "orderType": "Stop",
-                "stopPrice": flipped_t1,  # FLIPPED: Original STOP becomes stop loss
-                "timeInForce": "GTC"
+                "stopPrice": stop,
+                "timeInForce": "GTC",
+                "isAutomated": True
             }
         }
        
-        # 🔥 CRITICAL: Add price field for LIMIT order
-        oso_payload["price"] = order_price
-        logging.info(f"🎯 LIMIT ORDER: Entry will execute at price={order_price}")
+        # 🔥 CRITICAL: Add dynamic price/stopPrice fields based on intelligent order type
+        if order_type == "Stop":
+            # Stop order needs stopPrice field
+            oso_payload["stopPrice"] = stop_price
+            logging.info(f"🎯 STOP ORDER: Entry will trigger at stopPrice={stop_price}")
+        else:
+            # Limit order needs price field  
+            oso_payload["price"] = order_price
+            logging.info(f"🎯 LIMIT ORDER: Entry will execute at price={order_price}")
        
         logging.info(f"=== OSO PAYLOAD ===")
         logging.info(f"{json.dumps(oso_payload, indent=2)}")        # STEP 4: Place OSO bracket order with speed optimizations
@@ -655,35 +642,6 @@ async def webhook(req: Request):
         import traceback
         logging.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-
-@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-async def catch_all(req: Request, path: str):
-    """Catch-all endpoint to debug unexpected requests"""
-    logging.info(f"=== CATCH-ALL ENDPOINT HIT ===")
-    logging.info(f"Path: /{path}")
-    logging.info(f"Method: {req.method}")
-    logging.info(f"Headers: {dict(req.headers)}")
-    
-    if req.method == "POST":
-        try:
-            body = await req.body()
-            logging.info(f"Body: {body.decode('utf-8')}")
-        except:
-            logging.info("Could not decode body")
-    
-    return {
-        "error": "Endpoint not found",
-        "path": f"/{path}",
-        "method": req.method,
-        "available_endpoints": [
-            "GET /",
-            "POST /",
-            "GET /webhook", 
-            "POST /webhook"
-        ],
-        "message": "Use POST /webhook for trading alerts"
-    }
 
 
 if __name__ == "__main__":
