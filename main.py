@@ -498,7 +498,7 @@ async def webhook(req: Request):
             logging.error(f"Missing required fields: {missing}")
             raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")        # Map TradingView symbol to Tradovate symbol
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
-            symbol = "NQM5"
+            symbol = "NQU5"
             logging.info(f"Mapped symbol to: {symbol}")
        
         # 🔥 MINIMAL DUPLICATE DETECTION - Only prevent rapid-fire identical alerts
