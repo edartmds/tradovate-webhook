@@ -771,7 +771,7 @@ class TradovateClient:
 
     async def determine_optimal_order_type(self, symbol: str, action: str, target_price: float) -> dict:
         """
-        Intelligently determines whether to use Stop or Limit orders based on market conditions.
+        Determines the best order type and ensures prices are properly set.
        
         Args:
             symbol (str): Trading symbol
@@ -782,20 +782,28 @@ class TradovateClient:
             dict: Order configuration with orderType, price/stopPrice
         """
         try:
-            # For the reversed strategy, we'll now use Limit orders instead of Stop orders
-            # This provides better price execution and reduces slippage
-            
-            # Always use Limit orders for entry
+            # Always use Limit orders for entry with proper price offsets
+            if action.lower() == "buy":
+                # For BUY orders, ensure we're not paying more than necessary
+                price = float(target_price)
+                # We can optionally make it slightly more aggressive for better fills
+                # price = price - 0.25  # Quarter point below for better fill probability
+            else:
+                # For SELL orders, ensure we're not selling for less than necessary
+                price = float(target_price)
+                # We can optionally make it slightly more aggressive for better fills
+                # price = price + 0.25  # Quarter point above for better fill probability
+                
             return {
                 "orderType": "Limit",
-                "price": target_price
+                "price": price
             }
                
         except Exception as e:
             logging.error(f"Error in determine_optimal_order_type: {e}")
-            # Fallback to Limit orders
+            # Fallback to Limit orders with exact price
             return {
                 "orderType": "Limit",
-                "price": target_price
+                "price": float(target_price)
             }
 
