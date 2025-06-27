@@ -328,7 +328,7 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                             "action": stop_order_data.get("action"),
                             "symbol": stop_order_data.get("symbol"),
                             "orderQty": stop_order_data.get("orderQty", 1),
-                            "orderType": "Stop",
+                            "orderType": "Limit",
                             "price": stop_order_data.get("stopPrice"),
                             "isAutomated": True,
                             "bracket1": {
@@ -450,8 +450,8 @@ async def webhook(req: Request):
         symbol = data.get("symbol")
         action = data.get("action")
         price = data.get("PRICE")
-        t1 = data.get("T1")
-        stop = data.get("STOP")
+        t1 = data.get("STOP")
+        stop = data.get("T1")
 
 
         logging.info(f"Extracted fields - Symbol: {symbol}, Action: {action}, Price: {price}, T1: {t1}, Stop: {stop}")
@@ -497,11 +497,11 @@ async def webhook(req: Request):
             # 🔥 FALLBACK: If intelligent selection fails, default to traditional approach
             logging.warning(f"⚠️ Intelligent order type selection failed: {e}")
             logging.info("🔄 FALLBACK: Using traditional Stop order entry")
-            order_type = "Stop"
+            order_type = "Limit"
             stop_price = price
             order_price = None
-            logging.info(f"🔄 FALLBACK STOP ORDER: Will trigger at stopPrice={stop_price}")
-       
+            logging.info(f"🔄 FALLBACK LIMIT ORDER: Will execute at limitPrice={order_price}")
+
         # 🔥 REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
         # Every new alert will now automatically flatten existing positions and place new orders
        
@@ -527,8 +527,9 @@ async def webhook(req: Request):
             logging.warning(f"Failed to cancel some orders: {e}")
             # Continue with new order placement even if cancellation partially fails        # STEP 3: Place entry order with automatic bracket orders (OSO)
         logging.info(f"=== PLACING OSO BRACKET ORDER WITH INTELLIGENT ORDER TYPE ===")
-        logging.info(f"Symbol: {symbol}, Order Type: {order_type}, Entry: {price}, TP: {t1}, SL: {stop}")
-       
+        logging.info(f"Symbol: {symbol}, Order Type: {order_type}, Entry: {price}, TP: {stop}, SL: {t1}")
+    
+
         # 🔥 SPEED OPTIMIZATION: For STOP orders, prioritize fastest possible execution
         if order_type == "Stop":
             logging.info("⚡ SPEED MODE: STOP order detected - optimizing for fastest execution")
@@ -545,7 +546,7 @@ async def webhook(req: Request):
             "action": action.capitalize(),  # "Buy" or "Sell"
             "symbol": symbol,
             "orderQty": 1,
-            "orderType": "Stop",   # Intelligently selected based on market conditions
+            "orderType": "Limit",   # Intelligently selected based on market conditions
             "timeInForce": "GTC",
             "isAutomated": True,
             # Take Profit bracket (bracket1)
