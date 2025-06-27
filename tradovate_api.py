@@ -559,9 +559,13 @@ class TradovateClient:
             raise HTTPException(status_code=500, detail="Internal server error closing positions")
 
 
-    async def force_close_all_positions_immediately(self):
+    async def force_close_all_positions_immediately(self, preserve_bracket_orders=True):
         """
-        Aggressively closes all positions and cancels all orders, including take profit limit orders, using multiple strategies.
+        Aggressively closes all positions and optionally preserves take profit and stop loss orders.
+        
+        Args:
+            preserve_bracket_orders (bool): If True, will not cancel take profit and stop loss orders
+                                          for open positions. Default is True.
         """
         if not self.access_token:
             await self.authenticate()
@@ -573,31 +577,69 @@ class TradovateClient:
         }
 
 
-        logging.info("🔥 Starting aggressive position and order cleanup")        # Step 1: Cancel all pending orders, including take profit limit orders
+        logging.info("🔥 Starting position cleanup" + (" (preserving bracket orders)" if preserve_bracket_orders else ""))
+        
+        # Step 1: Handle orders based on settings
         try:
             pending_orders = await self.get_pending_orders()
             cancelled_orders = []
-           
-            for order in pending_orders:
-                order_id = order.get("id")
-                if order_id:
-                    try:
-                        async with httpx.AsyncClient() as client:
-                            response = await client.post(f"{BASE_URL}/order/cancel/{order_id}", headers=headers)
-                            response.raise_for_status()
-                            cancelled_orders.append(order_id)
-                            logging.info(f"✅ Cancelled order {order_id}")
-                    except httpx.HTTPStatusError as e:
-                        if e.response.status_code == 404:
-                            logging.info(f"✅ Order {order_id} already filled/cancelled (404)")
-                            cancelled_orders.append(order_id)
-                        else:
+            
+            if preserve_bracket_orders:
+                # Identify which orders are bracket orders (take profit/stop loss)
+                # We'll only cancel initial entry orders, not bracket orders
+                for order in pending_orders:
+                    order_id = order.get("id")
+                    order_type = order.get("orderType", "").lower()
+                    
+                    # Skip TP/SL orders (typically "limit" for TP and "stop" for SL)
+                    # We identify them as being part of an OCO group or having a parentId
+                    if order_id and (
+                        "bracket" in str(order.get("text", "")).lower() or  # Order text contains "bracket"
+                        order.get("parentId") is not None or                # Has parent order (is a child order)
+                        order.get("ocoId") is not None                      # Part of an OCO group
+                    ):
+                        logging.info(f"✅ Preserving bracket order {order_id} (type: {order_type})")
+                        continue
+                    
+                    # Cancel other orders (likely entry orders)
+                    if order_id:
+                        try:
+                            async with httpx.AsyncClient() as client:
+                                response = await client.post(f"{BASE_URL}/order/cancel/{order_id}", headers=headers)
+                                response.raise_for_status()
+                                cancelled_orders.append(order_id)
+                                logging.info(f"✅ Cancelled entry order {order_id}")
+                        except httpx.HTTPStatusError as e:
+                            if e.response.status_code == 404:
+                                logging.info(f"✅ Order {order_id} already filled/cancelled (404)")
+                                cancelled_orders.append(order_id)
+                            else:
+                                logging.error(f"❌ Failed to cancel order {order_id}: {e}")
+                        except Exception as e:
                             logging.error(f"❌ Failed to cancel order {order_id}: {e}")
-                    except Exception as e:
-                        logging.error(f"❌ Failed to cancel order {order_id}: {e}")
-
-
-            logging.info(f"✅ Cancelled {len(cancelled_orders)} pending orders, including take profit limit orders")
+                
+                logging.info(f"✅ Cancelled {len(cancelled_orders)} entry orders while preserving bracket orders")
+            else:
+                # Original behavior: cancel all orders
+                for order in pending_orders:
+                    order_id = order.get("id")
+                    if order_id:
+                        try:
+                            async with httpx.AsyncClient() as client:
+                                response = await client.post(f"{BASE_URL}/order/cancel/{order_id}", headers=headers)
+                                response.raise_for_status()
+                                cancelled_orders.append(order_id)
+                                logging.info(f"✅ Cancelled order {order_id}")
+                        except httpx.HTTPStatusError as e:
+                            if e.response.status_code == 404:
+                                logging.info(f"✅ Order {order_id} already filled/cancelled (404)")
+                                cancelled_orders.append(order_id)
+                            else:
+                                logging.error(f"❌ Failed to cancel order {order_id}: {e}")
+                        except Exception as e:
+                            logging.error(f"❌ Failed to cancel order {order_id}: {e}")
+                
+                logging.info(f"✅ Cancelled {len(cancelled_orders)} pending orders (including bracket orders)")
         except Exception as e:
             logging.error(f"❌ Failed to cancel all orders: {e}")
 
