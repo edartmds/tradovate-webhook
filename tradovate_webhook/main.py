@@ -268,7 +268,23 @@ async def webhook(req: Request):
             logging.info(f"📨 Non-JSON content type, parsing as text")
             data = {}
             
-        # If data is empty, try to parse the raw body as key=value pairs
+        # 🔍 ENHANCED PARSING: Try to extract JSON from raw text if main parsing failed
+        if not data and raw_body_text:
+            # Try to find JSON-like content in the raw text
+            try:
+                # Look for JSON patterns in the text
+                if "{" in raw_body_text and "}" in raw_body_text:
+                    # Try to extract and parse JSON from the raw text
+                    start_brace = raw_body_text.find("{")
+                    end_brace = raw_body_text.rfind("}") + 1
+                    if start_brace >= 0 and end_brace > start_brace:
+                        json_text = raw_body_text[start_brace:end_brace]
+                        data = json.loads(json_text)
+                        logging.info(f"📨 EXTRACTED JSON FROM TEXT: {json.dumps(data, indent=2)}")
+            except Exception as e:
+                logging.warning(f"🔄 JSON extraction from text failed: {e}")
+            
+        # If data is still empty, try to parse the raw body as key=value pairs
         if not data and raw_body_text:
             logging.info(f"🔄 Attempting to parse raw body as key=value pairs")
             for line in raw_body_text.strip().split("\n"):
@@ -286,12 +302,35 @@ async def webhook(req: Request):
         
         logging.info(f"📨 FINAL PARSED DATA: {json.dumps(data, indent=2)}")
         
-        # Parse required fields with fallbacks
-        symbol = data.get("symbol") or data.get("ticker") or data.get("SYMBOL")
-        action = data.get("action") or data.get("ACTION") or data.get("side")
-        price_str = data.get("PRICE") or data.get("price") or data.get("close") or data.get("CLOSE")
-        t1_str = data.get("T1") or data.get("t1") or data.get("tp") or data.get("take_profit")
-        stop_str = data.get("STOP") or data.get("stop") or data.get("sl") or data.get("stop_loss")
+        # 🔍 ENHANCED TRADINGVIEW PARSING for your specific alert format
+        # Parse required fields with enhanced TradingView-specific fallbacks
+        symbol = (data.get("symbol") or data.get("ticker") or data.get("SYMBOL") or 
+                 data.get("CME_MINI:NQ1!") or data.get("CME_MINI"))
+        action = (data.get("action") or data.get("ACTION") or data.get("side") or
+                 data.get("order_action") or data.get("strategy_order_action"))
+        price_str = (data.get("PRICE") or data.get("price") or data.get("close") or 
+                    data.get("CLOSE") or data.get("current_price"))
+        t1_str = (data.get("T1") or data.get("t1") or data.get("tp") or 
+                 data.get("take_profit") or data.get("target1"))
+        stop_str = (data.get("STOP") or data.get("stop") or data.get("sl") or 
+                   data.get("stop_loss") or data.get("stoploss"))
+        
+        # 🔍 SPECIAL HANDLING for TradingView's complex JSON format
+        if not symbol and raw_body_text:
+            # Look for CME_MINI:NQ1! or similar patterns in raw text
+            if "CME_MINI:NQ1!" in raw_body_text or "NQ1!" in raw_body_text:
+                symbol = "NQ1!"
+                logging.info(f"🔍 Detected NQ1! symbol from raw text analysis")
+        
+        # 🔍 DETECT ACTION from raw text if not found in JSON
+        if not action and raw_body_text:
+            raw_upper = raw_body_text.upper()
+            if "SELL" in raw_upper and "BUY" not in raw_upper:
+                action = "sell"
+                logging.info(f"🔍 Detected SELL action from raw text analysis")
+            elif "BUY" in raw_upper and "SELL" not in raw_upper:
+                action = "buy"
+                logging.info(f"🔍 Detected BUY action from raw text analysis")
         
         # Log parsed values for debugging
         logging.info(f"📊 Parsed symbol = '{symbol}'")
@@ -300,7 +339,7 @@ async def webhook(req: Request):
         logging.info(f"📊 Parsed T1 = '{t1_str}'")
         logging.info(f"📊 Parsed STOP = '{stop_str}'")
         
-        # 🔥 SPECIAL HANDLING FOR EMPTY REQUESTS (Testing/Health Checks)
+        # 🔥 ENHANCED HANDLING FOR EMPTY/INCOMPLETE REQUESTS
         if not any([symbol, action, price_str, t1_str, stop_str]):
             logging.warning("🟡 EMPTY REQUEST DETECTED - This might be a health check or malformed TradingView alert")
             logging.warning("📝 If this is from TradingView, check your alert message format")
@@ -320,16 +359,7 @@ async def webhook(req: Request):
                 "raw_body": raw_body_text[:200] + "..." if len(raw_body_text) > 200 else raw_body_text
             }
         
-        # 🧪 TESTING MODE: Fill in missing required fields with defaults
-        if not symbol:
-            symbol = "NQ1!"  # Default test symbol
-            logging.warning(f"⚠️ Using default symbol for testing: {symbol}")
-            
-        if not action:
-            action = "buy"  # Default test action
-            logging.warning(f"⚠️ Using default action for testing: {action}")
-        
-        # Validate that we have at least symbol and action now
+        # 🎯 STRICT VALIDATION: Require symbol and action (no defaults for production)
         if not symbol or not action:
             missing_fields = []
             if not symbol: missing_fields.append("symbol")
@@ -339,30 +369,29 @@ async def webhook(req: Request):
             logging.error("📝 TradingView alert should contain: symbol, action, PRICE, T1, STOP")
             raise HTTPException(status_code=400, detail=f"Missing critical fields: {missing_fields}. Check TradingView alert format.")
         
-        # Convert to proper types with fallbacks for testing
+        # Convert to proper types with smart defaults only for missing price levels
         try:
-            # Use test data if values are missing (for development/testing)
             if not price_str:
-                price = 20000.0  # Default test price
-                logging.warning(f"⚠️ Using default price for testing: {price}")
+                logging.warning(f"⚠️ Missing PRICE - this may cause issues with accurate order placement")
+                price = 20000.0  # Fallback price
             else:
                 price = float(price_str)
+                logging.info(f"✅ Using alert PRICE: {price}")
                 
             if not t1_str:
-                t1 = price + 50.0  # Default test take profit
-                logging.warning(f"⚠️ Using default T1 for testing: {t1}")
+                logging.warning(f"⚠️ Missing T1 (take profit) - using calculated value")
+                t1 = price + 50.0  # Default offset
             else:
                 t1 = float(t1_str)
+                logging.info(f"✅ Using alert T1: {t1}")
                 
             if not stop_str:
-                stop = price - 50.0  # Default test stop loss
-                logging.warning(f"⚠️ Using default STOP for testing: {stop}")
+                logging.warning(f"⚠️ Missing STOP (stop loss) - using calculated value")
+                stop = price - 50.0  # Default offset
             else:
                 stop = float(stop_str)
+                logging.info(f"✅ Using alert STOP: {stop}")
                 
-            logging.info(f"✅ Converted T1 to float: {t1}")
-            logging.info(f"✅ Converted STOP to float: {stop}")
-            logging.info(f"✅ Converted PRICE to float: {price}")
         except ValueError as e:
             logging.error(f"❌ Invalid numeric values: {e}")
             raise HTTPException(status_code=400, detail=f"Invalid numeric values: {e}")
@@ -499,8 +528,8 @@ async def webhook(req: Request):
             logging.info(f"Entry Result: {entry_result}")
             
             # Start monitoring for entry fill and bracket placement
-            if 'orderId' in entry_result:
-                entry_order_id = entry_result['orderId']
+            entry_order_id = entry_result.get('orderId')
+            if entry_order_id:
                 logging.info(f"🔍 Starting monitoring for entry order {entry_order_id}")
                 
                 # Start background task to monitor and place brackets
@@ -510,7 +539,9 @@ async def webhook(req: Request):
                     bracket_data
                 ))
             else:
-                logging.warning("⚠️ No orderId in entry result - cannot monitor for brackets")
+                logging.error("❌ CRITICAL: No orderId in entry result - cannot monitor for brackets")
+                logging.error(f"❌ Entry result structure: {json.dumps(entry_result, indent=2)}")
+                # Still return success for the entry order, but note bracket issue
            
             logging.info(f"📝 Recording successful FLIPPED trade placement: {symbol} {flipped_action}")
            
@@ -522,6 +553,7 @@ async def webhook(req: Request):
                 "symbol": symbol,
                 "original_alert": action,
                 "flipped_action": flipped_action,
+                "bracket_monitoring": "active" if entry_order_id else "failed",
                 "pending_brackets": {
                     "take_profit": stop,
                     "stop_loss": t1

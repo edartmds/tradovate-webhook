@@ -1,0 +1,236 @@
+2025-06-25 20:57:23,611 - INFO - Loaded WEBHOOK_SECRET: new-super-secret-token
+2025-06-25 20:57:23,611 - INFO - Logging system initialized
+2025-06-25 20:57:23,673 - INFO - Loaded WEBHOOK_SECRET: new-super-secret-token
+2025-06-25 20:57:23,673 - INFO - Logging system initialized
+2025-06-25 20:57:23,674 - INFO - === APPLICATION STARTING UP ===
+2025-06-25 20:57:24,278 - INFO - HTTP Request: POST https://demo-api.tradovate.com/v1/auth/accesstokenrequest "HTTP/1.1 200 OK"
+2025-06-25 20:57:24,279 - INFO - Authentication response: {
+  "accessToken": "UseIR2TijIjiqZl1dLfM1tYd9OUg8EM1Z6AgHOT28VmnfqdA759gy3DY-MqEvzfgUIG-nfov5EBEoOGgh_Qr062H7IOzcvcFJlC9cxPlXfiNoc8bP9fqBCYztGIzah9Eq3cwf5Qakk9bg2sFuAdg3FSMfTjtjgfaqQfKDSbMdN1QehbHuI4-VfqbtMuAYZ-963tZFWgyjbLu",
+  "mdAccessToken": "utVnBkvfzFWCUqcfEAI8V5jC5dUd1VqbBPpbwqVjjimI-r6R5T_v2L2yBUb97hECcRtGBckfBLCHjVpCMy0y0raA4VNZ-tFC_2X33eEBIRLo986AKfjbZQp-A7DKyMFCEoMxGSNOik3yPIRJUrvcEA5648bSY44YCzuz6XCBaWY6Vkxk8QWxOYq7j-XBbgb5sot73vdQsWfRdRI",
+  "expirationTime": "2025-06-26T05:17:23.839Z",
+  "userStatus": "Active",
+  "userId": 482959,
+  "name": "Disisda1",
+  "hasLive": true,
+  "hasSimPlus": false,
+  "outdatedTaC": false,
+  "hasFunded": true,
+  "hasMarketData": true,
+  "outdatedLiquidationPolicy": false,
+  "outdatedSentimentPolicy": true
+}
+2025-06-25 20:57:24,342 - INFO - HTTP Request: GET https://demo-api.tradovate.com/v1/account/list "HTTP/1.1 200 OK"
+2025-06-25 20:57:24,343 - INFO - Account list response: [
+  {
+    "id": 18653267,
+    "name": "DEMO482959",
+    "userId": 482959,
+    "accountType": "Customer",
+    "restricted": false,
+    "closed": false,
+    "clearingHouseId": 2,
+    "riskCategoryId": 2,
+    "autoLiqProfileId": 1,
+    "marginAccountType": "Speculator",
+    "legalStatus": "Individual",
+    "archived": false,
+    "timestamp": "2025-02-12T05:06:29Z",
+    "active": true
+  }
+]
+2025-06-25 20:57:24,344 - INFO - Using account_id: 18653267 and account_spec: DEMO482959 from environment variables.
+2025-06-25 20:57:24,344 - INFO - Retrieved accountSpec: DEMO482959
+2025-06-25 20:57:24,344 - INFO - Retrieved accountId: 18653267
+2025-06-25 20:57:24,345 - INFO - Authentication successful. Access token, accountSpec, and account ID retrieved.
+2025-06-25 20:57:24,345 - INFO - === AUTHENTICATION SUCCESSFUL ===
+2025-06-25 20:57:24,346 - INFO - Account ID: 18653267
+2025-06-25 20:57:24,346 - INFO - Account Spec: DEMO482959
+2025-06-25 20:57:24,346 - INFO - Access Token: ***
+2025-06-25 20:57:24,347 - INFO - === CLEANING UP EXISTING POSITIONS AND ORDERS ON STARTUP ===
+2025-06-25 20:57:24,934 - INFO - HTTP Request: GET https://demo-api.tradovate.com/v1/position/list "HTTP/1.1 200 OK"
+2025-06-25 20:57:25,106 - INFO - Found 0 open positions
+2025-06-25 20:57:25,107 - INFO - Closed 0 positions
+2025-06-25 20:57:25,107 - INFO - Startup cleanup: Closed 0 existing positions
+2025-06-25 20:57:25,642 - INFO - HTTP Request: GET https://demo-api.tradovate.com/v1/order/list "HTTP/1.1 200 OK"
+2025-06-25 20:57:25,644 - INFO - Found 0 pending orders
+2025-06-25 20:57:25,644 - INFO - Cancelled 0 out of 0 pending orders
+2025-06-25 20:57:25,645 - INFO - Startup cleanup: Cancelled 0 existing pending orders
+2025-06-25 20:57:32,556 - INFO - === WEBHOOK ENDPOINT HIT ===
+2025-06-25 20:57:32,557 - INFO - Content-Type: text/plain
+2025-06-25 20:57:32,557 - INFO - Raw body: symbol=NQ1!
+action=Buy
+PRICE=21000
+T1=21100
+STOP=20900
+2025-06-25 20:57:32,557 - INFO - Raw alert text: symbol=NQ1!
+action=Buy
+PRICE=21000
+T1=21100
+STOP=20900
+2025-06-25 20:57:32,557 - INFO - Parsed symbol = NQ1!
+2025-06-25 20:57:32,558 - INFO - Parsed action = Buy
+2025-06-25 20:57:32,558 - INFO - Parsed PRICE = 21000
+2025-06-25 20:57:32,558 - INFO - Parsed T1 = 21100
+2025-06-25 20:57:32,558 - INFO - Parsed STOP = 20900
+2025-06-25 20:57:32,558 - INFO - Complete parsed alert data: {'symbol': 'NQ1!', 'action': 'Buy', 'PRICE': '21000', 'T1': '21100', 'STOP': '20900'}
+2025-06-25 20:57:32,558 - INFO - Converted T1 to float: 21100.0
+2025-06-25 20:57:32,558 - INFO - Converted STOP to float: 20900.0
+2025-06-25 20:57:32,558 - INFO - Converted PRICE to float: 21000.0
+2025-06-25 20:57:32,558 - INFO - === PARSED ALERT DATA: {'symbol': 'NQ1!', 'action': 'Buy', 'PRICE': 21000.0, 'T1': 21100.0, 'STOP': 20900.0} ===
+2025-06-25 20:57:32,558 - INFO - Original fields - Symbol: NQ1!, Action: Buy, Price: 21000.0, T1: 21100.0, Stop: 20900.0
+2025-06-25 20:57:32,559 - INFO - REVERSED ORDERS - Original: Buy -> New: Sell
+2025-06-25 20:57:32,559 - INFO - SWAPPED LEVELS - Original T1: 21100.0 -> New Stop: 21100.0, Original Stop: 20900.0 -> New T1: 20900.0
+2025-06-25 20:57:32,559 - INFO - Final fields - Symbol: NQ1!, Action: Sell, Price: 21000.0, T1: 20900.0, Stop: 21100.0
+2025-06-25 20:57:32,559 - INFO - Mapped symbol to: NQU5
+2025-06-25 20:57:33,159 - INFO - HTTP Request: GET https://demo-api.tradovate.com/v1/order/list "HTTP/1.1 200 OK"
+2025-06-25 20:57:33,160 - INFO - Found 0 pending orders
+2025-06-25 20:57:33,669 - INFO - HTTP Request: GET https://demo-api.tradovate.com/v1/position/list "HTTP/1.1 200 OK"
+2025-06-25 20:57:33,675 - INFO - Found 0 open positions
+2025-06-25 20:57:33,683 - INFO - === CANCELLING ALL PENDING ORDERS ===
+2025-06-25 20:57:34,192 - INFO - HTTP Request: GET https://demo-api.tradovate.com/v1/order/list "HTTP/1.1 200 OK"
+2025-06-25 20:57:34,194 - INFO - Found 0 pending orders
+2025-06-25 20:57:34,194 - INFO - Cancelled 0 out of 0 pending orders
+2025-06-25 20:57:34,195 - INFO - Successfully cancelled 0 pending orders
+2025-06-25 20:57:34,195 - INFO - === PLACING OSO BRACKET ORDER WITH INTELLIGENT ORDER TYPE ===
+2025-06-25 20:57:34,195 - INFO - Symbol: NQU5, Order Type: Stop, Entry: 21000.0, TP: 20900.0, SL: 21100.0
+2025-06-25 20:57:34,211 - INFO - === OSO PAYLOAD ===
+2025-06-25 20:57:34,212 - INFO - {
+  "accountSpec": "DEMO482959",
+  "accountId": 18653267,
+  "action": "Sell",
+  "symbol": "NQU5",
+  "orderQty": 1,
+  "orderType": "Stop",
+  "timeInForce": "GTC",
+  "isAutomated": true,
+  "bracket1": {
+    "accountSpec": "DEMO482959",
+    "accountId": 18653267,
+    "action": "Buy",
+    "symbol": "NQU5",
+    "orderQty": 1,
+    "orderType": "Limit",
+    "price": 20900.0,
+    "timeInForce": "GTC",
+    "isAutomated": true
+  },
+  "bracket2": {
+    "accountSpec": "DEMO482959",
+    "accountId": 18653267,
+    "action": "Buy",
+    "symbol": "NQU5",
+    "orderQty": 1,
+    "orderType": "Stop",
+    "stopPrice": 21100.0,
+    "timeInForce": "GTC",
+    "isAutomated": true
+  },
+  "stopPrice": 21000.0
+}
+2025-06-25 20:57:34,212 - INFO - === PLACING OSO BRACKET ORDER ===
+2025-06-25 20:57:34,743 - INFO - HTTP Request: POST https://demo-api.tradovate.com/v1/order/placeoso "HTTP/1.1 200 OK"
+2025-06-25 20:57:34,744 - INFO - OSO order response: {
+  "orderId": 243343645010,
+  "oso1Id": 243343645011,
+  "oso2Id": 243343645012
+}
+2025-06-25 20:57:34,751 - INFO - OSO Result: {'orderId': 243343645010, 'oso1Id': 243343645011, 'oso2Id': 243343645012}
+2025-06-25 21:28:16,193 - INFO - Loaded WEBHOOK_SECRET: new-super-secret-token
+2025-06-25 21:28:16,194 - INFO - Logging system initialized
+2025-06-25 21:28:16,253 - INFO - Loaded WEBHOOK_SECRET: new-super-secret-token
+2025-06-25 21:28:16,253 - INFO - Logging system initialized
+2025-06-25 21:28:16,254 - INFO - === APPLICATION STARTING UP ===
+2025-06-25 21:28:16,782 - ERROR - Unexpected error during authentication: [Errno 11002] getaddrinfo failed
+2025-06-25 21:28:16,782 - ERROR - === AUTHENTICATION FAILED ===
+2025-06-25 21:28:16,782 - ERROR - Error: 500: Internal server error during authentication
+2025-06-25 21:28:16,863 - ERROR - Traceback: Traceback (most recent call last):
+  File "C:\Users\miles\AppData\Local\Programs\Python\Python313\Lib\site-packages\httpx\_transports\default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "C:\Users\miles\AppData\Local\Programs\Python\Python313\Lib\site-packages\httpx\_transports\default.py", line 394, in handle_async_request
+    resp = await self._pool.handle_async_request(req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\miles\AppData\Local\Programs\Python\Python313\Lib\site-packages\httpcore\_async\connection_pool.py", line 256, in handle_async_request
+    raise exc from None
+  File "C:\Users\miles\AppData\Local\Programs\Python\Python313\Lib\site-packages\httpcore\_async\connection_pool.py", line 236, in handle_async_request
+    response = await connection.handle_async_request(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        pool_request.request
+        ^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\miles\AppData\Local\Programs\Python\Python313\Lib\site-packages\httpcore\_async\connection.py", line 101, in handle_async_request
+    raise exc
+  File "C:\Users\miles\AppData\Local\Programs\Python\Python313\Lib\site-packages\httpcore\_async\connection.py", line 78, in handle_async_request
+    stream = await self._connect(request)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\miles\AppData\Local\Programs\Python\Python313\Lib\site-packages\httpcore\_async\connection.py", line 124, in _connect
+    stream = await self._network_backend.connect_tcp(**kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\miles\AppData\Local\Programs\Python\Python313\Lib\site-packages\httpcore\_backends\auto.py", line 31, in connect_tcp
+    return await self._backend.connect_tcp(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "C:\Users\miles\AppData\Local\Programs\Python\Python313\Lib\site-packages\httpcore\_backends\anyio.py", line 113, in connect_tcp
+    with map_exceptions(exc_map):
+         ~~~~~~~~~~~~~~^^^^^^^^^
+  File "C:\Users\miles\AppData\Local\Programs\Python\Python313\Lib\contextlib.py", line 162, in __exit__
+    self.gen.throw(value)
+    ~~~~~~~~~~~~~~^^^^^^^
+  File "C:\Users\miles\AppData\Local\Programs\Python\Python313\Lib\site-packages\httpcore\_exceptions.py", line 14, in map_exceptions
+    raise to_exc(exc) from exc
+httpcore.ConnectError: [Errno 11002] getaddrinfo failed
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\miles\tradovate_webhook\tradovate_api.py", line 44, in authenticate
+    r = await client.post(url, json=auth_payload)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\miles\AppData\Local\Programs\Python\Python313\Lib\site-packages\httpx\_client.py", line 1859, in post
+    return await self.request(
+           ^^^^^^^^^^^^^^^^^^^
+    ...<13 lines>...
+    )
+    ^
+  File "C:\Users\miles\AppData\Local\Programs\Python\Python313\Lib\site-packages\httpx\_client.py", line 1540, in request
+    return await self.send(request, auth=auth, follow_redirects=follow_redirects)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\miles\AppData\Local\Programs\Python\Python313\Lib\site-packages\httpx\_client.py", line 1629, in send
+    response = await self._send_handling_auth(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<4 lines>...
+    )
+    ^
+  File "C:\Users\miles\AppData\Local\Programs\Python\Python313\Lib\site-packages\httpx\_client.py", line 1657, in _send_handling_auth
+    response = await self._send_handling_redirects(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+    )
+    ^
+  File "C:\Users\miles\AppData\Local\Programs\Python\Python313\Lib\site-packages\httpx\_client.py", line 1694, in _send_handling_redirects
+    response = await self._send_single_request(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\miles\AppData\Local\Programs\Python\Python313\Lib\site-packages\httpx\_client.py", line 1730, in _send_single_request
+    response = await transport.handle_async_request(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\miles\AppData\Local\Programs\Python\Python313\Lib\site-packages\httpx\_transports\default.py", line 393, in handle_async_request
+    with map_httpcore_exceptions():
+         ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\miles\AppData\Local\Programs\Python\Python313\Lib\contextlib.py", line 162, in __exit__
+    self.gen.throw(value)
+    ~~~~~~~~~~~~~~^^^^^^^
+  File "C:\Users\miles\AppData\Local\Programs\Python\Python313\Lib\site-packages\httpx\_transports\default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.ConnectError: [Errno 11002] getaddrinfo failed
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\miles\tradovate_webhook\main.py", line 53, in startup_event
+    await client.authenticate()
+  File "C:\Users\miles\tradovate_webhook\tradovate_api.py", line 97, in authenticate
+    raise HTTPException(status_code=500, detail="Internal server error during authentication")
+fastapi.exceptions.HTTPException: 500: Internal server error during authentication
+
