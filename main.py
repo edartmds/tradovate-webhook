@@ -172,19 +172,28 @@ async def wait_until_no_open_orders(symbol, timeout=10):
 
 
 def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
-    logging.info(f"Raw alert text: {alert_text}")
+    logging.info(f"🔍 DEBUG - Raw alert text: {alert_text}")
+    logging.info(f"🔍 DEBUG - Alert text length: {len(alert_text)} characters")
+    logging.info(f"🔍 DEBUG - Alert text repr: {repr(alert_text)}")
+    
     parsed_data = {}
     if alert_text.startswith("="):
         try:
+            logging.info(f"🔍 DEBUG - Processing JSON part (starts with =)")
             json_part, remaining_text = alert_text[1:].split("\n", 1)
+            logging.info(f"🔍 DEBUG - JSON part: {json_part}")
+            logging.info(f"🔍 DEBUG - Remaining text: {remaining_text}")
             json_data = json.loads(json_part)
             parsed_data.update(json_data)
             alert_text = remaining_text
+            logging.info(f"🔍 DEBUG - Parsed JSON data: {json_data}")
         except (json.JSONDecodeError, ValueError) as e:
+            logging.error(f"🔍 DEBUG - JSON parsing failed: {e}")
             raise ValueError(f"Error parsing JSON-like structure: {e}")
 
-
-    for line in alert_text.split("\n"):
+    logging.info(f"🔍 DEBUG - Processing remaining lines")
+    for line_num, line in enumerate(alert_text.split("\n")):
+        logging.info(f"🔍 DEBUG - Line {line_num}: '{line}' (stripped: '{line.strip()}')")
         if "=" in line:
             key, value = line.split("=", 1)
             key = key.strip()
@@ -195,8 +204,7 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
             parsed_data["action"] = line.strip().capitalize()
             logging.info(f"Parsed action = {parsed_data['action']}")
 
-
-    logging.info(f"Complete parsed alert data: {parsed_data}")
+    logging.info(f"🔍 DEBUG - Complete parsed alert data: {parsed_data}")
 
 
     required_fields = ["symbol", "action"]
@@ -471,11 +479,16 @@ async def webhook(req: Request):
         logging.info(f"Content-Type: {content_type}")
         logging.info(f"Raw body: {raw_body.decode('utf-8')}")
 
+        # 🔥 DEBUG: Log the exact raw body for troubleshooting
+        logging.info(f"🔍 DEBUG - Raw body length: {len(raw_body)} bytes")
+        logging.info(f"🔍 DEBUG - Raw body repr: {repr(raw_body.decode('utf-8'))}")
 
         if content_type == "application/json":
             data = await req.json()
-        elif content_type.startswith("text/plain"):
+            logging.info(f"🔍 DEBUG - Parsed as JSON: {data}")
+        elif content_type.startswith("text/plain") or content_type is None:
             text_data = raw_body.decode("utf-8")
+            logging.info(f"🔍 DEBUG - Processing as text/plain")
             data = parse_alert_to_tradovate_json(text_data, client.account_id)
         else:
             logging.error(f"Unsupported content type: {content_type}")
