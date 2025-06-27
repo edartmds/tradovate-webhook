@@ -532,11 +532,11 @@ async def webhook(req: Request):
         except Exception as e:
             # 🔥 FALLBACK: If intelligent selection fails, default to traditional approach
             logging.warning(f"⚠️ Intelligent order type selection failed: {e}")
-            logging.info("🔄 FALLBACK: Using traditional Stop order entry")
-            order_type = "Stop"
-            stop_price = price
-            order_price = None
-            logging.info(f"🔄 FALLBACK STOP ORDER: Will trigger at stopPrice={stop_price}")
+            logging.info("🔄 FALLBACK: Using traditional Limit order entry")
+            order_type = "Limit"
+            order_price = price
+            stop_price = None
+            logging.info(f"🔄 FALLBACK LIMIT ORDER: Will execute at price={order_price}")
        
         # 🔥 REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
         # Every new alert will now automatically flatten existing positions and place new orders
