@@ -17,8 +17,7 @@ last_alert = {}  # {symbol: {"direction": "buy"/"sell", "timestamp": datetime, "
 completed_trades = {}  # {symbol: {"last_completed_direction": "buy"/"sell", "completion_time": datetime}}
 active_orders = []  # Track active order IDs to manage cancellation
 DUPLICATE_THRESHOLD_SECONDS = 30  # 30 seconds - only prevent rapid-fire identical alerts
-COMPLETED_TRADE_COOLDOWN = 300  # Increased from 30 to 300 seconds (5 minutes) to prevent overtrading
-SYMBOL_COOLDOWN = {}  # Track cooldown periods for each symbol
+COMPLETED_TRADE_COOLDOWN = 30  # 30 seconds - minimal cooldown for automated trading
 
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
@@ -199,24 +198,17 @@ def hash_alert(data: dict) -> str:
 
 def is_duplicate_alert(symbol: str, action: str, data: dict) -> bool:
     """
-    🔥 ENHANCED DUPLICATE DETECTION FOR AUTOMATED TRADING
+    🔥 RELAXED DUPLICATE DETECTION FOR AUTOMATED TRADING
    
-    1. Block rapid-fire identical alerts within 30 seconds
-    2. Enforce symbol-specific cooldown periods to prevent overtrading
-    3. Allow different action types (but with cooldown)
+    Only blocks truly rapid-fire identical alerts within 30 seconds.
+    Allows direction changes and new signals for automated flattening strategy.
+   
+    Returns True ONLY if:
+    1. IDENTICAL alert hash received within 30 seconds (prevents accidental spam)
     """
     current_time = datetime.now()
     alert_hash = hash_alert(data)
-    
-    # Check if symbol is in cooldown period
-    if symbol in SYMBOL_COOLDOWN:
-        cooldown_until = SYMBOL_COOLDOWN[symbol]
-        remaining_seconds = (cooldown_until - current_time).total_seconds()
-        
-        if remaining_seconds > 0:
-            logging.warning(f"🚫 COOLDOWN ACTIVE: {symbol} is in cooldown for {remaining_seconds:.1f} more seconds")
-            return True
-    
+   
     # ONLY Check for rapid-fire identical alerts (same exact parameters)
     if symbol in last_alert:
         last_alert_data = last_alert[symbol]
@@ -229,17 +221,16 @@ def is_duplicate_alert(symbol: str, action: str, data: dict) -> bool:
             logging.warning(f"🚫 Identical alert received {time_diff:.1f} seconds ago")
             return True
    
+    # 🔥 REMOVED: Direction-based blocking - allow all direction changes
+    # 🔥 REMOVED: Post-completion blocking - allow immediate new signals
+    # This enables full automated trading with position flattening
+   
     # Update tracking for rapid-fire detection only
     last_alert[symbol] = {
         "direction": action.lower(),
         "timestamp": current_time,
         "alert_hash": alert_hash
     }
-   
-    # Set a reasonable cooldown for this symbol to prevent overtrading
-    # This will prevent any new alert for this symbol for the specified time
-    SYMBOL_COOLDOWN[symbol] = current_time + timedelta(seconds=COMPLETED_TRADE_COOLDOWN)
-    logging.info(f"⏱️ COOLDOWN SET: {symbol} will be in cooldown until {SYMBOL_COOLDOWN[symbol]}")
    
     logging.info(f"✅ ALERT ACCEPTED: {symbol} {action} - Automated trading enabled")
     return False
@@ -273,15 +264,6 @@ def cleanup_old_tracking_data():
             symbols_to_remove.append(symbol)
     for symbol in symbols_to_remove:
         del completed_trades[symbol]
-        
-    # Clean expired cooldowns
-    symbols_to_remove = []
-    for symbol, cooldown_time in SYMBOL_COOLDOWN.items():
-        if cooldown_time < current_time:
-            symbols_to_remove.append(symbol)
-    for symbol in symbols_to_remove:
-        del SYMBOL_COOLDOWN[symbol]
-        logging.info(f"⏱️ COOLDOWN EXPIRED: {symbol} is now available for trading")
 
 
 # Direct API function to place a stop loss order (DEPRECATED - using OCO/OSO instead)
@@ -517,26 +499,6 @@ async def webhook(req: Request):
                 "message": f"Rapid-fire duplicate alert blocked for {symbol} {action}"
             }
        
-        # 🔥 SYMBOL-SPECIFIC COOLDOWN CHECK to prevent overtrading
-        logging.info("🔍 === CHECKING FOR SYMBOL COOLDOWN AND DUPLICATES ===")
-        cleanup_old_tracking_data()  # Clean up old data first
-       
-        if is_duplicate_alert(symbol, action, data):
-            # Check if it's a cooldown or duplicate
-            cooldown_message = ""
-            if symbol in SYMBOL_COOLDOWN:
-                cooldown_until = SYMBOL_COOLDOWN[symbol]
-                remaining_seconds = (cooldown_until - datetime.now()).total_seconds()
-                if remaining_seconds > 0:
-                    cooldown_message = f"Symbol {symbol} in cooldown for {remaining_seconds:.1f} more seconds"
-            
-            return {
-                "status": "rejected",
-                "reason": "cooldown_or_duplicate",
-                "message": cooldown_message if cooldown_message else f"Duplicate alert blocked for {symbol} {action}",
-                "cooldown_until": SYMBOL_COOLDOWN.get(symbol, datetime.now()).isoformat() if symbol in SYMBOL_COOLDOWN else None
-            }
-       
         logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
           # Determine optimal order type based on current market conditions
         logging.info("🔍 Analyzing market conditions for optimal order type...")
@@ -581,27 +543,21 @@ async def webhook(req: Request):
         except Exception as e:
             logging.warning(f"Failed to cancel some orders: {e}")
             # Continue with new order placement even if cancellation partially fails        # STEP 3: Place entry order with automatic bracket orders (OSO)
-        logging.info(f"=== PLACING OSO BRACKET ORDER WITH INTELLIGENT ORDER TYPE ===")
-        logging.info(f"Symbol: {symbol}, Order Type: {order_type}, Entry: {price}, TP: {t1}, SL: {stop}")
-       
-        # 🔥 SPEED OPTIMIZATION: For STOP orders, prioritize fastest possible execution
-        if order_type == "Stop":
-            logging.info("⚡ SPEED MODE: STOP order detected - optimizing for fastest execution")
-            # For breakout/breakdown strategies, speed is critical
-        else:
-            logging.info("📊 LIMIT order - using standard execution path")
-       
+        logging.info(f"=== PLACING OSO BRACKET ORDER WITH LIMIT ENTRY ===")
+        logging.info(f"Symbol: {symbol}, Order Type: {order_type}, Entry: {order_price}, TP: {t1}, SL: {stop}")
+        
+        logging.info("📊 LIMIT entry order - using standard execution path")
+        
         # Determine opposite action for take profit and stop loss
         opposite_action = "Sell" if action.lower() == "buy" else "Buy"
-        
-        # Build OSO payload with intelligent order type selection
+          # Build OSO payload with intelligent order type selection
         oso_payload = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
             "action": action.capitalize(),  # "Buy" or "Sell"
             "symbol": symbol,
             "orderQty": 1,
-            "orderType": order_type,   # Will be "Limit" based on our changes
+            "orderType": order_type,   # "Limit"
             "timeInForce": "GTC",
             "isAutomated": True,
             # Take Profit bracket (bracket1)
@@ -623,42 +579,18 @@ async def webhook(req: Request):
                 "action": opposite_action,
                 "symbol": symbol,
                 "orderQty": 1,
-                "orderType": "StopMarket",  # Changed from "Stop" to "StopMarket" for more reliable execution
+                "orderType": "Stop",
                 "stopPrice": stop,
                 "timeInForce": "GTC",
                 "isAutomated": True
             }
         }
        
-        # 🔥 CRITICAL: Add dynamic price/stopPrice fields based on intelligent order type
-        if order_type == "Stop":
-            # Stop order needs stopPrice field - but we're using Limit orders now
-            # This is kept for code compatibility if order type is ever reverted to Stop
-            oso_payload["stopPrice"] = price
-            logging.info(f"🎯 STOP ORDER: Entry will trigger at stopPrice={price}")
-        else:
-            # Ensure the limit price is valid based on the action
-            # For BUY orders: Ensure we're not bidding above market
-            # For SELL orders: Ensure we're not asking below market
-            oso_payload["price"] = order_price
-            logging.info(f"🎯 LIMIT ORDER: Entry will execute at price={order_price}")
-        
-        # 🔥 CRITICAL: Add safety check for Stop Loss and Take Profit prices
-        # Ensure the stop price is at a valid distance from entry
-        if action.lower() == "buy":
-            # For BUY orders, stop price must be below entry price
-            if float(stop) >= float(price):
-                logging.warning(f"⚠️ Invalid stop price {stop} for BUY order, adjusting to be below entry price")
-                stop = float(price) - 10  # Hardcode a 10 tick buffer below
-                oso_payload["bracket2"]["stopPrice"] = stop
-        else:
-            # For SELL orders, stop price must be above entry price
-            if float(stop) <= float(price):
-                logging.warning(f"⚠️ Invalid stop price {stop} for SELL order, adjusting to be above entry price")
-                stop = float(price) + 10  # Hardcode a 10 tick buffer above
-                oso_payload["bracket2"]["stopPrice"] = stop
-        
-        logging.info(f"=== FINAL OSO PAYLOAD ===")
+        # 🔥 ENTRY PRICE: Always set the limit entry price
+        oso_payload["price"] = order_price
+        logging.info(f"🎯 ENTRY LIMIT PRICE set to {order_price}")
+       
+        logging.info(f"=== OSO PAYLOAD ===")
         logging.info(f"{json.dumps(oso_payload, indent=2)}")        # STEP 4: Place OSO bracket order with speed optimizations
         logging.info("=== PLACING OSO BRACKET ORDER ===")
        
@@ -687,10 +619,7 @@ async def webhook(req: Request):
                 "order": oso_result,
                 "execution_time_ms": execution_time,
                 "order_type": order_type,
-                "order_price": order_price,
-                "symbol": symbol,
-                "stop_loss": stop,
-                "take_profit": t1
+                "symbol": symbol
             }
         except Exception as e:
             execution_time = (time.time() - start_time) * 1000 if 'start_time' in locals() else 0
