@@ -450,8 +450,8 @@ async def webhook(req: Request):
         symbol = data.get("symbol")
         action = data.get("action")
         price = data.get("PRICE")
-        t1 = data.get("STOP")
-        stop = data.get("T1")
+        t1 = data.get("T1")  # T1 is our take profit (unchanged)
+        stop = data.get("STOP")  # STOP is our stop loss (unchanged)
 
 
         logging.info(f"Extracted fields - Symbol: {symbol}, Action: {action}, Price: {price}, T1: {t1}, Stop: {stop}")
@@ -479,28 +479,10 @@ async def webhook(req: Request):
             }
        
         logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
-          # Determine optimal order type based on current market conditions
-        logging.info("🔍 Analyzing market conditions for optimal order type...")
-        try:
-            order_config = await client.determine_optimal_order_type(symbol, action, price)
-            order_type = order_config["orderType"]
-            order_price = order_config.get("price")
-            stop_price = order_config.get("stopPrice")
-           
-            logging.info(f"💡 OPTIMAL ORDER TYPE: {order_type}")
-            if order_type == "Stop":
-                logging.info(f"📊 STOP ORDER: Will trigger when price reaches {stop_price}")
-            else:
-                logging.info(f"📊 LIMIT ORDER: Will execute at price {order_price}")
-               
-        except Exception as e:
-            # 🔥 FALLBACK: If intelligent selection fails, default to traditional approach
-            logging.warning(f"⚠️ Intelligent order type selection failed: {e}")
-            logging.info("🔄 FALLBACK: Using traditional Stop order entry")
-            order_type = "Limit"
-            stop_price = price
-            order_price = None
-            logging.info(f"🔄 FALLBACK LIMIT ORDER: Will execute at limitPrice={order_price}")
+          
+        # Skip the intelligent order type determination since we're always using Limit orders
+        logging.info("� Using fixed Limit order entry as requested")
+        order_type = "Limit"
 
         # 🔥 REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
         # Every new alert will now automatically flatten existing positions and place new orders
@@ -527,29 +509,25 @@ async def webhook(req: Request):
             logging.warning(f"Failed to cancel some orders: {e}")
             # Continue with new order placement even if cancellation partially fails        # STEP 3: Place entry order with automatic bracket orders (OSO)
         logging.info(f"=== PLACING OSO BRACKET ORDER WITH INTELLIGENT ORDER TYPE ===")
-        logging.info(f"Symbol: {symbol}, Order Type: {order_type}, Entry: {price}, TP: {stop}, SL: {t1}")
+        logging.info(f"Symbol: {symbol}, Order Type: Limit (fixed), Entry: {price}, TP: {stop}, SL: {t1}")
     
-
-        # 🔥 SPEED OPTIMIZATION: For STOP orders, prioritize fastest possible execution
-        if order_type == "Stop":
-            logging.info("⚡ SPEED MODE: STOP order detected - optimizing for fastest execution")
-            # For breakout/breakdown strategies, speed is critical
-        else:
-            logging.info("📊 LIMIT order - using standard execution path")
+        # Now always using Limit order for entry as requested
+        logging.info("📊 LIMIT order - using standard execution path as requested")
        
         # Determine opposite action for take profit and stop loss
         opposite_action = "Sell" if action.lower() == "buy" else "Buy"
-          # Build OSO payload with intelligent order type selection
+          # Build OSO payload with limit order entry and flipped brackets
         oso_payload = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
             "action": action.capitalize(),  # "Buy" or "Sell"
             "symbol": symbol,
             "orderQty": 1,
-            "orderType": "Limit",   # Intelligently selected based on market conditions
+            "orderType": "Limit",   # Always using Limit orders for entry as requested
+            "price": price,  # Using the PRICE field for limit entry
             "timeInForce": "GTC",
             "isAutomated": True,
-            # Take Profit bracket (bracket1)
+            # Take Profit bracket (bracket1) - Now using STOP price
             "bracket1": {
                 "accountSpec": client.account_spec,
                 "accountId": client.account_id,
@@ -557,11 +535,11 @@ async def webhook(req: Request):
                 "symbol": symbol,
                 "orderQty": 1,
                 "orderType": "Limit",
-                "price": t1,
+                "price": stop,  # Using STOP as take profit level
                 "timeInForce": "GTC",
                 "isAutomated": True
             },
-            # Stop Loss bracket (bracket2)
+            # Stop Loss bracket (bracket2) - Now using T1 price
             "bracket2": {
                 "accountSpec": client.account_spec,
                 "accountId": client.account_id,
@@ -569,28 +547,18 @@ async def webhook(req: Request):
                 "symbol": symbol,
                 "orderQty": 1,
                 "orderType": "Stop",
-                "stopPrice": stop,
+                "stopPrice": t1,  # Using T1 as stop loss level
                 "timeInForce": "GTC",
                 "isAutomated": True
             }
         }
-       
-        # 🔥 CRITICAL: Add dynamic price/stopPrice fields based on intelligent order type
-        if order_type == "Stop":
-            # Stop order needs stopPrice field
-            oso_payload["stopPrice"] = stop_price
-            logging.info(f"🎯 STOP ORDER: Entry will trigger at stopPrice={stop_price}")
-        else:
-            # Limit order needs price field  
-            oso_payload["price"] = order_price
-            logging.info(f"🎯 LIMIT ORDER: Entry will execute at price={order_price}")
        
         logging.info(f"=== OSO PAYLOAD ===")
         logging.info(f"{json.dumps(oso_payload, indent=2)}")        # STEP 4: Place OSO bracket order with speed optimizations
         logging.info("=== PLACING OSO BRACKET ORDER ===")
        
         # 🔥 SPEED OPTIMIZATION: Validate payload before submission to prevent rejection delays
-        required_fields = ['accountSpec', 'accountId', 'action', 'symbol', 'orderQty', 'orderType', 'timeInForce']
+        required_fields = ['accountSpec', 'accountId', 'action', 'symbol', 'orderQty', 'orderType', 'timeInForce', 'price']
         for field in required_fields:
             if field not in oso_payload:
                 raise HTTPException(status_code=400, detail=f"Missing required OSO field: {field}")
@@ -613,8 +581,12 @@ async def webhook(req: Request):
                 "status": "success",
                 "order": oso_result,
                 "execution_time_ms": execution_time,
-                "order_type": order_type,
-                "symbol": symbol
+                "order_type": "Limit",  # Always Limit now
+                "symbol": symbol,
+                "brackets": {
+                    "take_profit": stop,  # STOP is now take profit
+                    "stop_loss": t1      # T1 is now stop loss
+                }
             }
         except Exception as e:
             execution_time = (time.time() - start_time) * 1000 if 'start_time' in locals() else 0
