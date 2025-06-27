@@ -213,7 +213,7 @@ class TradovateClient:
 
         stop_order_payload = {
             "accountId": self.account_id,
-            "action": "Sell",  # Assuming STOP orders are for selling
+            "action": "Buy",  # Changed to Buy for opposite orders
             "linkedOrderId": entry_order_id,
             "orderType": "stop",
             "price": stop_price,
@@ -490,10 +490,9 @@ class TradovateClient:
                 logging.info(f"Position for {symbol} already closed (netPos = 0)")
                 return {"status": "already_closed", "message": f"Position for {symbol} already closed"}
            
-            # Determine the action needed to close the position
-            # If netPos > 0 (long position), we need to sell to close
-            # If netPos < 0 (short position), we need to buy to close
-            close_action = "Sell" if net_pos > 0 else "Buy"
+            # OPPOSITE LOGIC: If netPos > 0 (long position), we buy more (instead of closing)
+            # If netPos < 0 (short position), we sell more (instead of closing)
+            close_action = "Buy" if net_pos > 0 else "Sell"
             close_quantity = abs(net_pos)
            
             logging.info(f"Closing position for {symbol}: netPos={net_pos}, action={close_action}, qty={close_quantity}")
@@ -629,7 +628,7 @@ class TradovateClient:
 
 
                     try:
-                        close_action = "Sell" if net_pos > 0 else "Buy"
+                        close_action = "Buy" if net_pos > 0 else "Sell"
                         close_order = {
                             "accountSpec": self.account_spec,
                             "accountId": self.account_id,
@@ -785,15 +784,15 @@ class TradovateClient:
             # For now, use a simple fallback strategy
             # This can be enhanced with real market data in the future
            
-            # Default to Stop orders for breakout strategies
-            if action.lower() == "buy":
-                # For BUY orders, use Stop order (breakout above current price)
+            # FLIPPED LOGIC FOR OPPOSITE ORDERS
+            if action.lower() == "sell":  # FLIPPED LOGIC
+                # For SELL alerts, we place BUY orders
                 return {
                     "orderType": "Stop",
                     "stopPrice": target_price
                 }
             else:
-                # For SELL orders, use Stop order (breakdown below current price)  
+                # For BUY alerts, we place SELL orders
                 return {
                     "orderType": "Stop",
                     "stopPrice": target_price
