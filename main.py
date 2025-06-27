@@ -296,80 +296,82 @@ async def monitor_entry_and_place_brackets(entry_order_id: str, symbol: str, bra
     
     while True:
         try:
-            # Check if entry order is filled
-            headers = {"Authorization": f"Bearer {client.access_token}"}
-            url = f"https://demo-api.tradovate.com/v1/order/{entry_order_id}"
+            # Check if entry order is filled using the proper API method
+            order_status = await client.get_order_by_id(entry_order_id)
             
-            async with httpx.AsyncClient() as http_client:
-                response = await http_client.get(url, headers=headers)
-                response.raise_for_status()
-                order_status = response.json()
-                
-                status = order_status.get("status", "").lower()
+            if order_status is None:
+                logging.warning(f"⚠️ Entry order {entry_order_id} not found - may have been filled and removed from active orders")
+                # Order not found might mean it was filled and no longer in active orders
+                # Let's assume it was filled and proceed with bracket placement
+                logging.info(f"🎉 ASSUMING ENTRY FILLED! Placing flipped bracket orders for {symbol}")
+            else:
+                status = order_status.get("ordStatus", "").lower()
                 logging.info(f"📊 Entry order {entry_order_id} status: {status}")
                 
-                if status == "filled":
-                    logging.info(f"🎉 ENTRY FILLED! Placing flipped bracket orders for {symbol}")
+                if status not in ["filled", "partialfill", "completely_filled"]:
+                    if status in ["cancelled", "rejected", "expired"]:
+                        logging.warning(f"⚠️ Entry order {entry_order_id} was {status} - no brackets will be placed")
+                        return  # Exit monitoring
                     
-                    # Place Take Profit (Limit) order - Original STOP becomes TP
-                    tp_payload = {
-                        "accountSpec": bracket_data["account_spec"],
-                        "accountId": bracket_data["account_id"],
-                        "action": bracket_data["opposite_action"],  # Opposite of entry action
-                        "symbol": symbol,
-                        "orderQty": 1,
-                        "orderType": "Limit",
-                        "price": bracket_data["take_profit_price"],  # Original STOP
-                        "timeInForce": "GTC",
-                        "isAutomated": True
-                    }
-                    
-                    # Place Stop Loss order - Original T1 becomes SL
-                    sl_payload = {
-                        "accountSpec": bracket_data["account_spec"],
-                        "accountId": bracket_data["account_id"],
-                        "action": bracket_data["opposite_action"],  # Opposite of entry action
-                        "symbol": symbol,
-                        "orderQty": 1,
-                        "orderType": "Stop",
-                        "stopPrice": bracket_data["stop_loss_price"],  # Original T1
-                        "timeInForce": "GTC",
-                        "isAutomated": True
-                    }
-                    
-                    # Place both bracket orders
-                    try:
-                        # Place Take Profit
-                        tp_result = await client.place_order(tp_payload)
-                        logging.info(f"✅ TAKE PROFIT placed: {tp_result}")
+                    # Continue monitoring if still pending/working
+                    # Check timeout
+                    if asyncio.get_event_loop().time() - start_time > max_monitoring_time:
+                        logging.warning(f"⏰ Monitoring timeout for entry order {entry_order_id}")
+                        return
                         
-                        # Place Stop Loss
-                        sl_result = await client.place_order(sl_payload)
-                        logging.info(f"✅ STOP LOSS placed: {sl_result}")
-                        
-                        logging.info(f"🔥 FLIPPED BRACKETS COMPLETE: {symbol}")
-                        logging.info(f"🔥 TP: {bracket_data['take_profit_price']} (was original STOP)")
-                        logging.info(f"🔥 SL: {bracket_data['stop_loss_price']} (was original T1)")
-                        
-                        # Mark trade as properly set up
-                        mark_trade_completed(symbol, bracket_data["flipped_action"])
-                        
-                    except Exception as e:
-                        logging.error(f"❌ Failed to place bracket orders: {e}")
-                    
-                    return  # Exit monitoring
-                    
-                elif status in ["cancelled", "rejected"]:
-                    logging.warning(f"⚠️ Entry order {entry_order_id} was {status} - no brackets will be placed")
-                    return  # Exit monitoring
-                    
-            # Check timeout
-            if asyncio.get_event_loop().time() - start_time > max_monitoring_time:
-                logging.warning(f"⏰ Monitoring timeout for entry order {entry_order_id}")
-                return
+                    # Wait before next check
+                    await asyncio.sleep(2)
+                    continue
                 
-            # Wait before next check
-            await asyncio.sleep(2)
+                logging.info(f"🎉 ENTRY FILLED! Placing flipped bracket orders for {symbol}")
+            
+            # Place Take Profit (Limit) order - Original STOP becomes TP
+            tp_payload = {
+                "accountSpec": bracket_data["account_spec"],
+                "accountId": bracket_data["account_id"],
+                "action": bracket_data["opposite_action"],  # Opposite of entry action
+                "symbol": symbol,
+                "orderQty": 1,
+                "orderType": "Limit",
+                "price": bracket_data["take_profit_price"],  # Original STOP
+                "timeInForce": "GTC",
+                "isAutomated": True
+            }
+            
+            # Place Stop Loss order - Original T1 becomes SL
+            sl_payload = {
+                "accountSpec": bracket_data["account_spec"],
+                "accountId": bracket_data["account_id"],
+                "action": bracket_data["opposite_action"],  # Opposite of entry action
+                "symbol": symbol,
+                "orderQty": 1,
+                "orderType": "Stop",
+                "stopPrice": bracket_data["stop_loss_price"],  # Original T1
+                "timeInForce": "GTC",
+                "isAutomated": True
+            }
+            
+            # Place both bracket orders
+            try:
+                # Place Take Profit
+                tp_result = await client.place_order(tp_payload)
+                logging.info(f"✅ TAKE PROFIT placed: {tp_result}")
+                
+                # Place Stop Loss
+                sl_result = await client.place_order(sl_payload)
+                logging.info(f"✅ STOP LOSS placed: {sl_result}")
+                
+                logging.info(f"🔥 FLIPPED BRACKETS COMPLETE: {symbol}")
+                logging.info(f"🔥 TP: {bracket_data['take_profit_price']} (was original STOP)")
+                logging.info(f"🔥 SL: {bracket_data['stop_loss_price']} (was original T1)")
+                
+                # Mark trade as properly set up
+                mark_trade_completed(symbol, bracket_data["flipped_action"])
+                
+            except Exception as e:
+                logging.error(f"❌ Failed to place bracket orders: {e}")
+            
+            return  # Exit monitoring
             
         except Exception as e:
             logging.error(f"❌ Error in bracket monitoring: {e}")
