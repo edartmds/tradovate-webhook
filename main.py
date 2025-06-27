@@ -584,29 +584,19 @@ async def webhook(req: Request):
             "orderType": order_type,   # Intelligently selected based on market conditions
             "timeInForce": "GTC",
             "isAutomated": True,
-            # Take Profit bracket (bracket1)
+            # Take Profit bracket (bracket1) - SIMPLIFIED
             "bracket1": {
-                "accountSpec": client.account_spec,
-                "accountId": client.account_id,
                 "action": opposite_action,
-                "symbol": symbol,
-                "orderQty": 1,
                 "orderType": "Limit",
                 "price": t1,
-                "timeInForce": "GTC",
-                "isAutomated": True
+                "timeInForce": "GTC"
             },
-            # Stop Loss bracket (bracket2)
+            # Stop Loss bracket (bracket2) - SIMPLIFIED
             "bracket2": {
-                "accountSpec": client.account_spec,
-                "accountId": client.account_id,
                 "action": opposite_action,
-                "symbol": symbol,
-                "orderQty": 1,
                 "orderType": "Stop",
                 "stopPrice": stop,
-                "timeInForce": "GTC",
-                "isAutomated": True
+                "timeInForce": "GTC"
             }
         }
        
