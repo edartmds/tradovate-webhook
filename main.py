@@ -43,11 +43,43 @@ app = FastAPI()
 client = TradovateClient()
 
 
+@app.get("/")
+async def root():
+    """Root endpoint for health checks and basic info"""
+    return {
+        "status": "active",
+        "message": "Tradovate Webhook Service",
+        "webhook_endpoint": "/webhook",
+        "methods": ["POST"],
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+@app.post("/")
+async def root_webhook(req: Request):
+    """Handle POST requests to root path - redirect to webhook processing"""
+    logging.info("=== POST REQUEST TO ROOT PATH - REDIRECTING TO WEBHOOK LOGIC ===")
+    return await webhook(req)
+
+
+@app.get("/webhook")
+async def webhook_info():
+    """GET endpoint for webhook info"""
+    return {
+        "endpoint": "/webhook",
+        "method": "POST",
+        "status": "ready",
+        "message": "Send POST requests with trading alerts here"
+    }
 
 
 @app.on_event("startup")
 async def startup_event():
     logging.info("=== APPLICATION STARTING UP ===")
+    logging.info(f"Python version: {os.sys.version}")
+    logging.info(f"Current working directory: {os.getcwd()}")
+    logging.info(f"Environment variables loaded: WEBHOOK_SECRET={'SET' if WEBHOOK_SECRET else 'NOT SET'}")
+    
     try:
         await client.authenticate()
         logging.info(f"=== AUTHENTICATION SUCCESSFUL ===")
@@ -428,6 +460,10 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
 @app.post("/webhook")
 async def webhook(req: Request):
     logging.info("=== WEBHOOK ENDPOINT HIT ===")
+    logging.info(f"Request URL: {req.url}")
+    logging.info(f"Request method: {req.method}")
+    logging.info(f"Request headers: {dict(req.headers)}")
+    
     try:
         # Parse the incoming request
         content_type = req.headers.get("content-type")
@@ -642,6 +678,35 @@ async def webhook(req: Request):
         import traceback
         logging.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def catch_all(req: Request, path: str):
+    """Catch-all endpoint to debug unexpected requests"""
+    logging.info(f"=== CATCH-ALL ENDPOINT HIT ===")
+    logging.info(f"Path: /{path}")
+    logging.info(f"Method: {req.method}")
+    logging.info(f"Headers: {dict(req.headers)}")
+    
+    if req.method == "POST":
+        try:
+            body = await req.body()
+            logging.info(f"Body: {body.decode('utf-8')}")
+        except:
+            logging.info("Could not decode body")
+    
+    return {
+        "error": "Endpoint not found",
+        "path": f"/{path}",
+        "method": req.method,
+        "available_endpoints": [
+            "GET /",
+            "POST /",
+            "GET /webhook", 
+            "POST /webhook"
+        ],
+        "message": "Use POST /webhook for trading alerts"
+    }
 
 
 if __name__ == "__main__":
