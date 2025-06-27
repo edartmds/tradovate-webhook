@@ -640,6 +640,30 @@ async def webhook(req: Request):
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
+@app.get("/")
+async def root():
+    """Health check endpoint"""
+    return {
+        "status": "active",
+        "service": "tradovate-webhook",
+        "endpoints": {
+            "webhook": "/webhook",
+            "health": "/"
+        },
+        "message": "Webhook service is running. Send POST requests to /webhook"
+    }
+
+
+@app.post("/")
+async def root_post(req: Request):
+    """Handle POST requests to root and redirect to webhook"""
+    logging.warning("POST request received at root path '/' - redirecting to /webhook")
+    logging.info("If you're sending webhooks, please update your URL to include '/webhook' at the end")
+    
+    # Forward the request to the webhook endpoint
+    return await webhook(req)
+
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     uvicorn.run("main:app", host="0.0.0.0", port=port)
