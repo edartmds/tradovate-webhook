@@ -16,7 +16,7 @@ import hashlib
 last_alert = {}  # {symbol: {"direction": "buy"/"sell", "timestamp": datetime, "alert_hash": str}}
 completed_trades = {}  # {symbol: {"last_completed_direction": "buy"/"sell", "completion_time": datetime}}
 active_orders = []  # Track active order IDs to manage cancellation
-DUPLICATE_THRESHOLD_SECONDS = 30  # 30 seconds - only prevent rapid-fire identical alerts
+DUPLICATE_THRESHOLD_SECONDS = 5  # 5 seconds - only prevent rapid-fire identical alerts
 COMPLETED_TRADE_COOLDOWN = 30  # 30 seconds - minimal cooldown for automated trading
 
 
@@ -42,8 +42,24 @@ logging.basicConfig(
 app = FastAPI()
 client = TradovateClient()
 
+@app.get("/")
+async def health_check():
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "service": "tradovate-webhook",
+        "timestamp": datetime.now().isoformat(),
+        "endpoints": ["/webhook", "/tradingview", "/"]
+    }
 
-
+@app.get("/health")
+async def health():
+    """Alternative health check endpoint"""
+    return {
+        "status": "healthy",
+        "service": "tradovate-webhook",
+        "timestamp": datetime.now().isoformat()
+    }
 
 @app.on_event("startup")
 async def startup_event():
@@ -185,9 +201,10 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
 def hash_alert(data: dict) -> str:
     """Generate a unique hash for an alert to detect duplicates."""
     # Only include essential trading fields for duplicate detection
+    # For flipped strategies, we use the ACTION being checked (not the flipped one)
     essential_fields = {
         "symbol": data.get("symbol"),
-        "action": data.get("action"),
+        "action": data.get("action"),  # This will be original for duplicate check, flipped for tracking
         "PRICE": data.get("PRICE"),
         "T1": data.get("T1"),
         "STOP": data.get("STOP")
@@ -198,13 +215,16 @@ def hash_alert(data: dict) -> str:
 
 def is_duplicate_alert(symbol: str, action: str, data: dict) -> bool:
     """
-    🔥 RELAXED DUPLICATE DETECTION FOR AUTOMATED TRADING
+    🔥 RELAXED DUPLICATE DETECTION FOR FLIPPED AUTOMATED TRADING
    
-    Only blocks truly rapid-fire identical alerts within 30 seconds.
+    Only blocks truly rapid-fire identical alerts within 5 seconds.
     Allows direction changes and new signals for automated flattening strategy.
    
     Returns True ONLY if:
-    1. IDENTICAL alert hash received within 30 seconds (prevents accidental spam)
+    1. IDENTICAL alert hash received within 5 seconds (prevents accidental spam)
+    
+    NOTE: This function checks ORIGINAL alerts, but tracking will be updated 
+    with FLIPPED actions after this check passes.
     """
     current_time = datetime.now()
     alert_hash = hash_alert(data)
@@ -214,23 +234,22 @@ def is_duplicate_alert(symbol: str, action: str, data: dict) -> bool:
         last_alert_data = last_alert[symbol]
         time_diff = (current_time - last_alert_data["timestamp"]).total_seconds()
        
-        # Only block if EXACT same alert within 30 seconds
+        # Only block if EXACT same alert within threshold seconds
         if (last_alert_data.get("alert_hash") == alert_hash and
             time_diff < DUPLICATE_THRESHOLD_SECONDS):
             logging.warning(f"🚫 RAPID-FIRE DUPLICATE BLOCKED: {symbol} {action}")
             logging.warning(f"🚫 Identical alert received {time_diff:.1f} seconds ago")
             return True
+            
+        # 🔥 ALLOW FLIPPED STRATEGIES: Different alert types should always be allowed
+        # Even if we recently placed a BUY (flipped from SELL alert), 
+        # a new SELL alert should be allowed (will flip to BUY)
+        logging.info(f"🔄 DIRECTION CHANGE DETECTED: Previous was {last_alert_data.get('original_direction', 'unknown')}, new is {action.lower()}")
+        logging.info(f"🔄 This will result in trade direction change - ALLOWING")
    
     # 🔥 REMOVED: Direction-based blocking - allow all direction changes
     # 🔥 REMOVED: Post-completion blocking - allow immediate new signals
-    # This enables full automated trading with position flattening
-   
-    # Update tracking for rapid-fire detection only
-    last_alert[symbol] = {
-        "direction": action.lower(),
-        "timestamp": current_time,
-        "alert_hash": alert_hash
-    }
+    # This enables full automated trading with position flattening and signal alternation
    
     logging.info(f"✅ ALERT ACCEPTED: {symbol} {action} - Automated trading enabled")
     return False
@@ -264,6 +283,97 @@ def cleanup_old_tracking_data():
             symbols_to_remove.append(symbol)
     for symbol in symbols_to_remove:
         del completed_trades[symbol]
+
+
+async def monitor_entry_and_place_brackets(entry_order_id: str, symbol: str, bracket_data: dict):
+    """
+    Monitor entry order for fill, then place flipped bracket orders.
+    """
+    logging.info(f"🔍 Starting bracket monitoring for entry order {entry_order_id}")
+    
+    max_monitoring_time = 3600  # 1 hour timeout
+    start_time = asyncio.get_event_loop().time()
+    
+    while True:
+        try:
+            # Check if entry order is filled
+            headers = {"Authorization": f"Bearer {client.access_token}"}
+            url = f"https://demo-api.tradovate.com/v1/order/{entry_order_id}"
+            
+            async with httpx.AsyncClient() as http_client:
+                response = await http_client.get(url, headers=headers)
+                response.raise_for_status()
+                order_status = response.json()
+                
+                status = order_status.get("status", "").lower()
+                logging.info(f"📊 Entry order {entry_order_id} status: {status}")
+                
+                if status == "filled":
+                    logging.info(f"🎉 ENTRY FILLED! Placing flipped bracket orders for {symbol}")
+                    
+                    # Place Take Profit (Limit) order - Original STOP becomes TP
+                    tp_payload = {
+                        "accountSpec": bracket_data["account_spec"],
+                        "accountId": bracket_data["account_id"],
+                        "action": bracket_data["opposite_action"],  # Opposite of entry action
+                        "symbol": symbol,
+                        "orderQty": 1,
+                        "orderType": "Limit",
+                        "price": bracket_data["take_profit_price"],  # Original STOP
+                        "timeInForce": "GTC",
+                        "isAutomated": True
+                    }
+                    
+                    # Place Stop Loss order - Original T1 becomes SL
+                    sl_payload = {
+                        "accountSpec": bracket_data["account_spec"],
+                        "accountId": bracket_data["account_id"],
+                        "action": bracket_data["opposite_action"],  # Opposite of entry action
+                        "symbol": symbol,
+                        "orderQty": 1,
+                        "orderType": "Stop",
+                        "stopPrice": bracket_data["stop_loss_price"],  # Original T1
+                        "timeInForce": "GTC",
+                        "isAutomated": True
+                    }
+                    
+                    # Place both bracket orders
+                    try:
+                        # Place Take Profit
+                        tp_result = await client.place_order(tp_payload)
+                        logging.info(f"✅ TAKE PROFIT placed: {tp_result}")
+                        
+                        # Place Stop Loss
+                        sl_result = await client.place_order(sl_payload)
+                        logging.info(f"✅ STOP LOSS placed: {sl_result}")
+                        
+                        logging.info(f"🔥 FLIPPED BRACKETS COMPLETE: {symbol}")
+                        logging.info(f"🔥 TP: {bracket_data['take_profit_price']} (was original STOP)")
+                        logging.info(f"🔥 SL: {bracket_data['stop_loss_price']} (was original T1)")
+                        
+                        # Mark trade as properly set up
+                        mark_trade_completed(symbol, bracket_data["flipped_action"])
+                        
+                    except Exception as e:
+                        logging.error(f"❌ Failed to place bracket orders: {e}")
+                    
+                    return  # Exit monitoring
+                    
+                elif status in ["cancelled", "rejected"]:
+                    logging.warning(f"⚠️ Entry order {entry_order_id} was {status} - no brackets will be placed")
+                    return  # Exit monitoring
+                    
+            # Check timeout
+            if asyncio.get_event_loop().time() - start_time > max_monitoring_time:
+                logging.warning(f"⏰ Monitoring timeout for entry order {entry_order_id}")
+                return
+                
+            # Wait before next check
+            await asyncio.sleep(2)
+            
+        except Exception as e:
+            logging.error(f"❌ Error in bracket monitoring: {e}")
+            await asyncio.sleep(5)
 
 
 # Direct API function to place a stop loss order (DEPRECATED - using OCO/OSO instead)
@@ -462,7 +572,7 @@ async def webhook(req: Request):
             logging.error(f"Missing required fields: {missing}")
             raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")        # Map TradingView symbol to Tradovate symbol
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
-            symbol = "NQM5"
+            symbol = "NQU5"
             logging.info(f"Mapped symbol to: {symbol}")
        
         # 🔥 MINIMAL DUPLICATE DETECTION - Only prevent rapid-fire identical alerts
@@ -471,36 +581,64 @@ async def webhook(req: Request):
        
         if is_duplicate_alert(symbol, action, data):
             logging.warning(f"🚫 RAPID-FIRE DUPLICATE BLOCKED: {symbol} {action}")
-            logging.warning(f"🚫 Reason: Identical alert within 30 seconds")
+            logging.warning(f"🚫 Reason: Identical alert within {DUPLICATE_THRESHOLD_SECONDS} seconds")
             return {
                 "status": "rejected",
-                "reason": "rapid_fire_duplicate",
-                "message": f"Rapid-fire duplicate alert blocked for {symbol} {action}"
+                "reason": "rapid_fire_duplicate", 
+                "message": f"Rapid-fire duplicate alert blocked for {symbol} {action}",
+                "threshold_seconds": DUPLICATE_THRESHOLD_SECONDS
             }
        
-        logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
-          # Determine optimal order type based on current market conditions
-        logging.info("🔍 Analyzing market conditions for optimal order type...")
+        # 🔄 DEFINE FLIPPED STRATEGY VARIABLES EARLY
+        flipped_action = "Sell" if action.lower() == "buy" else "Buy"  # FLIP the alert direction
+        opposite_action = "Buy" if action.lower() == "buy" else "Sell"  # Opposite of flipped action
+        
+        # 🔥 IMPORTANT: Update duplicate tracking with FLIPPED action for proper signal alternation
+        # This ensures BUY→SELL and SELL→BUY flips are recognized as different trades
+        logging.info(f"🔄 UPDATING DUPLICATE TRACKING: Original {action} → Flipped {flipped_action}")
+        
+        # Create flipped data for proper duplicate detection of actual trades placed
+        flipped_data = data.copy()
+        flipped_data["action"] = flipped_action  # Track the actual action being placed
+        flipped_data["original_action"] = action  # Keep original for reference
+        
+        # Update the tracking with the FLIPPED action to allow proper signal alternation
+        current_time = datetime.now()
+        flipped_hash = hash_alert(flipped_data)
+        last_alert[symbol] = {
+            "direction": flipped_action.lower(),  # Track the actual trade direction
+            "timestamp": current_time,
+            "alert_hash": flipped_hash,
+            "original_direction": action.lower()  # Keep original for reference
+        }
+        
+        logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with FLIPPED automated trading")
+        logging.info(f"🔄 STRATEGY: Will place {flipped_action} order instead of {action}")
+        logging.info(f"🔄 BRACKETS: TP={stop}, SL={t1} (swapped from original)")
+        logging.info(f"🔄 TRACKING: Now tracking {flipped_action} direction for future duplicate detection")
+        
+        # 🔍 Analyzing market conditions for optimal order type...
+        logging.info(f"🔄 Using FLIPPED action '{flipped_action}' for order type analysis (not original '{action}')")
         try:
-            order_config = await client.determine_optimal_order_type(symbol, action, price)
+            order_config = await client.determine_optimal_order_type(symbol, flipped_action, price)
             order_type = order_config["orderType"]
             order_price = order_config.get("price")
             stop_price = order_config.get("stopPrice")
            
-            logging.info(f"💡 OPTIMAL ORDER TYPE: {order_type}")
+            logging.info(f"💡 OPTIMAL ORDER TYPE: {order_type} (for {flipped_action} trade)")
             if order_type == "Stop":
                 logging.info(f"📊 STOP ORDER: Will trigger when price reaches {stop_price}")
             else:
                 logging.info(f"📊 LIMIT ORDER: Will execute at price {order_price}")
                
         except Exception as e:
-            # 🔥 FALLBACK: If intelligent selection fails, default to traditional approach
+            # 🔥 FALLBACK: If intelligent selection fails, use simple market order approach
             logging.warning(f"⚠️ Intelligent order type selection failed: {e}")
-            logging.info("🔄 FALLBACK: Using traditional Stop order entry")
-            order_type = "Stop"
-            stop_price = price
+            logging.info("🔄 FALLBACK: Using Market order for immediate execution")
+            order_type = "Market"
+            stop_price = None
             order_price = None
-            logging.info(f"🔄 FALLBACK STOP ORDER: Will trigger at stopPrice={stop_price}")
+            logging.info(f"🔄 FALLBACK MARKET ORDER: Will execute at current market price")
        
         # 🔥 REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
         # Every new alert will now automatically flatten existing positions and place new orders
@@ -526,8 +664,10 @@ async def webhook(req: Request):
         except Exception as e:
             logging.warning(f"Failed to cancel some orders: {e}")
             # Continue with new order placement even if cancellation partially fails        # STEP 3: Place entry order with automatic bracket orders (OSO)
-        logging.info(f"=== PLACING OSO BRACKET ORDER WITH INTELLIGENT ORDER TYPE ===")
-        logging.info(f"Symbol: {symbol}, Order Type: {order_type}, Entry: {price}, TP: {t1}, SL: {stop}")
+        logging.info(f"=== PLACING OSO BRACKET ORDER WITH FLIPPED STRATEGY ===")
+        logging.info(f"Original Alert: {action} {symbol} at {price}")
+        logging.info(f"FLIPPED ORDER: {flipped_action} {symbol} | TP: {stop} | SL: {t1}")
+        logging.info(f"Order Type: {order_type}, Entry: {price}")
        
         # 🔥 SPEED OPTIMIZATION: For STOP orders, prioritize fastest possible execution
         if order_type == "Stop":
@@ -536,84 +676,119 @@ async def webhook(req: Request):
         else:
             logging.info("📊 LIMIT order - using standard execution path")
        
-        # Determine opposite action for take profit and stop loss
-        opposite_action = "Sell" if action.lower() == "buy" else "Buy"
-          # Build OSO payload with intelligent order type selection
-        oso_payload = {
+        # 🔄 FLIPPED STRATEGY: Variables already defined above, just use them in OSO payload
+        logging.info(f"🔄 ALERT FLIP: Original={action} → Flipped={flipped_action}")
+        logging.info(f"🔄 BRACKET SWAP: Original TP={t1}, SL={stop} → Swapped TP={stop}, SL={t1}")
+        
+        # 🔥 VALIDATE BRACKET PRICES to prevent Tradovate rejections
+        logging.info(f"🔍 VALIDATING BRACKET PRICES:")
+        logging.info(f"   Entry Price: {price}")
+        logging.info(f"   Swapped TP (was SL): {stop}")  
+        logging.info(f"   Swapped SL (was TP): {t1}")
+        
+        # For BUY orders: TP should be ABOVE entry, SL should be BELOW entry
+        # For SELL orders: TP should be BELOW entry, SL should be ABOVE entry
+        if flipped_action.lower() == "buy":
+            if stop <= price:
+                logging.warning(f"⚠️ PRICE CONFLICT: BUY TP ({stop}) should be above entry ({price})")
+            if t1 >= price:
+                logging.warning(f"⚠️ PRICE CONFLICT: BUY SL ({t1}) should be below entry ({price})")
+        else:  # SELL
+            if stop >= price:
+                logging.warning(f"⚠️ PRICE CONFLICT: SELL TP ({stop}) should be below entry ({price})")
+            if t1 <= price:
+                logging.warning(f"⚠️ PRICE CONFLICT: SELL SL ({t1}) should be above entry ({price})")
+        
+        # 🔥 FIRST: Place simple entry order only (no brackets yet)
+        entry_payload = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
-            "action": action.capitalize(),  # "Buy" or "Sell"
+            "action": flipped_action,  # FLIPPED: Use opposite of alert action
             "symbol": symbol,
             "orderQty": 1,
             "orderType": order_type,   # Intelligently selected based on market conditions
             "timeInForce": "GTC",
-            "isAutomated": True,
-            # Take Profit bracket (bracket1)
-            "bracket1": {
-                "accountSpec": client.account_spec,
-                "accountId": client.account_id,
-                "action": opposite_action,
-                "symbol": symbol,
-                "orderQty": 1,
-                "orderType": "Limit",
-                "price": t1,
-                "timeInForce": "GTC",
-                "isAutomated": True
-            },
-            # Stop Loss bracket (bracket2)
-            "bracket2": {
-                "accountSpec": client.account_spec,
-                "accountId": client.account_id,
-                "action": opposite_action,
-                "symbol": symbol,
-                "orderQty": 1,
-                "orderType": "Stop",
-                "stopPrice": stop,
-                "timeInForce": "GTC",
-                "isAutomated": True
-            }
+            "isAutomated": True
         }
        
         # 🔥 CRITICAL: Add dynamic price/stopPrice fields based on intelligent order type
         if order_type == "Stop":
             # Stop order needs stopPrice field
-            oso_payload["stopPrice"] = stop_price
+            entry_payload["stopPrice"] = stop_price
             logging.info(f"🎯 STOP ORDER: Entry will trigger at stopPrice={stop_price}")
+        elif order_type == "Market":
+            # Market order executes immediately at current market price - no price field needed
+            logging.info(f"🎯 MARKET ORDER: Entry will execute immediately at current market price")
         else:
             # Limit order needs price field  
-            oso_payload["price"] = order_price
+            entry_payload["price"] = order_price
             logging.info(f"🎯 LIMIT ORDER: Entry will execute at price={order_price}")
        
-        logging.info(f"=== OSO PAYLOAD ===")
-        logging.info(f"{json.dumps(oso_payload, indent=2)}")        # STEP 4: Place OSO bracket order with speed optimizations
-        logging.info("=== PLACING OSO BRACKET ORDER ===")
+        logging.info(f"=== ENTRY ORDER PAYLOAD ===")
+        logging.info(f"{json.dumps(entry_payload, indent=2)}")
+        
+        # 🔥 PREPARE BRACKET DATA for when entry fills
+        bracket_data = {
+            "symbol": symbol,
+            "flipped_action": flipped_action,
+            "opposite_action": opposite_action,
+            "take_profit_price": stop,    # Original STOP becomes TP
+            "stop_loss_price": t1,       # Original T1 becomes SL
+            "account_spec": client.account_spec,
+            "account_id": client.account_id
+        }
+        logging.info(f"🔄 BRACKET DATA PREPARED: TP={stop} (was STOP), SL={t1} (was T1)")
+        
+        # STEP 4: Place entry order and monitor for fill
+        logging.info("=== PLACING ENTRY ORDER (BRACKETS WILL BE PLACED AFTER FILL) ===")
        
         # 🔥 SPEED OPTIMIZATION: Validate payload before submission to prevent rejection delays
         required_fields = ['accountSpec', 'accountId', 'action', 'symbol', 'orderQty', 'orderType', 'timeInForce']
         for field in required_fields:
-            if field not in oso_payload:
-                raise HTTPException(status_code=400, detail=f"Missing required OSO field: {field}")
+            if field not in entry_payload:
+                raise HTTPException(status_code=400, detail=f"Missing required entry field: {field}")
        
         try:
-            # 🚀 FASTEST EXECUTION: Place OSO order immediately
+            # 🚀 FASTEST EXECUTION: Place entry order first
             start_time = time.time()
-            oso_result = await client.place_oso_order(oso_payload)
+            entry_result = await client.place_order(entry_payload)
             execution_time = (time.time() - start_time) * 1000  # Convert to milliseconds
            
-            logging.info(f"✅ OSO BRACKET ORDER PLACED SUCCESSFULLY in {execution_time:.2f}ms")
-            logging.info(f"OSO Result: {oso_result}")
+            logging.info(f"✅ ENTRY ORDER PLACED SUCCESSFULLY in {execution_time:.2f}ms")
+            logging.info(f"🎉 ENTRY TRADE: {flipped_action} {symbol} (brackets will be placed after fill)")
+            logging.info(f"📊 Original Alert: {action} → Flipped to: {flipped_action}")
+            logging.info(f"Entry Result: {entry_result}")
+            
+            # 🔥 START MONITORING for entry fill and bracket placement
+            if 'orderId' in entry_result:
+                entry_order_id = entry_result['orderId']
+                logging.info(f"🔍 Starting monitoring for entry order {entry_order_id}")
+                
+                # Start background task to monitor and place brackets
+                asyncio.create_task(monitor_entry_and_place_brackets(
+                    entry_order_id, 
+                    symbol, 
+                    bracket_data
+                ))
+            else:
+                logging.warning("⚠️ No orderId in entry result - cannot monitor for brackets")
            
-            # 🔥 MARK SUCCESSFUL TRADE PLACEMENT - This helps prevent immediate duplicates
-            # When this trade completes (hits TP or SL), we'll prevent duplicate signals for a period
-            logging.info(f"📝 Recording successful trade placement: {symbol} {action}")
-            # Note: We mark completion when the trade actually completes, not just when placed
+            # 🔥 MARK SUCCESSFUL TRADE PLACEMENT - Recording FLIPPED trade details
+            logging.info(f"📝 Recording successful FLIPPED trade placement: {symbol} {flipped_action}")
+            logging.info(f"📝 Original alert was {action}, placed {flipped_action} instead")
            
             return {
                 "status": "success",
-                "order": oso_result,
+                "entry_order": entry_result,
                 "execution_time_ms": execution_time,
                 "order_type": order_type,
-                "symbol": symbol
+                "symbol": symbol,
+                "original_alert": action,
+                "flipped_action": flipped_action,
+                "pending_brackets": {
+                    "take_profit": stop,
+                    "stop_loss": t1
+                }
             }
            
         except Exception as e:
@@ -643,6 +818,60 @@ async def webhook(req: Request):
         logging.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
+
+@app.post("/")
+async def root_webhook(req: Request):
+    """Handle webhook signals sent to root path instead of /webhook"""
+    logging.info("=== WEBHOOK RECEIVED AT ROOT PATH (/) ===")
+    try:
+        # Log request details for debugging
+        logging.info(f"Request headers: {dict(req.headers)}")
+        logging.info(f"Request URL: {req.url}")
+        logging.info(f"Request method: {req.method}")
+        
+        return await webhook(req)
+    except Exception as e:
+        logging.error(f"Error in root_webhook: {e}")
+        logging.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Root webhook error: {str(e)}")
+
+@app.post("/tradingview")
+async def tradingview_webhook(req: Request):
+    """Alternative webhook endpoint for TradingView"""
+    logging.info("=== WEBHOOK RECEIVED AT /tradingview ===")
+    try:
+        # Log request details for debugging
+        logging.info(f"Request headers: {dict(req.headers)}")
+        logging.info(f"Request URL: {req.url}")
+        logging.info(f"Request method: {req.method}")
+        
+        return await webhook(req)
+    except Exception as e:
+        logging.error(f"Error in tradingview_webhook: {e}")
+        logging.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"TradingView webhook error: {str(e)}")
+
+@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def catch_all(req: Request, path: str):
+    """Catch-all endpoint to debug unexpected requests"""
+    logging.warning(f"=== CATCH-ALL ENDPOINT HIT ===")
+    logging.warning(f"Path: /{path}")
+    logging.warning(f"Method: {req.method}")
+    logging.warning(f"Headers: {dict(req.headers)}")
+    logging.warning(f"URL: {req.url}")
+    
+    try:
+        body = await req.body()
+        logging.warning(f"Body: {body.decode('utf-8') if body else 'No body'}")
+    except Exception as e:
+        logging.warning(f"Could not read body: {e}")
+    
+    return {
+        "message": f"Endpoint /{path} not found",
+        "method": req.method,
+        "available_endpoints": ["/", "/webhook", "/tradingview", "/health"],
+        "suggestion": "Use POST to /, /webhook, or /tradingview for webhook data"
+    }
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
