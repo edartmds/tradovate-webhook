@@ -49,8 +49,46 @@ async def health_check():
         "status": "healthy",
         "service": "tradovate-webhook",
         "timestamp": datetime.now().isoformat(),
-        "endpoints": ["/webhook", "/tradingview", "/"]
+        "endpoints": ["/webhook", "/tradingview", "/", "/debug"]
     }
+
+@app.post("/debug")
+async def debug_webhook(req: Request):
+    """Debug endpoint to see exactly what TradingView is sending"""
+    logging.info("=== DEBUG ENDPOINT HIT ===")
+    
+    # Get all request info
+    headers = dict(req.headers)
+    method = req.method
+    url = str(req.url)
+    
+    # Get raw body
+    body = await req.body()
+    raw_body_text = body.decode("utf-8")
+    
+    # Try to parse as JSON
+    try:
+        json_data = await req.json() if body else {}
+    except:
+        json_data = None
+    
+    debug_info = {
+        "timestamp": datetime.now().isoformat(),
+        "method": method,
+        "url": url,
+        "headers": headers,
+        "raw_body": raw_body_text,
+        "raw_body_length": len(raw_body_text),
+        "json_data": json_data,
+        "parsing_tips": {
+            "for_tradingview": "Use this format in your TradingView alert:",
+            "json_format": '{"symbol":"NQ1!","action":"buy","PRICE":20000,"T1":20050,"STOP":19950}',
+            "text_format": "symbol=NQ1!\\naction=buy\\nPRICE=20000\\nT1=20050\\nSTOP=19950"
+        }
+    }
+    
+    logging.info(f"DEBUG INFO: {json.dumps(debug_info, indent=2)}")
+    return debug_info
 
 
 # Symbol mappings for alerts
@@ -284,21 +322,50 @@ async def webhook(req: Request):
             except Exception as e:
                 logging.warning(f"🔄 JSON extraction from text failed: {e}")
             
-        # If data is still empty, try to parse the raw body as key=value pairs
+        # Enhanced text parsing for key=value format and other formats
         if not data and raw_body_text:
-            logging.info(f"🔄 Attempting to parse raw body as key=value pairs")
-            for line in raw_body_text.strip().split("\n"):
+            logging.info(f"🔄 Attempting enhanced text parsing on: '{raw_body_text}'")
+            
+            # Handle key=value pairs (newline or & separated)
+            lines = raw_body_text.replace('&', '\n').strip().split('\n')
+            for line in lines:
                 line = line.strip()
-                if "=" in line:
-                    key, value = line.split("=", 1)
-                    data[key.strip()] = value.strip()
-                    logging.info(f"📨 Parsed: {key.strip()} = {value.strip()}")
-                elif line:  # Non-empty line without =
-                    logging.info(f"📨 Raw line (no =): '{line}'")
-                    # Maybe it's just the action (BUY/SELL)
-                    if line.upper() in ["BUY", "SELL"]:
-                        data["action"] = line.upper()
-                        logging.info(f"📨 Detected action: {line.upper()}")
+                if '=' in line:
+                    key, value = line.split('=', 1)
+                    key = key.strip().lower()
+                    value = value.strip()
+                    
+                    # Map common variations
+                    if key in ['symbol', 'ticker']:
+                        data['symbol'] = value
+                    elif key in ['action', 'side', 'direction']:
+                        data['action'] = value
+                    elif key in ['price', 'close']:
+                        data['PRICE'] = value
+                    elif key in ['t1', 'tp', 'take_profit', 'takeprofit']:
+                        data['T1'] = value
+                    elif key in ['stop', 'sl', 'stop_loss', 'stoploss']:
+                        data['STOP'] = value
+                    else:
+                        data[key] = value
+                    
+                    logging.info(f"📨 Mapped: {key} → {value}")
+                elif line and line.upper() in ['BUY', 'SELL']:
+                    # Direct action without key
+                    data['action'] = line.upper()
+                    logging.info(f"📨 Direct action: {line.upper()}")
+                elif line:
+                    logging.info(f"📨 Unparsed line: '{line}'")
+                    
+            # Try to extract from raw text if still empty
+            if not data.get('action'):
+                text_upper = raw_body_text.upper()
+                if 'BUY' in text_upper and 'SELL' not in text_upper:
+                    data['action'] = 'BUY'
+                    logging.info("📨 Extracted action from text: BUY")
+                elif 'SELL' in text_upper and 'BUY' not in text_upper:
+                    data['action'] = 'SELL'
+                    logging.info("📨 Extracted action from text: SELL")
         
         logging.info(f"📨 FINAL PARSED DATA: {json.dumps(data, indent=2)}")
         
@@ -541,6 +608,17 @@ async def webhook(req: Request):
             else:
                 logging.error("❌ CRITICAL: No orderId in entry result - cannot monitor for brackets")
                 logging.error(f"❌ Entry result structure: {json.dumps(entry_result, indent=2)}")
+                
+                # Check for specific error types
+                if entry_result.get("failureReason") == "UnknownReason" and "Access is denied" in str(entry_result.get("failureText", "")):
+                    logging.error("🔐 AUTHENTICATION ERROR: Tradovate access token expired or invalid")
+                    return {
+                        "status": "authentication_error",
+                        "message": "Tradovate authentication failed - token may be expired",
+                        "error_details": entry_result,
+                        "solution": "Check Tradovate credentials and token refresh"
+                    }
+                
                 # Still return success for the entry order, but note bracket issue
            
             logging.info(f"📝 Recording successful FLIPPED trade placement: {symbol} {flipped_action}")
