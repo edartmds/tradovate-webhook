@@ -268,7 +268,23 @@ async def webhook(req: Request):
             logging.info(f"📨 Non-JSON content type, parsing as text")
             data = {}
             
-        # If data is empty, try to parse the raw body as key=value pairs
+        # 🔍 ENHANCED PARSING: Try to extract JSON from raw text if main parsing failed
+        if not data and raw_body_text:
+            # Try to find JSON-like content in the raw text
+            try:
+                # Look for JSON patterns in the text
+                if "{" in raw_body_text and "}" in raw_body_text:
+                    # Try to extract and parse JSON from the raw text
+                    start_brace = raw_body_text.find("{")
+                    end_brace = raw_body_text.rfind("}") + 1
+                    if start_brace >= 0 and end_brace > start_brace:
+                        json_text = raw_body_text[start_brace:end_brace]
+                        data = json.loads(json_text)
+                        logging.info(f"📨 EXTRACTED JSON FROM TEXT: {json.dumps(data, indent=2)}")
+            except Exception as e:
+                logging.warning(f"🔄 JSON extraction from text failed: {e}")
+            
+        # If data is still empty, try to parse the raw body as key=value pairs
         if not data and raw_body_text:
             logging.info(f"🔄 Attempting to parse raw body as key=value pairs")
             for line in raw_body_text.strip().split("\n"):
@@ -286,12 +302,35 @@ async def webhook(req: Request):
         
         logging.info(f"📨 FINAL PARSED DATA: {json.dumps(data, indent=2)}")
         
-        # Parse required fields with fallbacks
-        symbol = data.get("symbol") or data.get("ticker") or data.get("SYMBOL")
-        action = data.get("action") or data.get("ACTION") or data.get("side")
-        price_str = data.get("PRICE") or data.get("price") or data.get("close") or data.get("CLOSE")
-        t1_str = data.get("T1") or data.get("t1") or data.get("tp") or data.get("take_profit")
-        stop_str = data.get("STOP") or data.get("stop") or data.get("sl") or data.get("stop_loss")
+        # 🔍 ENHANCED TRADINGVIEW PARSING for your specific alert format
+        # Parse required fields with enhanced TradingView-specific fallbacks
+        symbol = (data.get("symbol") or data.get("ticker") or data.get("SYMBOL") or 
+                 data.get("CME_MINI:NQ1!") or data.get("CME_MINI"))
+        action = (data.get("action") or data.get("ACTION") or data.get("side") or
+                 data.get("order_action") or data.get("strategy_order_action"))
+        price_str = (data.get("PRICE") or data.get("price") or data.get("close") or 
+                    data.get("CLOSE") or data.get("current_price"))
+        t1_str = (data.get("T1") or data.get("t1") or data.get("tp") or 
+                 data.get("take_profit") or data.get("target1"))
+        stop_str = (data.get("STOP") or data.get("stop") or data.get("sl") or 
+                   data.get("stop_loss") or data.get("stoploss"))
+        
+        # 🔍 SPECIAL HANDLING for TradingView's complex JSON format
+        if not symbol and raw_body_text:
+            # Look for CME_MINI:NQ1! or similar patterns in raw text
+            if "CME_MINI:NQ1!" in raw_body_text or "NQ1!" in raw_body_text:
+                symbol = "NQ1!"
+                logging.info(f"🔍 Detected NQ1! symbol from raw text analysis")
+        
+        # 🔍 DETECT ACTION from raw text if not found in JSON
+        if not action and raw_body_text:
+            raw_upper = raw_body_text.upper()
+            if "SELL" in raw_upper and "BUY" not in raw_upper:
+                action = "sell"
+                logging.info(f"🔍 Detected SELL action from raw text analysis")
+            elif "BUY" in raw_upper and "SELL" not in raw_upper:
+                action = "buy"
+                logging.info(f"🔍 Detected BUY action from raw text analysis")
         
         # Log parsed values for debugging
         logging.info(f"📊 Parsed symbol = '{symbol}'")
