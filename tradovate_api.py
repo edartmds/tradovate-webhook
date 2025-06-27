@@ -101,33 +101,43 @@ class TradovateClient:
         raise HTTPException(status_code=429, detail="Authentication failed after maximum retries")
 
 
-    async def place_order(self, symbol: str, action: str, quantity: int = 1, order_data: dict = None):
+    async def place_order(self, symbol: str = None, action: str = None, quantity: int = 1, order_data: dict = None):
+        """
+        Places an order on Tradovate. Can be called in two ways:
+        1. place_order(symbol, action, quantity, order_data) - traditional way
+        2. place_order(order_data) - pass complete order payload as first argument
+        """
         if not self.access_token:
             await self.authenticate()
-
 
         headers = {
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json"
         }
 
-
-        # Use the provided order_data if available, otherwise construct a default payload
-        order_payload = order_data or {
-            "accountId": self.account_id,
-            "action": action.capitalize(),  # Ensure "Buy" or "Sell"
-            "symbol": symbol,
-            "orderQty": quantity,
-            "orderType": "limit",
-            "timeInForce": "GTC",
-            "isAutomated": True  # Optional field for automation
-        }
-
+        # 🔥 HANDLE BOTH CALLING STYLES
+        if isinstance(symbol, dict) and action is None:
+            # Called with: place_order(order_payload)
+            order_payload = symbol
+            logging.info("📝 Using order payload passed as first argument")
+        elif symbol and action:
+            # Called with: place_order(symbol, action, quantity, order_data)
+            order_payload = order_data or {
+                "accountId": self.account_id,
+                "action": action.capitalize(),  # Ensure "Buy" or "Sell"
+                "symbol": symbol,
+                "orderQty": quantity,
+                "orderType": "limit",
+                "timeInForce": "GTC",
+                "isAutomated": True
+            }
+            logging.info("📝 Using traditional symbol/action parameters")
+        else:
+            raise ValueError("Must provide either (symbol, action) or order_data as first parameter")
 
         if not order_payload.get("accountId"):
             logging.error("Missing accountId in order payload.")
             raise HTTPException(status_code=400, detail="Missing accountId in order payload")
-
 
         try:
             async with httpx.AsyncClient() as client:
