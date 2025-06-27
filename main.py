@@ -572,13 +572,15 @@ async def webhook(req: Request):
         else:
             logging.info("📊 LIMIT order - using standard execution path")
        
-        # Determine opposite action for take profit and stop loss
-        opposite_action = "Sell" if action.lower() == "buy" else "Buy"
-          # Build OSO payload with intelligent order type selection
+        # Place OPPOSITE action - if alert says BUY, we place SELL (and vice versa)
+        opposite_alert_action = "Sell" if action.lower() == "buy" else "Buy"
+        # For brackets, use original alert action (reverse of the opposite)
+        bracket_action = action.capitalize()
+        # Build OSO payload with intelligent order type selection
         oso_payload = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
-            "action": action.capitalize(),  # "Buy" or "Sell"
+            "action": opposite_alert_action,  # NOW PLACES OPPOSITE OF ALERT
             "symbol": symbol,
             "orderQty": 1,
             "orderType": order_type,   # Intelligently selected based on market conditions
@@ -588,7 +590,7 @@ async def webhook(req: Request):
             "bracket1": {
                 "accountSpec": client.account_spec,
                 "accountId": client.account_id,
-                "action": opposite_action,
+                "action": bracket_action,  # NOW USES ORIGINAL ALERT ACTION
                 "symbol": symbol,
                 "orderQty": 1,
                 "orderType": "Limit",
@@ -600,7 +602,7 @@ async def webhook(req: Request):
             "bracket2": {
                 "accountSpec": client.account_spec,
                 "accountId": client.account_id,
-                "action": opposite_action,
+                "action": bracket_action,  # NOW USES ORIGINAL ALERT ACTION
                 "symbol": symbol,
                 "orderQty": 1,
                 "orderType": "Stop",
