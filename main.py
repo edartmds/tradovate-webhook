@@ -175,12 +175,8 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
 
     for target in ["T1", "STOP", "PRICE"]:
         if target in parsed_data:
-            try:
-                parsed_data[target] = float(parsed_data[target])
-                logging.info(f"Converted {target} to float: {parsed_data[target]}")
-            except ValueError:
-                logging.error(f"Failed to convert {target} value '{parsed_data[target]}' to float")
-                raise ValueError(f"Invalid {target} value: must be a number")
+            parsed_data[target] = float(parsed_data[target])
+            logging.info(f"Converted {target} to float: {parsed_data[target]}")
 
 
     return parsed_data
@@ -486,87 +482,70 @@ async def webhook(req: Request):
           # Determine optimal order type based on current market conditions
         logging.info("🔍 Analyzing market conditions for optimal order type...")
         try:
-            # Ensure we're using the exact PRICE from the alert for our limit order
-            order_type = "Limit"  # Force to always use Limit order type for profitability
-            order_price = float(price)  # Ensure price is a float
-            stop_price = None  # Not needed for limit orders
+            order_config = await client.determine_optimal_order_type(symbol, action, price)
+            order_type = order_config["orderType"]
+            order_price = order_config.get("price")
+            stop_price = order_config.get("stopPrice")
            
             logging.info(f"💡 OPTIMAL ORDER TYPE: {order_type}")
-            logging.info(f"💡 USING EXACT ALERT PRICE: {order_price}")
-            logging.info(f"📊 LIMIT ORDER: Will execute at price {order_price}")
+            if order_type == "Stop":
+                logging.info(f"📊 STOP ORDER: Will trigger when price reaches {stop_price}")
+            else:
+                logging.info(f"📊 LIMIT ORDER: Will execute at price {order_price}")
                
         except Exception as e:
-            # 🔥 FALLBACK: If intelligent selection fails, default to Limit orders
+            # 🔥 FALLBACK: If intelligent selection fails, default to traditional approach
             logging.warning(f"⚠️ Intelligent order type selection failed: {e}")
-            logging.info("🔄 FALLBACK: Using Limit order entry for profitability")
-            order_type = "Limit"
-            order_price = price
-            stop_price = None
-            logging.info(f"🔄 FALLBACK LIMIT ORDER: Will execute at price={order_price}")
+            logging.info("🔄 FALLBACK: Using traditional Stop order entry")
+            order_type = "Stop"
+            stop_price = price
+            order_price = None
+            logging.info(f"🔄 FALLBACK STOP ORDER: Will trigger at stopPrice={stop_price}")
        
         # 🔥 REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
         # Every new alert will now automatically flatten existing positions and place new orders
        
-        # STEP 1: Check for existing positions and bracket orders
-        logging.info("=== CHECKING FOR EXISTING POSITIONS AND ORDERS ===")
+        # STEP 1: Close all existing positions to prevent over-leveraging  
+        logging.info("🔥🔥🔥 === AUTOMATED FLATTENING: CLOSING ALL EXISTING POSITIONS === 🔥🔥🔥")
         try:
-            # Get existing positions first
-            existing_positions = await client.get_positions()
-            existing_position_symbols = [pos.get("symbol") for pos in existing_positions if pos.get("symbol")]
-            logging.info(f"Found existing positions for symbols: {existing_position_symbols}")
-            
-            # Check if we're receiving an alert for a symbol we already have a position in
-            if symbol in existing_position_symbols:
-                logging.info(f"🔍 Alert is for symbol {symbol} with EXISTING position - preserving bracket orders")
-                # For existing positions, we'll leave the TP/SL orders intact and just place a new entry
-                logging.info(f"✅ Leaving existing TP/SL orders intact for {symbol}")
-                # We don't need to do anything special here, just proceed without cancelling
+            success = await client.force_close_all_positions_immediately()
+            if success:
+                logging.info("✅ All existing positions successfully closed")
             else:
-                # For new positions (not currently held), we can safely close/cancel everything
-                logging.info(f"🔍 Alert is for symbol {symbol} with NO existing position")
-                
-                # OPTIONAL: Close positions for other symbols only
-                logging.info("🔥 === CLOSING POSITIONS FOR OTHER SYMBOLS ONLY === 🔥")
-                for pos_symbol in existing_position_symbols:
-                    if pos_symbol != symbol:  # Don't close positions for the alert symbol
-                        try:
-                            await client.close_position(pos_symbol)
-                            logging.info(f"✅ Closed position for symbol {pos_symbol}")
-                        except Exception as e:
-                            logging.error(f"❌ Failed to close position for {pos_symbol}: {e}")
-                
-                # Cancel pending orders for this symbol only (initial orders, not bracket orders)
-                logging.info(f"=== CANCELLING PENDING ENTRY ORDERS FOR {symbol} ONLY ===")
-                try:
-                    pending_orders = await client.get_pending_orders()
-                    for order in pending_orders:
-                        if order.get("symbol") == symbol and order.get("orderType") == "Limit":
-                            try:
-                                await client.cancel_order(order.get("id"))
-                                logging.info(f"✅ Cancelled entry order {order.get('id')} for {symbol}")
-                            except Exception as e:
-                                logging.error(f"❌ Failed to cancel order {order.get('id')} for {symbol}: {e}")
-                except Exception as e:
-                    logging.warning(f"Failed to cancel some orders: {e}")
+                logging.error("❌ CRITICAL: Failed to close all positions - proceeding anyway")
         except Exception as e:
-            logging.error(f"❌ Error checking existing positions: {e}")
-            # Continue anyway to place the new order        # STEP 3: Place entry order with automatic bracket orders (OSO)
-        logging.info(f"=== PLACING OSO BRACKET ORDER WITH LIMIT ORDER TYPE ===")
-        logging.info(f"Symbol: {symbol}, Order Type: Limit, Entry: {price}, TP: {t1}, SL: {stop}")
+            logging.error(f"❌ CRITICAL ERROR closing positions: {e}")
+            # Continue anyway - user wants new orders placed regardless
+
+
+        # STEP 2: Cancel all existing pending orders to prevent over-leveraging
+        logging.info("=== CANCELLING ALL PENDING ORDERS ===")
+        try:
+            cancelled_orders = await client.cancel_all_pending_orders()
+            logging.info(f"Successfully cancelled {len(cancelled_orders)} pending orders")
+        except Exception as e:
+            logging.warning(f"Failed to cancel some orders: {e}")
+            # Continue with new order placement even if cancellation partially fails        # STEP 3: Place entry order with automatic bracket orders (OSO)
+        logging.info(f"=== PLACING OSO BRACKET ORDER WITH INTELLIGENT ORDER TYPE ===")
+        logging.info(f"Symbol: {symbol}, Order Type: {order_type}, Entry: {price}, TP: {t1}, SL: {stop}")
        
-        # Using limit orders for profitability
-        logging.info("📊 LIMIT order - using standard execution path for profitable entries")
+        # 🔥 SPEED OPTIMIZATION: For STOP orders, prioritize fastest possible execution
+        if order_type == "Stop":
+            logging.info("⚡ SPEED MODE: STOP order detected - optimizing for fastest execution")
+            # For breakout/breakdown strategies, speed is critical
+        else:
+            logging.info("📊 LIMIT order - using standard execution path")
        
         # Determine opposite action for take profit and stop loss
         opposite_action = "Sell" if action.lower() == "buy" else "Buy"
-          # Build OSO payload with limit order type for profitability
+          # Build OSO payload with intelligent order type selection
         oso_payload = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
             "action": action.capitalize(),  # "Buy" or "Sell"
             "symbol": symbol,
             "orderQty": 1,
-            "orderType": "Limit",   # Always use Limit orders for profitability
+            "orderType": "Stop",   # Intelligently selected based on market conditions
             "timeInForce": "GTC",
             "isAutomated": True,
             # Take Profit bracket (bracket1)
@@ -595,22 +574,18 @@ async def webhook(req: Request):
             }
         }
        
-        # Add price field for limit order - ensure it's the exact alert price
-        oso_payload["price"] = order_price  # This is already float from the alert's PRICE value
-        logging.info(f"🎯 LIMIT ORDER: Entry will execute at EXACT price={order_price}")
+        # 🔥 CRITICAL: Add dynamic price/stopPrice fields based on intelligent order type
+        if order_type == "Stop":
+            # Stop order needs stopPrice field
+            oso_payload["stopPrice"] = stop_price
+            logging.info(f"🎯 STOP ORDER: Entry will trigger at stopPrice={stop_price}")
+        else:
+            # Limit order needs price field  
+            oso_payload["price"] = order_price
+            logging.info(f"🎯 LIMIT ORDER: Entry will execute at price={order_price}")
        
         logging.info(f"=== OSO PAYLOAD ===")
-        logging.info(f"{json.dumps(oso_payload, indent=2)}")
-        
-        # Double-check the price value in the payload
-        logging.info(f"🔍 VERIFYING PRICE: Alert price={price}, Order price={order_price}, Payload price={oso_payload.get('price')}")
-        if oso_payload.get('price') != order_price:
-            logging.error(f"⚠️ PRICE MISMATCH: Payload price {oso_payload.get('price')} doesn't match order price {order_price}")
-            # Explicitly set it again to be sure
-            oso_payload["price"] = order_price
-            logging.info(f"🔧 FIXED: Set payload price to {order_price}")
-            
-        # STEP 4: Place OSO bracket order with speed optimizations
+        logging.info(f"{json.dumps(oso_payload, indent=2)}")        # STEP 4: Place OSO bracket order with speed optimizations
         logging.info("=== PLACING OSO BRACKET ORDER ===")
        
         # 🔥 SPEED OPTIMIZATION: Validate payload before submission to prevent rejection delays
@@ -627,14 +602,6 @@ async def webhook(req: Request):
            
             logging.info(f"✅ OSO BRACKET ORDER PLACED SUCCESSFULLY in {execution_time:.2f}ms")
             logging.info(f"OSO Result: {oso_result}")
-           
-            # Log the orders that were created - helps track bracket orders
-            if "orderId" in oso_result:
-                logging.info(f"📊 Main order ID: {oso_result.get('orderId')}")
-            if "bracket1" in oso_result:
-                logging.info(f"📊 Take profit order ID: {oso_result.get('bracket1', {}).get('orderId')}")
-            if "bracket2" in oso_result:
-                logging.info(f"📊 Stop loss order ID: {oso_result.get('bracket2', {}).get('orderId')}")
            
             # 🔥 MARK SUCCESSFUL TRADE PLACEMENT - This helps prevent immediate duplicates
             # When this trade completes (hits TP or SL), we'll prevent duplicate signals for a period
