@@ -535,16 +535,28 @@ async def webhook(req: Request):
             # Continue anyway - user wants new orders placed regardless
 
 
-        # STEP 2: Cancel any existing open orders for this symbol to avoid duplicates
-        logging.info("=== CANCELLING EXISTING ORDERS FOR SYMBOL ===")
+        # STEP 2: Cancel existing orders to avoid duplicates
+        logging.info("=== CANCELLING ALL PENDING ORDERS ===")
         try:
-            await cancel_all_orders(symbol)
-            logging.info("✅ Previous orders for symbol cancelled successfully")
-            # Wait for any cancellations to complete
-            await wait_until_no_open_orders(symbol)
-            logging.info(f"✅ Confirmed no open orders remain for {symbol}")
+            # Generic cancellation of all pending orders
+            cancelled = await client.cancel_all_pending_orders()
+            logging.info(f"✅ client.cancel_all_pending_orders removed {len(cancelled)} orders")
         except Exception as e:
-            logging.warning(f"Failed to cancel existing orders for {symbol}: {e}")
+            logging.warning(f"Generic cancel_all_pending_orders failed: {e}")
+        # Wait for orders to clear
+        await wait_until_no_open_orders(symbol)
+        logging.info(f"✅ No open orders remain after generic cancel for {symbol}")
+        
+        logging.info("=== CANCELLING ANY REMAINING ORDERS FOR SYMBOL ===")
+        try:
+            # Targeted cancellation
+            await cancel_all_orders(symbol)
+            logging.info(f"✅ cancel_all_orders cleared remaining orders for {symbol}")
+        except Exception as e:
+            logging.warning(f"cancel_all_orders(symbol) failed: {e}")
+        # Final wait
+        await wait_until_no_open_orders(symbol)
+        logging.info(f"✅ Confirmed no open orders remain for {symbol} after all cancellations")
         # STEP 3: Place entry order with automatic bracket orders (OSO)
         logging.info(f"=== PLACING OSO BRACKET ORDER WITH LIMIT ENTRY ===")
         logging.info(f"Symbol: {symbol}, Order Type: {order_type}, Entry: {order_price}, TP: {t1}, SL: {stop}")
