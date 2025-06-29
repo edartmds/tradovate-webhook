@@ -412,13 +412,11 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
 @app.post("/webhook")
 async def webhook(req: Request):
     logging.info("=== WEBHOOK ENDPOINT HIT ===")
-    # Validate webhook secret if configured
+    # Validate webhook secret (strict)
     if WEBHOOK_SECRET:
         header_secret = req.headers.get("X-Webhook-Secret")
-        if header_secret is None:
-            logging.warning("No secret header provided; skipping authentication")
-        elif header_secret != WEBHOOK_SECRET:
-            logging.warning(f"Unauthorized webhook call: invalid secret header: {header_secret}")
+        if header_secret != WEBHOOK_SECRET:
+            logging.warning(f"Unauthorized webhook call: missing or invalid secret header: {header_secret}")
             raise HTTPException(status_code=401, detail="Unauthorized")
     try:
         # Parse the incoming request
@@ -430,6 +428,13 @@ async def webhook(req: Request):
 
         if content_type == "application/json":
             data = await req.json()
+            # Convert numeric fields from JSON to floats for exact price levels
+            for field in ["PRICE", "T1", "STOP"]:
+                if field in data:
+                    try:
+                        data[field] = float(data[field])
+                    except (ValueError, TypeError):
+                        logging.warning(f"Could not convert field {field} to float: {data.get(field)}")
         elif content_type.startswith("text/plain"):
             text_data = raw_body.decode("utf-8")
             data = parse_alert_to_tradovate_json(text_data, client.account_id)
@@ -581,8 +586,12 @@ async def webhook(req: Request):
         }
        
         # 🔥 ENTRY PRICE: Always set the limit entry price
-        oso_payload["price"] = order_price
+        # Set the entry price as string to ensure exact tick placement
+        oso_payload["price"] = str(order_price)
         logging.info(f"🎯 ENTRY LIMIT PRICE set to {order_price}")
+        # Force bracket target prices as string to match exact alert levels
+        oso_payload["bracket1"]["price"] = str(t1)
+        oso_payload["bracket2"]["stopPrice"] = str(stop)
        
         logging.info(f"=== OSO PAYLOAD ===")
         logging.info(f"{json.dumps(oso_payload, indent=2)}")        # STEP 4: Place OSO bracket order with speed optimizations
