@@ -492,24 +492,11 @@ async def webhook(req: Request):
             }
        
         logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
-          # Determine optimal order type based on current market conditions
-        logging.info("🔍 Analyzing market conditions for optimal order type...")
-        try:
-            # Always use Limit orders for entry (modified strategy)
-            order_config = await client.determine_optimal_order_type(symbol, action, price)
-            order_type = order_config["orderType"]  # Will be "Limit"
-            order_price = order_config.get("price")
-           
-            logging.info(f"💡 USING LIMIT ORDER TYPE: {order_type}")
-            logging.info(f"📊 LIMIT ORDER: Will execute at price {order_price}")
-               
-        except Exception as e:
-            # 🔥 FALLBACK: If intelligent selection fails, default to Limit order
-            logging.warning(f"⚠️ Intelligent order type selection failed: {e}")
-            logging.info("🔄 FALLBACK: Using Limit order entry")
-            order_type = "Limit"
-            order_price = price
-            logging.info(f"🔄 FALLBACK LIMIT ORDER: Will execute at price={order_price}")
+        # Use the exact alert price as Limit entry to match indicator levels precisely
+        logging.info("🔍 USING ALERT PRICE FOR LIMIT ENTRY EXACTLY")
+        order_type = "Limit"
+        order_price = price
+        logging.info(f"📊 LIMIT ENTRY AT ALERT PRICE: {order_price}")
        
         # 🔥 REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
         # Every new alert will now automatically flatten existing positions and place new orders
