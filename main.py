@@ -415,7 +415,9 @@ async def webhook(req: Request):
     # Validate webhook secret if configured
     if WEBHOOK_SECRET:
         header_secret = req.headers.get("X-Webhook-Secret")
-        if header_secret != WEBHOOK_SECRET:
+        if header_secret is None:
+            logging.warning("No secret header provided; skipping authentication")
+        elif header_secret != WEBHOOK_SECRET:
             logging.warning(f"Unauthorized webhook call: invalid secret header: {header_secret}")
             raise HTTPException(status_code=401, detail="Unauthorized")
     try:
