@@ -209,30 +209,14 @@ def is_duplicate_alert(symbol: str, action: str, data: dict) -> bool:
     current_time = datetime.now()
     alert_hash = hash_alert(data)
    
-    # ONLY Check for rapid-fire identical alerts (same exact parameters)
-    if symbol in last_alert:
-        last_alert_data = last_alert[symbol]
-        time_diff = (current_time - last_alert_data["timestamp"]).total_seconds()
-       
-        # Only block if EXACT same alert within 30 seconds
-        if (last_alert_data.get("alert_hash") == alert_hash and
-            time_diff < DUPLICATE_THRESHOLD_SECONDS):
-            logging.warning(f"🚫 RAPID-FIRE DUPLICATE BLOCKED: {symbol} {action}")
-            logging.warning(f"🚫 Identical alert received {time_diff:.1f} seconds ago")
-            return True
+    # Block identical alerts until trade completion
+    if symbol in last_alert and last_alert[symbol]["alert_hash"] == alert_hash:
+        logging.warning(f"🚫 DUPLICATE ALERT BLOCKED: {symbol} {action}")
+        return True
    
-    # 🔥 REMOVED: Direction-based blocking - allow all direction changes
-    # 🔥 REMOVED: Post-completion blocking - allow immediate new signals
-    # This enables full automated trading with position flattening
-   
-    # Update tracking for rapid-fire detection only
-    last_alert[symbol] = {
-        "direction": action.lower(),
-        "timestamp": current_time,
-        "alert_hash": alert_hash
-    }
-   
-    logging.info(f"✅ ALERT ACCEPTED: {symbol} {action} - Automated trading enabled")
+    # New alert: track it
+    last_alert[symbol] = {"direction": action.lower(), "timestamp": current_time, "alert_hash": alert_hash}
+    logging.info(f"✅ ALERT ACCEPTED: {symbol} {action}")
     return False
 
 
@@ -428,6 +412,12 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
 @app.post("/webhook")
 async def webhook(req: Request):
     logging.info("=== WEBHOOK ENDPOINT HIT ===")
+    # Validate webhook secret if configured
+    if WEBHOOK_SECRET:
+        header_secret = req.headers.get("X-Webhook-Secret")
+        if header_secret != WEBHOOK_SECRET:
+            logging.warning(f"Unauthorized webhook call: invalid secret header: {header_secret}")
+            raise HTTPException(status_code=401, detail="Unauthorized")
     try:
         # Parse the incoming request
         content_type = req.headers.get("content-type")
