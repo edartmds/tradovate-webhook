@@ -540,6 +540,9 @@ async def webhook(req: Request):
         try:
             await cancel_all_orders(symbol)
             logging.info("✅ Previous orders for symbol cancelled successfully")
+            # Wait for any cancellations to complete
+            await wait_until_no_open_orders(symbol)
+            logging.info(f"✅ Confirmed no open orders remain for {symbol}")
         except Exception as e:
             logging.warning(f"Failed to cancel existing orders for {symbol}: {e}")
         # STEP 3: Place entry order with automatic bracket orders (OSO)
