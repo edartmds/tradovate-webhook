@@ -41,6 +41,8 @@ logging.basicConfig(
 
 app = FastAPI()
 client = TradovateClient()
+# Dictionary of asyncio locks per symbol to serialize webhook handling and prevent race conditions
+symbol_locks = {}
 
 
 
@@ -486,38 +488,30 @@ async def webhook(req: Request):
         logging.info(f"🔄 STRATEGY REVERSAL: Flipped T1 from {original_t1} to {t1}")
         logging.info(f"🔄 STRATEGY REVERSAL: Flipped STOP from {original_stop} to {stop}")
        
-        # 🔥 MINIMAL DUPLICATE DETECTION - Only prevent rapid-fire identical alerts
-        logging.info("🔍 === CHECKING FOR RAPID-FIRE DUPLICATES ONLY ===")
-        cleanup_old_tracking_data()  # Clean up old data first
-       
-        if is_duplicate_alert(symbol, action, data):
-            logging.warning(f"🚫 RAPID-FIRE DUPLICATE BLOCKED: {symbol} {action}")
-            logging.warning(f"🚫 Reason: Identical alert within 30 seconds")
-            return {
-                "status": "rejected",
-                "reason": "rapid_fire_duplicate",
-                "message": f"Rapid-fire duplicate alert blocked for {symbol} {action}"
-            }
-       
-        logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
-          # Determine optimal order type based on current market conditions
-        logging.info("🔍 Analyzing market conditions for optimal order type...")
-        try:
-            # Always use Limit orders for entry (modified strategy)
-            order_config = await client.determine_optimal_order_type(symbol, action, price)
-            order_type = order_config["orderType"]  # Will be "Limit"
-            order_price = order_config.get("price")
-           
-            logging.info(f"💡 USING LIMIT ORDER TYPE: {order_type}")
-            logging.info(f"📊 LIMIT ORDER: Will execute at price {order_price}")
-               
-        except Exception as e:
-            # 🔥 FALLBACK: If intelligent selection fails, default to Limit order
-            logging.warning(f"⚠️ Intelligent order type selection failed: {e}")
-            logging.info("🔄 FALLBACK: Using Limit order entry")
+        # Ensure sequential handling per symbol to prevent race conditions
+        lock = symbol_locks.setdefault(symbol, asyncio.Lock())
+        logging.info(f"📌 Waiting for lock for symbol {symbol}")
+        async with lock:
+            logging.info(f"🔒 Acquired lock for {symbol}")
+            # 🔥 MINIMAL DUPLICATE DETECTION - Only prevent rapid-fire identical alerts
+            logging.info("🔍 === CHECKING FOR RAPID-FIRE DUPLICATES ONLY ===")
+            cleanup_old_tracking_data()  # Clean up old data first
+
+            if is_duplicate_alert(symbol, action, data):
+                logging.warning(f"🚫 RAPID-FIRE DUPLICATE BLOCKED: {symbol} {action}")
+                logging.warning(f"🚫 Reason: Identical alert within 30 seconds")
+                return {
+                    "status": "rejected",
+                    "reason": "rapid_fire_duplicate",
+                    "message": f"Rapid-fire duplicate alert blocked for {symbol} {action}"
+                }
+
+            logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
+            # Determine optimal order type based on current market conditions
+            logging.info("🔍 Forcing Limit order at exact alert price for entry")
             order_type = "Limit"
             order_price = price
-            logging.info(f"🔄 FALLBACK LIMIT ORDER: Will execute at price={order_price}")
+            logging.info(f"📊 LIMIT ORDER: Will execute at exact alert price {order_price}")
        
         # 🔥 REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
         # Every new alert will now automatically flatten existing positions and place new orders
