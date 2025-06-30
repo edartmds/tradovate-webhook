@@ -638,23 +638,6 @@ async def webhook(req: Request):
             if "price is already at or past this level" in error_msg:
                 logging.error("🎯 PRICE LEVEL ERROR: The intelligent order type selection may need adjustment")
                 logging.error(f"🎯 Entry price: {price}, Current market data needed for diagnosis")
-                # Fallback: retry OSO without stop-loss bracket when stop price too close
-                logging.warning("🎯 STOP-PRICE CLOSE ERROR: retrying OSO without stop-loss bracket")
-                fallback_payload = oso_payload.copy()
-                fallback_payload.pop("bracket2", None)
-                try:
-                    fallback_result = await client.place_oso_order(fallback_payload)
-                    logging.info(f"✅ RETRY OSO WITHOUT STOP SUCCESS: {fallback_result}")
-                    return {
-                        "status": "success_partial",
-                        "order": fallback_result,
-                        "execution_time_ms": execution_time,
-                        "order_type": order_type,
-                        "symbol": symbol,
-                        "note": "stop-loss bracket omitted due to proximity"
-                    }
-                except Exception as retry_e:
-                    logging.error(f"❌ RETRY WITHOUT STOP FAILED: {retry_e}")
             elif "insufficient buying power" in error_msg:
                 logging.error("💰 MARGIN ERROR: Insufficient buying power for position size")
             elif "invalid symbol" in error_msg:
