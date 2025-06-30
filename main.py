@@ -20,8 +20,8 @@ DUPLICATE_THRESHOLD_SECONDS = 30  # 30 seconds - only prevent rapid-fire identic
 COMPLETED_TRADE_COOLDOWN = 30  # 30 seconds - minimal cooldown for automated trading
 
 
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
-logging.info(f"Loaded WEBHOOK_SECRET: {WEBHOOK_SECRET}")
+WEBHOOK_SECRET = None  # Secret validation disabled globally
+# logging.info(f"Loaded WEBHOOK_SECRET: {WEBHOOK_SECRET}")
 
 
 LOG_DIR = "logs"
@@ -412,12 +412,6 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
 @app.post("/webhook")
 async def webhook(req: Request):
     logging.info("=== WEBHOOK ENDPOINT HIT ===")
-    # Validate webhook secret (strict)
-    if WEBHOOK_SECRET:
-        header_secret = req.headers.get("X-Webhook-Secret")
-        if header_secret != WEBHOOK_SECRET:
-            logging.warning(f"Unauthorized webhook call: missing or invalid secret header: {header_secret}")
-            raise HTTPException(status_code=401, detail="Unauthorized")
     try:
         # Parse the incoming request
         content_type = req.headers.get("content-type")
