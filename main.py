@@ -20,8 +20,8 @@ DUPLICATE_THRESHOLD_SECONDS = 30  # 30 seconds - only prevent rapid-fire identic
 COMPLETED_TRADE_COOLDOWN = 30  # 30 seconds - minimal cooldown for automated trading
 
 
-WEBHOOK_SECRET = None  # Secret validation disabled globally
-# logging.info(f"Loaded WEBHOOK_SECRET: {WEBHOOK_SECRET}")
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
+logging.info(f"Loaded WEBHOOK_SECRET: {WEBHOOK_SECRET}")
 
 
 LOG_DIR = "logs"
@@ -209,14 +209,30 @@ def is_duplicate_alert(symbol: str, action: str, data: dict) -> bool:
     current_time = datetime.now()
     alert_hash = hash_alert(data)
    
-    # Block identical alerts until trade completion
-    if symbol in last_alert and last_alert[symbol]["alert_hash"] == alert_hash:
-        logging.warning(f"🚫 DUPLICATE ALERT BLOCKED: {symbol} {action}")
-        return True
+    # ONLY Check for rapid-fire identical alerts (same exact parameters)
+    if symbol in last_alert:
+        last_alert_data = last_alert[symbol]
+        time_diff = (current_time - last_alert_data["timestamp"]).total_seconds()
+       
+        # Only block if EXACT same alert within 30 seconds
+        if (last_alert_data.get("alert_hash") == alert_hash and
+            time_diff < DUPLICATE_THRESHOLD_SECONDS):
+            logging.warning(f"🚫 RAPID-FIRE DUPLICATE BLOCKED: {symbol} {action}")
+            logging.warning(f"🚫 Identical alert received {time_diff:.1f} seconds ago")
+            return True
    
-    # New alert: track it
-    last_alert[symbol] = {"direction": action.lower(), "timestamp": current_time, "alert_hash": alert_hash}
-    logging.info(f"✅ ALERT ACCEPTED: {symbol} {action}")
+    # 🔥 REMOVED: Direction-based blocking - allow all direction changes
+    # 🔥 REMOVED: Post-completion blocking - allow immediate new signals
+    # This enables full automated trading with position flattening
+   
+    # Update tracking for rapid-fire detection only
+    last_alert[symbol] = {
+        "direction": action.lower(),
+        "timestamp": current_time,
+        "alert_hash": alert_hash
+    }
+   
+    logging.info(f"✅ ALERT ACCEPTED: {symbol} {action} - Automated trading enabled")
     return False
 
 
@@ -422,13 +438,6 @@ async def webhook(req: Request):
 
         if content_type == "application/json":
             data = await req.json()
-            # Convert numeric fields from JSON to floats for exact price levels
-            for field in ["PRICE", "T1", "STOP"]:
-                if field in data:
-                    try:
-                        data[field] = float(data[field])
-                    except (ValueError, TypeError):
-                        logging.warning(f"Could not convert field {field} to float: {data.get(field)}")
         elif content_type.startswith("text/plain"):
             text_data = raw_body.decode("utf-8")
             data = parse_alert_to_tradovate_json(text_data, client.account_id)
@@ -491,11 +500,24 @@ async def webhook(req: Request):
             }
        
         logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
-        # Use the exact alert price as Limit entry to match indicator levels precisely
-        logging.info("🔍 USING ALERT PRICE FOR LIMIT ENTRY EXACTLY")
-        order_type = "Limit"
-        order_price = price
-        logging.info(f"📊 LIMIT ENTRY AT ALERT PRICE: {order_price}")
+          # Determine optimal order type based on current market conditions
+        logging.info("🔍 Analyzing market conditions for optimal order type...")
+        try:
+            # Always use Limit orders for entry (modified strategy)
+            order_config = await client.determine_optimal_order_type(symbol, action, price)
+            order_type = order_config["orderType"]  # Will be "Limit"
+            order_price = order_config.get("price")
+           
+            logging.info(f"💡 USING LIMIT ORDER TYPE: {order_type}")
+            logging.info(f"📊 LIMIT ORDER: Will execute at price {order_price}")
+               
+        except Exception as e:
+            # 🔥 FALLBACK: If intelligent selection fails, default to Limit order
+            logging.warning(f"⚠️ Intelligent order type selection failed: {e}")
+            logging.info("🔄 FALLBACK: Using Limit order entry")
+            order_type = "Limit"
+            order_price = price
+            logging.info(f"🔄 FALLBACK LIMIT ORDER: Will execute at price={order_price}")
        
         # 🔥 REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
         # Every new alert will now automatically flatten existing positions and place new orders
@@ -580,12 +602,8 @@ async def webhook(req: Request):
         }
        
         # 🔥 ENTRY PRICE: Always set the limit entry price
-        # Set the entry price as string to ensure exact tick placement
-        oso_payload["price"] = str(order_price)
+        oso_payload["price"] = order_price
         logging.info(f"🎯 ENTRY LIMIT PRICE set to {order_price}")
-        # Force bracket target prices as string to match exact alert levels
-        oso_payload["bracket1"]["price"] = str(t1)
-        oso_payload["bracket2"]["stopPrice"] = str(stop)
        
         logging.info(f"=== OSO PAYLOAD ===")
         logging.info(f"{json.dumps(oso_payload, indent=2)}")        # STEP 4: Place OSO bracket order with speed optimizations
