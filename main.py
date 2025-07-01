@@ -508,10 +508,22 @@ async def webhook(req: Request):
 
             logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
             # Determine optimal order type based on current market conditions
-            logging.info("🔍 Forcing Limit order at exact alert price for entry")
-            order_type = "Limit"
-            order_price = price
-            logging.info(f"📊 LIMIT ORDER: Will execute at exact alert price {order_price}")
+            logging.info("🔍 Analyzing market conditions for optimal order type...")
+            try:
+                order_config = await client.determine_optimal_order_type(symbol, action, price)
+                order_type = order_config["orderType"]
+                order_price = order_config.get("price")
+                stop_price = order_config.get("stopPrice")
+                logging.info(f"💡 OPTIMAL ORDER TYPE: {order_type}")
+                if order_type.lower() == "stop":
+                    logging.info(f"📊 STOP ORDER: Will trigger when price reaches {stop_price}")
+                else:
+                    logging.info(f"📊 LIMIT ORDER: Will execute at price {order_price}")
+            except Exception as e:
+                logging.warning(f"⚠️ Intelligent order type selection failed: {e}")
+                order_type = "Limit"
+                order_price = price
+                stop_price = None
        
         # 🔥 REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
         # Every new alert will now automatically flatten existing positions and place new orders
@@ -532,11 +544,10 @@ async def webhook(req: Request):
         # STEP 2: Cancel existing orders to avoid duplicates
         logging.info("=== CANCELLING ALL PENDING ORDERS ===")
         try:
-            # Generic cancellation of all pending orders
             cancelled = await client.cancel_all_pending_orders()
-            logging.info(f"✅ client.cancel_all_pending_orders removed {len(cancelled)} orders")
+            logging.info(f"Successfully cancelled {len(cancelled)} pending orders")
         except Exception as e:
-            logging.warning(f"Generic cancel_all_pending_orders failed: {e}")
+            logging.warning(f"Failed to cancel some orders: {e}")
         # Wait for orders to clear
         await wait_until_no_open_orders(symbol)
         logging.info(f"✅ No open orders remain after generic cancel for {symbol}")
@@ -595,9 +606,13 @@ async def webhook(req: Request):
             }
         }
        
-        # 🔥 ENTRY PRICE: Always set the limit entry price
-        oso_payload["price"] = order_price
-        logging.info(f"🎯 ENTRY LIMIT PRICE set to {order_price}")
+        # Use dynamic price fields
+        if order_type.lower() == "stop":
+            oso_payload["stopPrice"] = stop_price
+            logging.info(f"🎯 STOP ENTRY at stopPrice={stop_price}")
+        else:
+            oso_payload["price"] = order_price
+            logging.info(f"🎯 LIMIT ENTRY at price={order_price}")
        
         logging.info(f"=== OSO PAYLOAD ===")
         logging.info(f"{json.dumps(oso_payload, indent=2)}")        # STEP 4: Place OSO bracket order with speed optimizations
