@@ -507,23 +507,10 @@ async def webhook(req: Request):
                 }
 
             logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
-            # Determine optimal order type based on current market conditions
-            logging.info("🔍 Analyzing market conditions for optimal order type...")
-            try:
-                order_config = await client.determine_optimal_order_type(symbol, action, price)
-                order_type = order_config["orderType"]
-                order_price = order_config.get("price")
-                stop_price = order_config.get("stopPrice")
-                logging.info(f"💡 OPTIMAL ORDER TYPE: {order_type}")
-                if order_type.lower() == "stop":
-                    logging.info(f"📊 STOP ORDER: Will trigger when price reaches {stop_price}")
-                else:
-                    logging.info(f"📊 LIMIT ORDER: Will execute at price {order_price}")
-            except Exception as e:
-                logging.warning(f"⚠️ Intelligent order type selection failed: {e}")
-                order_type = "Limit"
-                order_price = price
-                stop_price = None
+            # Force Limit entry at the exact alert price
+            order_type = "Limit"
+            order_price = price
+            logging.info(f"🎯 FORCE LIMIT ENTRY at exact price {order_price}")
        
         # 🔥 REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
         # Every new alert will now automatically flatten existing positions and place new orders
@@ -606,13 +593,9 @@ async def webhook(req: Request):
             }
         }
        
-        # Use dynamic price fields
-        if order_type.lower() == "stop":
-            oso_payload["stopPrice"] = stop_price
-            logging.info(f"🎯 STOP ENTRY at stopPrice={stop_price}")
-        else:
-            oso_payload["price"] = order_price
-            logging.info(f"🎯 LIMIT ENTRY at price={order_price}")
+        # Force Limit entry at the exact alert price
+        oso_payload["price"] = order_price
+        logging.info(f"🎯 LIMIT ENTRY at exact price={order_price}")
        
         logging.info(f"=== OSO PAYLOAD ===")
         logging.info(f"{json.dumps(oso_payload, indent=2)}")        # STEP 4: Place OSO bracket order with speed optimizations
