@@ -600,11 +600,10 @@ async def webhook(req: Request):
                 }
 
 
-            logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
-            # Force Limit entry at the exact alert price
-            order_type = "Limit"
-            order_price = price
-            logging.info(f"🎯 FORCE LIMIT ENTRY at exact price {order_price}")
+            logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")        # Use Stop order for entry to properly handle market breakouts
+        order_type = "Stop"
+        order_price = price
+        logging.info(f"🎯 STOP ENTRY at breakout price {order_price}")
        
         # 🔥 REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
         # Every new alert will now automatically flatten existing positions and place new orders
@@ -647,20 +646,21 @@ async def webhook(req: Request):
         logging.info(f"✅ Confirmed no open orders remain for {symbol} after all cancellations")
         # STEP 3: Place entry order with automatic bracket orders (OSO)
         logging.info(f"=== PLACING OSO BRACKET ORDER WITH LIMIT ENTRY ===")
-        logging.info(f"Symbol: {symbol}, Order Type: {order_type}, Entry: {order_price}, TP: {t1}, SL: {stop}")
+        logging.info(f"Symbol: {symbol}, Order Type: {order_type}, Entry Stop: {order_price}, TP: {t1}, SL: {stop}")
        
-        logging.info("📊 LIMIT entry order - using standard execution path")
+        logging.info("📊 STOP entry order - using breakout execution strategy")
        
         # Determine opposite action for take profit and stop loss
         opposite_action = "Sell" if action.lower() == "buy" else "Buy"
-          # Build OSO payload with intelligent order type selection
+        # Use Stop order for entry with stopPrice
         oso_payload = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
             "action": action.capitalize(),  # "Buy" or "Sell"
             "symbol": symbol,
             "orderQty": 1,
-            "orderType": order_type,   # "Limit"
+            "orderType": order_type,   # "Stop"
+            "stopPrice": order_price,  # Use stopPrice for Stop orders
             "timeInForce": "GTC",
             "isAutomated": True,
             # Take Profit bracket (bracket1)
@@ -689,10 +689,8 @@ async def webhook(req: Request):
             }
         }
        
-        # Force Limit entry at the exact alert price
-        oso_payload["price"] = order_price
-        logging.info(f"🎯 LIMIT ENTRY at exact price={order_price}")
-       
+        logging.info(f"🎯 STOP ENTRY at breakout price={order_price}")
+        
         logging.info(f"=== OSO PAYLOAD ===")
         logging.info(f"{json.dumps(oso_payload, indent=2)}")        # STEP 4: Place OSO bracket order with speed optimizations
         logging.info("=== PLACING OSO BRACKET ORDER ===")
