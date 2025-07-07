@@ -514,66 +514,62 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
 
 @app.post("/webhook")
 async def webhook(req: Request):
-    """Handle TradingView alert: place OSO bracket order with forced limit entry."""
-    # Parse incoming request
-    content_type = req.headers.get("content-type")
-    raw = await req.body()
-    if content_type == "application/json":
+    logging.info("=== WEBHOOK ENDPOINT HIT ===")
+    # Parse incoming request body
+    if req.headers.get("content-type") == "application/json":
         data = await req.json()
     else:
-        text = raw.decode("utf-8")
+        text = (await req.body()).decode("utf-8")
         data = parse_alert_to_tradovate_json(text, client.account_id)
 
-    # Extract alert fields
+    # Extract and log alert fields
     symbol = data.get("symbol")
     action = data.get("action")
     price = data.get("PRICE")
     t1 = data.get("T1")
     stop = data.get("STOP")
+    logging.info(f"Parsed alert fields - symbol: {symbol}, action: {action}, price: {price}, t1: {t1}, stop: {stop}")
     if not all([symbol, action, price, t1, stop]):
-        raise HTTPException(status_code=400, detail="Missing required alert fields")
+        raise HTTPException(status_code=400, detail="Missing alert fields")
 
-    # Strategy reversal: flip action and targets
-    original_action = action
-    original_t1 = t1
-    original_stop = stop
-    action = "Sell" if original_action.lower() == "buy" else "Buy"
-    t1, stop = original_stop, original_t1
-
-    # Ensure sequential processing per symbol
+    # Lock per symbol
     lock = symbol_locks.setdefault(symbol, asyncio.Lock())
     async with lock:
         cleanup_old_tracking_data()
         if is_duplicate_alert(symbol, action, data):
-            return {"status": "rejected", "reason": "rapid_fire_duplicate"}
-        order_type = "Limit"
+            return {"status": "rejected", "reason": "duplicate"}
         order_price = price
 
-    # Flatten positions and cancel existing orders
+    # Close and cancel existing
     await client.force_close_all_positions_immediately()
     await client.cancel_all_pending_orders()
     await wait_until_no_open_orders(symbol)
     await cancel_all_orders(symbol)
     await wait_until_no_open_orders(symbol)
 
-    # Build OSO bracket payload with limit entry at alert price
+    # Build OSO with limit entry
     opposite = "Sell" if action.lower() == "buy" else "Buy"
-    oso_payload = {
+    payload = {
         "accountSpec": client.account_spec,
         "accountId": client.account_id,
-        "action": action,
+        "action": action.capitalize(),
         "symbol": symbol,
         "orderQty": 1,
-        "orderType": order_type,
+        "orderType": "Limit",
         "price": order_price,
         "timeInForce": "GTC",
         "isAutomated": True,
         "bracket1": {"action": opposite, "orderType": "Limit", "price": t1, "timeInForce": "GTC"},
         "bracket2": {"action": opposite, "orderType": "Stop", "stopPrice": stop, "timeInForce": "GTC"}
     }
-    result = await client.place_oso_order(oso_payload)
-    return {"status": "success", "order": result}
-
+    logging.info(f"Placing OSO payload: {json.dumps(payload)}")
+    try:
+        result = await client.place_oso_order(payload)
+        logging.info(f"OSO response: {result}")
+        return {"status": "success", "order": result}
+    except Exception as e:
+        logging.error(f"OSO failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 
