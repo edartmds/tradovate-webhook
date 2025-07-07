@@ -667,8 +667,8 @@ async def webhook(req: Request):
         }
         
         # Force Limit entry at the exact alert price
-        oso_payload["price"] = order_price
-        logging.info(f"🎯 LIMIT ENTRY at exact price={order_price}")
+        oso_payload["price"] = price  # Use the PRICE from alert, not order_price variable
+        logging.info(f"🎯 LIMIT ENTRY at exact price={price}")
         
         logging.info(f"=== OSO PAYLOAD ===")
         logging.info(f"{json.dumps(oso_payload, indent=2)}")
