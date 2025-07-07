@@ -12,8 +12,6 @@ import httpx
 import hashlib
 
 
-
-
 # 🔥 RELAXED DUPLICATE DETECTION FOR AUTOMATED TRADING
 last_alert = {}  # {symbol: {"direction": "buy"/"sell", "timestamp": datetime, "alert_hash": str}}
 completed_trades = {}  # {symbol: {"last_completed_direction": "buy"/"sell", "completion_time": datetime}}
@@ -22,17 +20,13 @@ DUPLICATE_THRESHOLD_SECONDS = 30  # 30 seconds - only prevent rapid-fire identic
 COMPLETED_TRADE_COOLDOWN = 30  # 30 seconds - minimal cooldown for automated trading
 
 
-
-
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 logging.info(f"Loaded WEBHOOK_SECRET: {WEBHOOK_SECRET}")
 
 
 
-
 LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
-
 
 
 
@@ -47,18 +41,10 @@ logging.basicConfig(
 )
 
 
-
-
 app = FastAPI()
 client = TradovateClient()
 # Dictionary of asyncio locks per symbol to serialize webhook handling and prevent race conditions
 symbol_locks = {}
-
-
-
-
-
-
 
 
 @app.on_event("startup")
@@ -89,12 +75,6 @@ async def startup_event():
         import traceback
         logging.error(f"Traceback: {traceback.format_exc()}")
         raise
-
-
-
-
-
-
 
 
 async def cancel_all_orders(symbol):
@@ -131,15 +111,11 @@ async def cancel_all_orders(symbol):
             logging.error(f"After repeated cancel attempts, still found open orders for {symbol}: {[o.get('id') for o in open_orders]} (statuses: {[o.get('status') for o in open_orders]})")
 
 
-
-
 async def flatten_position(symbol):
     url = f"https://demo-api.tradovate.com/v1/position/closeposition"
     headers = {"Authorization": f"Bearer {client.access_token}"}
     async with httpx.AsyncClient() as http_client:
         await http_client.post(url, headers=headers, json={"symbol": symbol})
-
-
 
 
 async def wait_until_no_open_orders(symbol, timeout=10):
@@ -163,8 +139,6 @@ async def wait_until_no_open_orders(symbol, timeout=10):
         await asyncio.sleep(0.5)
 
 
-
-
 def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
     logging.info(f"Raw alert text: {alert_text}")
     parsed_data = {}
@@ -176,8 +150,6 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
             alert_text = remaining_text
         except (json.JSONDecodeError, ValueError) as e:
             raise ValueError(f"Error parsing JSON-like structure: {e}")
-
-
 
 
     for line in alert_text.split("\n"):
@@ -192,10 +164,7 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
             logging.info(f"Parsed action = {parsed_data['action']}")
 
 
-
-
     logging.info(f"Complete parsed alert data: {parsed_data}")
-
 
 
 
@@ -205,18 +174,13 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
             raise ValueError(f"Missing or invalid field: {field}")
 
 
-
-
     for target in ["T1", "STOP", "PRICE"]:
         if target in parsed_data:
             parsed_data[target] = float(parsed_data[target])
             logging.info(f"Converted {target} to float: {parsed_data[target]}")
 
 
-
-
     return parsed_data
-
 
 
 
@@ -234,8 +198,6 @@ def hash_alert(data: dict) -> str:
     return hashlib.sha256(alert_string.encode()).hexdigest()
 
 
-
-
 def is_duplicate_alert(symbol: str, action: str, data: dict) -> bool:
     """
     🔥 RELAXED DUPLICATE DETECTION FOR AUTOMATED TRADING
@@ -249,27 +211,17 @@ def is_duplicate_alert(symbol: str, action: str, data: dict) -> bool:
     current_time = datetime.now()
     alert_hash = hash_alert(data)
    
-    # ALWAYS ALLOW THE FIRST ALERT after startup/redeployment
-    if symbol not in last_alert:
-        logging.info(f"🆕 FIRST ALERT for {symbol}: {action} - Always allowed")
-        # Update tracking for future alerts
-        last_alert[symbol] = {
-            "direction": action.lower(),
-            "timestamp": current_time,
-            "alert_hash": alert_hash
-        }
-        return False
-   
     # ONLY Check for rapid-fire identical alerts (same exact parameters)
-    last_alert_data = last_alert[symbol]
-    time_diff = (current_time - last_alert_data["timestamp"]).total_seconds()
-   
-    # Only block if EXACT same alert within 30 seconds
-    if (last_alert_data.get("alert_hash") == alert_hash and
-        time_diff < DUPLICATE_THRESHOLD_SECONDS):
-        logging.warning(f"🚫 RAPID-FIRE DUPLICATE BLOCKED: {symbol} {action}")
-        logging.warning(f"🚫 Identical alert received {time_diff:.1f} seconds ago")
-        return True
+    if symbol in last_alert:
+        last_alert_data = last_alert[symbol]
+        time_diff = (current_time - last_alert_data["timestamp"]).total_seconds()
+       
+        # Only block if EXACT same alert within 30 seconds
+        if (last_alert_data.get("alert_hash") == alert_hash and
+            time_diff < DUPLICATE_THRESHOLD_SECONDS):
+            logging.warning(f"🚫 RAPID-FIRE DUPLICATE BLOCKED: {symbol} {action}")
+            logging.warning(f"🚫 Identical alert received {time_diff:.1f} seconds ago")
+            return True
    
     # 🔥 REMOVED: Direction-based blocking - allow all direction changes
     # 🔥 REMOVED: Post-completion blocking - allow immediate new signals
@@ -284,8 +236,6 @@ def is_duplicate_alert(symbol: str, action: str, data: dict) -> bool:
    
     logging.info(f"✅ ALERT ACCEPTED: {symbol} {action} - Automated trading enabled")
     return False
-
-
 
 
 def mark_trade_completed(symbol: str, direction: str):
@@ -318,8 +268,6 @@ def cleanup_old_tracking_data():
         del completed_trades[symbol]
 
 
-
-
 # Direct API function to place a stop loss order (DEPRECATED - using OCO/OSO instead)
 async def place_stop_loss_order_legacy(stop_order_data):
     """
@@ -339,19 +287,13 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
     max_monitoring_time = 3600  # 1 hour timeout
 
 
-
-
     if not stop_order_data:
         logging.error("CRITICAL: No stop_order_data provided when starting monitoring")
     else:
         logging.info(f"Will use this STOP data when entry fills: {stop_order_data}")
 
 
-
-
     poll_interval = 1
-
-
 
 
     while True:
@@ -361,13 +303,9 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
             logging.info(f"Order tracking state: {order_tracking}")
 
 
-
-
             for label, order_id in order_tracking.items():
                 if order_id is None:
                     continue
-
-
 
 
                 url = f"https://demo-api.tradovate.com/v1/order/{order_id}"
@@ -377,18 +315,11 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                     order_status = response.json()
 
 
-
-
                 status = order_status.get("status")
-
-
-
 
                 if label == "ENTRY" and status and status.lower() == "filled" and not entry_filled:
                     entry_filled = True
                     logging.info(f"ENTRY order filled for {symbol}. Placing STOP and TP orders.")
-
-
 
 
                     if stop_order_data and "T1" in stop_order_data:
@@ -410,8 +341,6 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                         }
 
 
-
-
                         try:
                             async with httpx.AsyncClient() as http_client:
                                 response = await http_client.post(
@@ -421,8 +350,6 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                                 )
                                 response.raise_for_status()
                                 oso_result = response.json()
-
-
 
 
                                 if "orderId" in oso_result:
@@ -435,13 +362,10 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
 
 
 
-
                 elif label == "STOP" and status and status.lower() == "filled":
                     logging.info(f"STOP order filled for {symbol}. Exiting trade.")
                     trade_direction = stop_order_data.get("action", "unknown") if stop_order_data else "unknown"
                     mark_trade_completed(symbol, trade_direction)
-
-
 
 
                     if order_tracking.get("TP1"):
@@ -458,13 +382,10 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                     return
 
 
-
-
                 elif label == "TP1" and status and status.lower() == "filled":
                     logging.info(f"TP1 order filled for {symbol}. Trade completed successfully.")
                     trade_direction = stop_order_data.get("action", "unknown") if stop_order_data else "unknown"
                     mark_trade_completed(symbol, trade_direction)
-
 
 
 
@@ -483,11 +404,8 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
 
 
 
-
                 elif status in ["Working", "Accepted"]:
                     active_orders[label] = order_id
-
-
 
 
             if asyncio.get_event_loop().time() - monitoring_start_time > max_monitoring_time:
@@ -495,30 +413,18 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                 return
 
 
-
-
             if not active_orders:
                 logging.info("No active orders remaining. Stopping monitoring.")
                 return
-
-
 
 
             poll_interval = 0.5 if not entry_filled else 1
             await asyncio.sleep(poll_interval)
 
 
-
-
         except Exception as e:
             logging.error(f"Error in order monitoring: {e}")
             await asyncio.sleep(2)
-
-
-
-
-
-
 
 
 @app.post("/webhook")
@@ -532,8 +438,6 @@ async def webhook(req: Request):
         logging.info(f"Raw body: {raw_body.decode('utf-8')}")
 
 
-
-
         if content_type == "application/json":
             data = await req.json()
         elif content_type.startswith("text/plain"):
@@ -542,8 +446,6 @@ async def webhook(req: Request):
         else:
             logging.error(f"Unsupported content type: {content_type}")
             raise HTTPException(status_code=400, detail="Unsupported content type")
-
-
 
 
         logging.info(f"=== PARSED ALERT DATA: {data} ===")
@@ -556,10 +458,7 @@ async def webhook(req: Request):
         stop = data.get("STOP")
 
 
-
-
         logging.info(f"Extracted fields - Symbol: {symbol}, Action: {action}, Price: {price}, T1: {t1}, Stop: {stop}")
-
 
 
 
@@ -573,17 +472,32 @@ async def webhook(req: Request):
             symbol = "NQU5"  # Changed from NQM5 to NQU5
             logging.info(f"Mapped symbol to: {symbol}")
            
-        # � DUPLICATE DETECTION BEFORE STRATEGY REVERSAL - Check using original alert data
-        logging.info("🔍 === CHECKING FOR RAPID-FIRE DUPLICATES (BEFORE REVERSAL) ===")
-        cleanup_old_tracking_data()  # Clean up old data first
-        
+        # 🔄 STRATEGY REVERSAL: Flip the order direction and price targets
+        # If original was BUY, we'll SELL and vice versa
+        original_action = action
+        original_t1 = t1
+        original_stop = stop
+       
+        # Flip the direction: Buy becomes Sell, Sell becomes Buy
+        action = "Sell" if original_action.lower() == "buy" else "Buy"
+       
+        # Flip the targets: STOP becomes T1, T1 becomes STOP
+        t1 = original_stop
+        stop = original_t1
+       
+        logging.info(f"🔄 STRATEGY REVERSAL: Flipped {original_action} to {action}")
+        logging.info(f"🔄 STRATEGY REVERSAL: Flipped T1 from {original_t1} to {t1}")
+        logging.info(f"🔄 STRATEGY REVERSAL: Flipped STOP from {original_stop} to {stop}")
+       
         # Ensure sequential handling per symbol to prevent race conditions
         lock = symbol_locks.setdefault(symbol, asyncio.Lock())
         logging.info(f"📌 Waiting for lock for symbol {symbol}")
         async with lock:
             logging.info(f"🔒 Acquired lock for {symbol}")
-            
-            # Check for duplicates using ORIGINAL alert data (before reversal)
+            # 🔥 MINIMAL DUPLICATE DETECTION - Only prevent rapid-fire identical alerts
+            logging.info("🔍 === CHECKING FOR RAPID-FIRE DUPLICATES ONLY ===")
+            cleanup_old_tracking_data()  # Clean up old data first
+
             if is_duplicate_alert(symbol, action, data):
                 logging.warning(f"🚫 RAPID-FIRE DUPLICATE BLOCKED: {symbol} {action}")
                 logging.warning(f"🚫 Reason: Identical alert within 30 seconds")
@@ -592,42 +506,12 @@ async def webhook(req: Request):
                     "reason": "rapid_fire_duplicate",
                     "message": f"Rapid-fire duplicate alert blocked for {symbol} {action}"
                 }
-                
-            logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with strategy reversal")
-           
-            # 🔄 STRATEGY REVERSAL: Flip the order direction and price targets
-            # If original was BUY, we'll SELL and vice versa
-            original_action = action
-            original_t1 = t1
-            original_stop = stop
-           
-            # Flip the direction: Buy becomes Sell, Sell becomes Buy
-            action = "Sell" if original_action.lower() == "buy" else "Buy"
-           
-            # Flip the targets: STOP becomes T1, T1 becomes STOP
-            t1 = original_stop
-            stop = original_t1
-           
-            logging.info(f"🔄 STRATEGY REVERSAL: Flipped {original_action} to {action}")
-            logging.info(f"🔄 STRATEGY REVERSAL: Flipped T1 from {original_t1} to {t1}")
-            logging.info(f"🔄 STRATEGY REVERSAL: Flipped STOP from {original_stop} to {stop}")
 
-            
-            # Intelligent order type selection based on alert strategy
-            # Since we can't easily get real-time market data, use the strategy context from the alert
-            order_price = price  # Always use exact alert PRICE
-            
-            # Default strategy: Use Stop orders for breakout entries to prevent immediate fills
-            # This is safer than Limit orders which can fill immediately if price has moved past the level
-            order_type = "Stop"
-            
-            if action.lower() == "buy":
-                logging.info(f"🎯 BUY ENTRY: Using Stop order at {price} to wait for breakout confirmation")
-            else:  # SELL
-                logging.info(f"🎯 SELL ENTRY: Using Stop order at {price} to wait for breakdown confirmation")
-                    
-            logging.info(f"🎯 ENTRY ORDER: {order_type} at exact alert PRICE={order_price}, TP={t1}, SL={stop}")
-            logging.info(f"🎯 This ensures the order waits at the level and doesn't fill immediately")
+            logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
+            # Force Limit entry at the exact alert price
+            order_type = "Limit"
+            order_price = price
+            logging.info(f"🎯 FORCE LIMIT ENTRY at exact price {order_price}")
        
         # 🔥 REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
         # Every new alert will now automatically flatten existing positions and place new orders
@@ -643,8 +527,6 @@ async def webhook(req: Request):
         except Exception as e:
             logging.error(f"❌ CRITICAL ERROR closing positions: {e}")
             # Continue anyway - user wants new orders placed regardless
-
-
 
 
         # STEP 2: Cancel existing orders to avoid duplicates
@@ -669,22 +551,24 @@ async def webhook(req: Request):
         await wait_until_no_open_orders(symbol)
         logging.info(f"✅ Confirmed no open orders remain for {symbol} after all cancellations")
         # STEP 3: Place entry order with automatic bracket orders (OSO)
-        logging.info(f"=== PLACING OSO BRACKET ORDER ===")
+        logging.info(f"=== PLACING OSO BRACKET ORDER WITH LIMIT ENTRY ===")
         logging.info(f"Symbol: {symbol}, Order Type: {order_type}, Entry: {order_price}, TP: {t1}, SL: {stop}")
+       
+        logging.info("📊 LIMIT entry order - using standard execution path")
        
         # Determine opposite action for take profit and stop loss
         opposite_action = "Sell" if action.lower() == "buy" else "Buy"
-          # Build OSO payload with intelligent order type selection and exact alert values
+          # Build OSO payload with intelligent order type selection
         oso_payload = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
             "action": action.capitalize(),  # "Buy" or "Sell"
             "symbol": symbol,
             "orderQty": 1,
-            "orderType": order_type,   # "Limit" or "Stop" based on market conditions
+            "orderType": order_type,   # "Limit"
             "timeInForce": "GTC",
             "isAutomated": True,
-            # Take Profit bracket (bracket1) - Always use exact T1 value
+            # Take Profit bracket (bracket1)
             "bracket1": {
                 "accountSpec": client.account_spec,
                 "accountId": client.account_id,
@@ -692,11 +576,11 @@ async def webhook(req: Request):
                 "symbol": symbol,
                 "orderQty": 1,
                 "orderType": "Limit",
-                "price": t1,  # Exact T1 from alert
+                "price": t1,
                 "timeInForce": "GTC",
                 "isAutomated": True
             },
-            # Stop Loss bracket (bracket2) - Always use exact STOP value
+            # Stop Loss bracket (bracket2)
             "bracket2": {
                 "accountSpec": client.account_spec,
                 "accountId": client.account_id,
@@ -704,22 +588,17 @@ async def webhook(req: Request):
                 "symbol": symbol,
                 "orderQty": 1,
                 "orderType": "Stop",
-                "stopPrice": stop,  # Exact STOP from alert
+                "stopPrice": stop,
                 "timeInForce": "GTC",
                 "isAutomated": True
             }
         }
        
-        # Set entry price based on order type - Always use exact alert PRICE
-        if order_type == "Limit":
-            oso_payload["price"] = order_price  # Exact alert PRICE
-            logging.info(f"🎯 LIMIT ENTRY at exact alert PRICE={order_price}")
-        elif order_type == "Stop":
-            oso_payload["stopPrice"] = order_price  # Exact alert PRICE 
-            logging.info(f"🎯 STOP ENTRY at exact alert PRICE={order_price}")
+        # Force Limit entry at the exact alert price
+        oso_payload["price"] = order_price
+        logging.info(f"🎯 LIMIT ENTRY at exact price={order_price}")
        
         logging.info(f"=== OSO PAYLOAD ===")
-        logging.info(f"Entry: {order_type} at {order_price}, TP: Limit at {t1}, SL: Stop at {stop}")
         logging.info(f"{json.dumps(oso_payload, indent=2)}")        # STEP 4: Place OSO bracket order with speed optimizations
         logging.info("=== PLACING OSO BRACKET ORDER ===")
        
@@ -748,51 +627,24 @@ async def webhook(req: Request):
                 "order": oso_result,
                 "execution_time_ms": execution_time,
                 "order_type": order_type,
-                "entry_price": order_price,
-                "take_profit": t1,
-                "stop_loss": stop,
                 "symbol": symbol
             }
         except Exception as e:
             execution_time = (time.time() - start_time) * 1000 if 'start_time' in locals() else 0
             logging.error(f"❌ OSO placement failed after {execution_time:.2f}ms: {e}")
-            
-            # 🔥 ENHANCED ERROR HANDLING: Provide specific guidance based on error type
+            # 🔥 SMART ERROR HANDLING: Provide specific guidance based on error type
             error_msg = str(e).lower()
-            
-            if "price is already at or past this level" in error_msg or "stop price" in error_msg:
-                logging.error("🎯 PRICE LEVEL ERROR: Entry price conflicts with current market")
-                logging.error(f"🎯 Alert PRICE: {price}, Order type: {order_type}")
-                logging.error(f"🎯 This usually means the market moved past the entry before order placement")
-                logging.error(f"🎯 Solution: Check if alert timing is appropriate or consider using different order type")
-                
-            elif "insufficient buying power" in error_msg or "margin" in error_msg:
+            if "price is already at or past this level" in error_msg:
+                logging.error("🎯 PRICE LEVEL ERROR: The intelligent order type selection may need adjustment")
+                logging.error(f"🎯 Entry price: {price}, Current market data needed for diagnosis")
+            elif "insufficient buying power" in error_msg:
                 logging.error("💰 MARGIN ERROR: Insufficient buying power for position size")
-                logging.error(f"💰 Required for 1 contract of {symbol} with entry at {price}")
-                logging.error(f"💰 Solution: Reduce position size or increase account balance")
-                
-            elif "invalid symbol" in error_msg or "contract" in error_msg:
+            elif "invalid symbol" in error_msg:
                 logging.error(f"📊 SYMBOL ERROR: Contract symbol {symbol} may be expired or invalid")
-                logging.error(f"📊 Original symbol from alert, mapped symbol: {symbol}")
-                logging.error(f"📊 Solution: Update symbol mapping or check contract expiration")
-                
-            elif "duplicate" in error_msg or "existing" in error_msg:
-                logging.error(f"🔄 DUPLICATE ORDER ERROR: Similar order already exists")
-                logging.error(f"🔄 This may indicate incomplete order cancellation")
-                logging.error(f"🔄 Solution: Wait for existing orders to clear or improve cancellation logic")
-                
-            else:
-                logging.error(f"❓ UNKNOWN ERROR TYPE: {error_msg}")
-                logging.error(f"❓ Entry details: {order_type} {action} at {price}, TP: {t1}, SL: {stop}")
-            
             # Log the detailed error for debugging
             import traceback
             logging.error(f"OSO Error traceback: {traceback.format_exc()}")
-            
-            raise HTTPException(
-                status_code=500, 
-                detail=f"OSO order placement failed: {str(e)} | Entry: {order_type} {action} at {price}"
-            )
+            raise HTTPException(status_code=500, detail=f"OSO order placement failed: {str(e)}")
 
 
     except Exception as e:
@@ -803,6 +655,12 @@ async def webhook(req: Request):
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
+
+@app.post("/")
+async def root_post(req: Request):
+    """Accept POST requests at root and handle as webhook"""
+    # Process alert via webhook handler
+    return await webhook(req)
 
 
 @app.get("/")
@@ -819,29 +677,7 @@ async def root():
     }
 
 
-
-
-@app.post("/")
-async def root_post(req: Request):
-    """Handle POST requests to root and redirect to webhook"""
-    logging.warning("POST request received at root path '/' - redirecting to /webhook")
-    logging.info("If you're sending webhooks, please update your URL to include '/webhook' at the end")
-   
-    # Forward the request to the webhook endpoint
-    return await webhook(req)
-
-
-
-
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     uvicorn.run("main:app", host="0.0.0.0", port=port)
-
-
-
-
-
-
-
-
 
