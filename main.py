@@ -753,18 +753,10 @@ async def webhook(req: Request):
 
 
 @app.post("/")
-async def root_post():
-    """Accept POST requests at root without redirect."""
-    # Return health check response for POST /
-    return {
-        "status": "active",
-        "service": "tradovate-webhook",
-        "endpoints": {
-            "webhook": "/webhook",
-            "health": "/"
-        },
-        "message": "Service is running. Use /webhook for POST alerts"
-    }
+async def root_post(req: Request):
+    """Accept POST requests at root and handle as webhook"""
+    # Process alert via webhook handler
+    return await webhook(req)
 
 @app.get("/")
 async def root():
