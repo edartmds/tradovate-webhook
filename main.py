@@ -545,7 +545,13 @@ async def webhook(req: Request):
         t1 = data.get("T1")
         stop = data.get("STOP")
 
+
+
+
         logging.info(f"Extracted fields - Symbol: {symbol}, Action: {action}, Price: {price}, T1: {t1}, Stop: {stop}")
+
+
+
 
         if not all([symbol, action, price, t1, stop]):
             missing = [k for k, v in {"symbol": symbol, "action": action, "PRICE": price, "T1": t1, "STOP": stop}.items() if not v]
@@ -557,12 +563,29 @@ async def webhook(req: Request):
             symbol = "NQU5"  # Changed from NQM5 to NQU5
             logging.info(f"Mapped symbol to: {symbol}")
            
+        # 🔄 STRATEGY REVERSAL: Flip the order direction and price targets
+        # If original was BUY, we'll SELL and vice versa
+        original_action = action
+        original_t1 = t1
+        original_stop = stop
+       
+        # Flip the direction: Buy becomes Sell, Sell becomes Buy
+        action = "Sell" if original_action.lower() == "buy" else "Buy"
+       
+        # Flip the targets: STOP becomes T1, T1 becomes STOP
+        t1 = original_stop
+        stop = original_t1
+       
+        logging.info(f"🔄 STRATEGY REVERSAL: Flipped {original_action} to {action}")
+        logging.info(f"🔄 STRATEGY REVERSAL: Flipped T1 from {original_t1} to {t1}")
+        logging.info(f"🔄 STRATEGY REVERSAL: Flipped STOP from {original_stop} to {stop}")
+       
         # Ensure sequential handling per symbol to prevent race conditions
         lock = symbol_locks.setdefault(symbol, asyncio.Lock())
-        logging.info(f"� Waiting for lock for symbol {symbol}")
+        logging.info(f"📌 Waiting for lock for symbol {symbol}")
         async with lock:
             logging.info(f"🔒 Acquired lock for {symbol}")
-            # �🔥 MINIMAL DUPLICATE DETECTION - Only prevent rapid-fire identical alerts
+            # 🔥 MINIMAL DUPLICATE DETECTION - Only prevent rapid-fire identical alerts
             logging.info("🔍 === CHECKING FOR RAPID-FIRE DUPLICATES ONLY ===")
             cleanup_old_tracking_data()  # Clean up old data first
 
@@ -578,18 +601,10 @@ async def webhook(req: Request):
 
 
             logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
-            
-            # 🎯 SMART ORDER TYPE SELECTION TO AVOID REJECTIONS
-            # Check if this is a breakout (price above/below current market) or pullback
-            
-            # Always use Stop orders for entries to avoid immediate fills
-            # Stop orders wait at the exact price level until triggered
-            order_type = "Stop"
-            entry_price = price  # Use exact PRICE from alert
-            
-            logging.info(f"🎯 STOP ORDER ENTRY at exact price {entry_price}")
-            logging.info(f"🎯 Alert PRICE={price}, T1={t1}, STOP={stop}")
-            logging.info(f"🎯 Entry will trigger when market reaches {entry_price}")
+            # Force Limit entry at the exact alert price
+            order_type = "Limit"
+            order_price = price
+            logging.info(f"🎯 FORCE LIMIT ENTRY at exact price {order_price}")
        
         # 🔥 REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
         # Every new alert will now automatically flatten existing positions and place new orders
@@ -605,6 +620,9 @@ async def webhook(req: Request):
         except Exception as e:
             logging.error(f"❌ CRITICAL ERROR closing positions: {e}")
             # Continue anyway - user wants new orders placed regardless
+
+
+
 
         # STEP 2: Cancel existing orders to avoid duplicates
         logging.info("=== CANCELLING ALL PENDING ORDERS ===")
@@ -627,24 +645,22 @@ async def webhook(req: Request):
         # Final wait
         await wait_until_no_open_orders(symbol)
         logging.info(f"✅ Confirmed no open orders remain for {symbol} after all cancellations")
-        
         # STEP 3: Place entry order with automatic bracket orders (OSO)
-        logging.info(f"=== PLACING OSO BRACKET ORDER WITH STOP ENTRY ===")
-        logging.info(f"Symbol: {symbol}, Order Type: {order_type}, Entry: {entry_price}, TP: {t1}, SL: {stop}")
+        logging.info(f"=== PLACING OSO BRACKET ORDER WITH LIMIT ENTRY ===")
+        logging.info(f"Symbol: {symbol}, Order Type: {order_type}, Entry: {order_price}, TP: {t1}, SL: {stop}")
        
-        logging.info("📊 STOP entry order - will wait at exact PRICE level from alert")
+        logging.info("📊 LIMIT entry order - using standard execution path")
        
         # Determine opposite action for take profit and stop loss
         opposite_action = "Sell" if action.lower() == "buy" else "Buy"
-        
-        # Build OSO payload with Stop order entry
+          # Build OSO payload with intelligent order type selection
         oso_payload = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
             "action": action.capitalize(),  # "Buy" or "Sell"
             "symbol": symbol,
             "orderQty": 1,
-            "orderType": order_type,   # "Stop"
+            "orderType": order_type,   # "Limit"
             "timeInForce": "GTC",
             "isAutomated": True,
             # Take Profit bracket (bracket1)
@@ -672,91 +688,60 @@ async def webhook(req: Request):
                 "isAutomated": True
             }
         }
-        
-        # 🎯 CRITICAL: Use exact PRICE from alert for entry stopPrice
-        oso_payload["stopPrice"] = entry_price
-        logging.info(f"🎯 STOP ENTRY at exact alert PRICE={entry_price}")
-        logging.info(f"🎯 Take Profit at T1={t1}")
-        logging.info(f"🎯 Stop Loss at STOP={stop}")
-        
+       
+        # Force Limit entry at the exact alert price
+        oso_payload["price"] = order_price
+        logging.info(f"🎯 LIMIT ENTRY at exact price={order_price}")
+       
         logging.info(f"=== OSO PAYLOAD ===")
-        logging.info(f"{json.dumps(oso_payload, indent=2)}")
-        
-        # STEP 4: Place OSO bracket order with speed optimizations
+        logging.info(f"{json.dumps(oso_payload, indent=2)}")        # STEP 4: Place OSO bracket order with speed optimizations
         logging.info("=== PLACING OSO BRACKET ORDER ===")
-        
+       
         # 🔥 SPEED OPTIMIZATION: Validate payload before submission to prevent rejection delays
         required_fields = ['accountSpec', 'accountId', 'action', 'symbol', 'orderQty', 'orderType', 'timeInForce']
         for field in required_fields:
             if field not in oso_payload:
                 raise HTTPException(status_code=400, detail=f"Missing required OSO field: {field}")
-        
+       
         try:
             # 🚀 FASTEST EXECUTION: Place OSO order immediately
             start_time = time.time()
             oso_result = await client.place_oso_order(oso_payload)
             execution_time = (time.time() - start_time) * 1000  # Convert to milliseconds
-            
+           
             logging.info(f"✅ OSO BRACKET ORDER PLACED SUCCESSFULLY in {execution_time:.2f}ms")
             logging.info(f"OSO Result: {oso_result}")
-            
+           
             # 🔥 MARK SUCCESSFUL TRADE PLACEMENT - This helps prevent immediate duplicates
             # When this trade completes (hits TP or SL), we'll prevent duplicate signals for a period
             logging.info(f"📝 Recording successful trade placement: {symbol} {action}")
             # Note: We mark completion when the trade actually completes, not just when placed
-            
+           
             return {
                 "status": "success",
                 "order": oso_result,
                 "execution_time_ms": execution_time,
                 "order_type": order_type,
-                "symbol": symbol,
-                "entry_price": entry_price,
-                "take_profit": t1,
-                "stop_loss": stop
+                "symbol": symbol
             }
         except Exception as e:
             execution_time = (time.time() - start_time) * 1000 if 'start_time' in locals() else 0
             logging.error(f"❌ OSO placement failed after {execution_time:.2f}ms: {e}")
-            
-            # 🔥 ENHANCED ERROR HANDLING FOR ORDER REJECTIONS
+            # 🔥 SMART ERROR HANDLING: Provide specific guidance based on error type
             error_msg = str(e).lower()
-            
             if "price is already at or past this level" in error_msg:
-                logging.error("🎯 PRICE LEVEL ERROR: Market has already moved past the entry price")
-                logging.error(f"🎯 Alert Entry Price: {entry_price}")
-                logging.error(f"🎯 Alert T1: {t1}, Alert STOP: {stop}")
-                logging.error("🎯 SOLUTION: This is normal for fast-moving markets - alert may be stale")
-                
-                # For debugging: log the exact values being used
-                logging.error(f"🔍 DEBUG - Entry stopPrice: {oso_payload.get('stopPrice')}")
-                logging.error(f"🔍 DEBUG - TP price: {oso_payload['bracket1']['price']}")
-                logging.error(f"🔍 DEBUG - SL stopPrice: {oso_payload['bracket2']['stopPrice']}")
-                
+                logging.error("🎯 PRICE LEVEL ERROR: The intelligent order type selection may need adjustment")
+                logging.error(f"🎯 Entry price: {price}, Current market data needed for diagnosis")
             elif "insufficient buying power" in error_msg:
                 logging.error("💰 MARGIN ERROR: Insufficient buying power for position size")
-                logging.error("💰 SOLUTION: Reduce position size or add more margin")
-                
             elif "invalid symbol" in error_msg:
                 logging.error(f"📊 SYMBOL ERROR: Contract symbol {symbol} may be expired or invalid")
-                logging.error("📊 SOLUTION: Check if contract has rolled to new month")
-                
-            elif "order quantity" in error_msg:
-                logging.error("📏 QUANTITY ERROR: Invalid order quantity")
-                logging.error("📏 SOLUTION: Check minimum order size requirements")
-                
-            elif "market is closed" in error_msg:
-                logging.error("🕐 MARKET CLOSED ERROR: Cannot place orders outside market hours")
-                logging.error("🕐 SOLUTION: Wait for market to open")
-                
-            else:
-                logging.error(f"❓ UNKNOWN ERROR: {error_msg}")
-                
             # Log the detailed error for debugging
             import traceback
             logging.error(f"OSO Error traceback: {traceback.format_exc()}")
-            
             raise HTTPException(status_code=500, detail=f"OSO order placement failed: {str(e)}")
+
+
     except Exception as e:
         logging.error(f"=== ERROR IN WEBHOOK ===")
         logging.error(f"Error: {e}")
@@ -798,8 +783,6 @@ async def root_post(req: Request):
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     uvicorn.run("main:app", host="0.0.0.0", port=port)
-
-
 
 
 
