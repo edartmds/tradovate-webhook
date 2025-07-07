@@ -579,17 +579,17 @@ async def webhook(req: Request):
 
             logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
             
-            # 🎯 INTELLIGENT ORDER TYPE SELECTION
-            # For BUY: if PRICE > current market = use Stop order (breakout)
-            # For BUY: if PRICE < current market = use Limit order (pullback)
-            # For SELL: if PRICE < current market = use Stop order (breakdown)  
-            # For SELL: if PRICE > current market = use Limit order (pullback)
+            # 🎯 SMART ORDER TYPE SELECTION TO AVOID REJECTIONS
+            # Check if this is a breakout (price above/below current market) or pullback
             
-            # Since we want to wait at the exact PRICE level, use Stop orders for breakouts
+            # Always use Stop orders for entries to avoid immediate fills
+            # Stop orders wait at the exact price level until triggered
             order_type = "Stop"
-            stop_price = price
-            logging.info(f"🎯 STOP ORDER ENTRY at stopPrice {stop_price}")
-            logging.info(f"🎯 This will trigger when price reaches {stop_price} and wait there")
+            entry_price = price  # Use exact PRICE from alert
+            
+            logging.info(f"🎯 STOP ORDER ENTRY at exact price {entry_price}")
+            logging.info(f"🎯 Alert PRICE={price}, T1={t1}, STOP={stop}")
+            logging.info(f"🎯 Entry will trigger when market reaches {entry_price}")
        
         # 🔥 REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
         # Every new alert will now automatically flatten existing positions and place new orders
@@ -630,9 +630,9 @@ async def webhook(req: Request):
         
         # STEP 3: Place entry order with automatic bracket orders (OSO)
         logging.info(f"=== PLACING OSO BRACKET ORDER WITH STOP ENTRY ===")
-        logging.info(f"Symbol: {symbol}, Order Type: {order_type}, Entry: {stop_price}, TP: {t1}, SL: {stop}")
+        logging.info(f"Symbol: {symbol}, Order Type: {order_type}, Entry: {entry_price}, TP: {t1}, SL: {stop}")
        
-        logging.info("📊 STOP entry order - will wait at exact price level")
+        logging.info("📊 STOP entry order - will wait at exact PRICE level from alert")
        
         # Determine opposite action for take profit and stop loss
         opposite_action = "Sell" if action.lower() == "buy" else "Buy"
@@ -673,9 +673,11 @@ async def webhook(req: Request):
             }
         }
         
-        # Use Stop order with stopPrice at the exact alert PRICE
-        oso_payload["stopPrice"] = stop_price
-        logging.info(f"🎯 STOP ENTRY at exact stopPrice={stop_price}")
+        # 🎯 CRITICAL: Use exact PRICE from alert for entry stopPrice
+        oso_payload["stopPrice"] = entry_price
+        logging.info(f"🎯 STOP ENTRY at exact alert PRICE={entry_price}")
+        logging.info(f"🎯 Take Profit at T1={t1}")
+        logging.info(f"🎯 Stop Loss at STOP={stop}")
         
         logging.info(f"=== OSO PAYLOAD ===")
         logging.info(f"{json.dumps(oso_payload, indent=2)}")
@@ -708,23 +710,52 @@ async def webhook(req: Request):
                 "order": oso_result,
                 "execution_time_ms": execution_time,
                 "order_type": order_type,
-                "symbol": symbol
+                "symbol": symbol,
+                "entry_price": entry_price,
+                "take_profit": t1,
+                "stop_loss": stop
             }
         except Exception as e:
             execution_time = (time.time() - start_time) * 1000 if 'start_time' in locals() else 0
             logging.error(f"❌ OSO placement failed after {execution_time:.2f}ms: {e}")
-            # 🔥 SMART ERROR HANDLING: Provide specific guidance based on error type
+            
+            # 🔥 ENHANCED ERROR HANDLING FOR ORDER REJECTIONS
             error_msg = str(e).lower()
+            
             if "price is already at or past this level" in error_msg:
-                logging.error("🎯 PRICE LEVEL ERROR: The order price may need adjustment")
-                logging.error(f"🎯 Entry price: {price}, Current market data needed for diagnosis")
+                logging.error("🎯 PRICE LEVEL ERROR: Market has already moved past the entry price")
+                logging.error(f"🎯 Alert Entry Price: {entry_price}")
+                logging.error(f"🎯 Alert T1: {t1}, Alert STOP: {stop}")
+                logging.error("🎯 SOLUTION: This is normal for fast-moving markets - alert may be stale")
+                
+                # For debugging: log the exact values being used
+                logging.error(f"🔍 DEBUG - Entry stopPrice: {oso_payload.get('stopPrice')}")
+                logging.error(f"🔍 DEBUG - TP price: {oso_payload['bracket1']['price']}")
+                logging.error(f"🔍 DEBUG - SL stopPrice: {oso_payload['bracket2']['stopPrice']}")
+                
             elif "insufficient buying power" in error_msg:
                 logging.error("💰 MARGIN ERROR: Insufficient buying power for position size")
+                logging.error("💰 SOLUTION: Reduce position size or add more margin")
+                
             elif "invalid symbol" in error_msg:
                 logging.error(f"📊 SYMBOL ERROR: Contract symbol {symbol} may be expired or invalid")
+                logging.error("📊 SOLUTION: Check if contract has rolled to new month")
+                
+            elif "order quantity" in error_msg:
+                logging.error("📏 QUANTITY ERROR: Invalid order quantity")
+                logging.error("📏 SOLUTION: Check minimum order size requirements")
+                
+            elif "market is closed" in error_msg:
+                logging.error("🕐 MARKET CLOSED ERROR: Cannot place orders outside market hours")
+                logging.error("🕐 SOLUTION: Wait for market to open")
+                
+            else:
+                logging.error(f"❓ UNKNOWN ERROR: {error_msg}")
+                
             # Log the detailed error for debugging
             import traceback
             logging.error(f"OSO Error traceback: {traceback.format_exc()}")
+            
             raise HTTPException(status_code=500, detail=f"OSO order placement failed: {str(e)}")
     except Exception as e:
         logging.error(f"=== ERROR IN WEBHOOK ===")
