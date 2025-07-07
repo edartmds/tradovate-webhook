@@ -11,13 +11,6 @@ import uvicorn
 import httpx
 import hashlib
 
-
-
-
-
-
-
-
 # 🔥 RELAXED DUPLICATE DETECTION FOR AUTOMATED TRADING
 last_alert = {}  # {symbol: {"direction": "buy"/"sell", "timestamp": datetime, "alert_hash": str}}
 completed_trades = {}  # {symbol: {"last_completed_direction": "buy"/"sell", "completion_time": datetime}}
@@ -25,22 +18,8 @@ active_orders = []  # Track active order IDs to manage cancellation
 DUPLICATE_THRESHOLD_SECONDS = 30  # 30 seconds - only prevent rapid-fire identical alerts
 COMPLETED_TRADE_COOLDOWN = 30  # 30 seconds - minimal cooldown for automated trading
 
-
-
-
-
-
-
-
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 logging.info(f"Loaded WEBHOOK_SECRET: {WEBHOOK_SECRET}")
-
-
-
-
-
-
-
 
 LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -70,13 +49,6 @@ logger.addHandler(console_handler)
 # 🚀 SPEED: Disable debug logging for httpx to reduce noise
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-
-
-
-
-
-
-
 app = FastAPI()
 client = TradovateClient()
 # Dictionary of asyncio locks per symbol to serialize webhook handling and prevent race conditions
@@ -98,21 +70,6 @@ async def get_http_client():
             http2=True  # Use HTTP/2 for better performance
         )
     return persistent_http_client
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 @app.on_event("startup")
 async def startup_event():
@@ -151,21 +108,6 @@ async def shutdown_event():
         await persistent_http_client.aclose()
         persistent_http_client = None
     logging.info("=== APPLICATION SHUTDOWN COMPLETE ===")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 async def cancel_all_orders(symbol):
     """🚀 ULTRA-FAST order cancellation with parallel processing"""
@@ -215,13 +157,6 @@ async def cancel_single_order(http_client, cancel_url, order_id, symbol, status)
     except Exception as e:
         logging.error(f"❌ Cancel failed {order_id}: {e}")
 
-
-
-
-
-
-
-
 async def flatten_position(symbol):
     """🚀 ULTRA-FAST position flattening"""
     url = f"https://demo-api.tradovate.com/v1/position/closeposition"
@@ -251,13 +186,6 @@ async def wait_until_no_open_orders(symbol, timeout=5):  # 🚀 SPEED: Reduced t
             return
         # 🚀 SPEED: Reduced sleep from 0.5 to 0.1 seconds for faster polling
         await asyncio.sleep(0.1)
-
-
-
-
-
-
-
 
 def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
     # 🚀 SPEED: Reduced logging verbosity for faster parsing
@@ -295,13 +223,6 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
 
     return parsed_data
 
-
-
-
-
-
-
-
 def hash_alert(data: dict) -> str:
     """Generate a unique hash for an alert to detect duplicates."""
     # Only include essential trading fields for duplicate detection
@@ -314,13 +235,6 @@ def hash_alert(data: dict) -> str:
     }
     alert_string = json.dumps(essential_fields, sort_keys=True)
     return hashlib.sha256(alert_string.encode()).hexdigest()
-
-
-
-
-
-
-
 
 def is_duplicate_alert(symbol: str, action: str, data: dict) -> bool:
     """
@@ -361,13 +275,6 @@ def is_duplicate_alert(symbol: str, action: str, data: dict) -> bool:
     logging.info(f"✅ ALERT ACCEPTED: {symbol} {action} - Automated trading enabled")
     return False
 
-
-
-
-
-
-
-
 def mark_trade_completed(symbol: str, direction: str):
     """Mark a trade as completed to prevent immediate duplicates."""
     completed_trades[symbol] = {
@@ -397,13 +304,6 @@ def cleanup_old_tracking_data():
     for symbol in symbols_to_remove:
         del completed_trades[symbol]
 
-
-
-
-
-
-
-
 # Direct API function to place a stop loss order (DEPRECATED - using OCO/OSO instead)
 async def place_stop_loss_order_legacy(stop_order_data):
     """
@@ -422,33 +322,12 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
     monitoring_start_time = asyncio.get_event_loop().time()
     max_monitoring_time = 3600  # 1 hour timeout
 
-
-
-
-
-
-
-
     if not stop_order_data:
         logging.error("CRITICAL: No stop_order_data provided when starting monitoring")
     else:
         logging.info(f"Will use this STOP data when entry fills: {stop_order_data}")
 
-
-
-
-
-
-
-
     poll_interval = 1
-
-
-
-
-
-
-
 
     while True:
         try:
@@ -456,23 +335,9 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
             active_orders = {}
             logging.info(f"Order tracking state: {order_tracking}")
 
-
-
-
-
-
-
-
             for label, order_id in order_tracking.items():
                 if order_id is None:
                     continue
-
-
-
-
-
-
-
 
                 url = f"https://demo-api.tradovate.com/v1/order/{order_id}"
                 async with httpx.AsyncClient() as http_client:
@@ -480,32 +345,11 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                     response.raise_for_status()
                     order_status = response.json()
 
-
-
-
-
-
-
-
                 status = order_status.get("status")
-
-
-
-
-
-
-
 
                 if label == "ENTRY" and status and status.lower() == "filled" and not entry_filled:
                     entry_filled = True
                     logging.info(f"ENTRY order filled for {symbol}. Placing STOP and TP orders.")
-
-
-
-
-
-
-
 
                     if stop_order_data and "T1" in stop_order_data:
                         oso_payload = {
@@ -525,13 +369,6 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                             }
                         }
 
-
-
-
-
-
-
-
                         try:
                             async with httpx.AsyncClient() as http_client:
                                 response = await http_client.post(
@@ -542,13 +379,6 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                                 response.raise_for_status()
                                 oso_result = response.json()
 
-
-
-
-
-
-
-
                                 if "orderId" in oso_result:
                                     logging.info(f"OSO order placed successfully: {oso_result}")
                                     stop_placed = True
@@ -557,24 +387,10 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                         except Exception as e:
                             logging.error(f"Error placing OSO order: {e}")
 
-
-
-
-
-
-
-
                 elif label == "STOP" and status and status.lower() == "filled":
                     logging.info(f"STOP order filled for {symbol}. Exiting trade.")
                     trade_direction = stop_order_data.get("action", "unknown") if stop_order_data else "unknown"
                     mark_trade_completed(symbol, trade_direction)
-
-
-
-
-
-
-
 
                     if order_tracking.get("TP1"):
                         cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{order_tracking['TP1']}"
@@ -589,24 +405,10 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                             logging.error(f"Exception while cancelling TP1 order after STOP fill: {e}")
                     return
 
-
-
-
-
-
-
-
                 elif label == "TP1" and status and status.lower() == "filled":
                     logging.info(f"TP1 order filled for {symbol}. Trade completed successfully.")
                     trade_direction = stop_order_data.get("action", "unknown") if stop_order_data else "unknown"
                     mark_trade_completed(symbol, trade_direction)
-
-
-
-
-
-
-
 
                     if order_tracking.get("STOP"):
                         cancel_url = f"https://demo-api.tradovate.com/v1/order/cancel/{order_tracking['STOP']}"
@@ -621,72 +423,23 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                             logging.error(f"Exception while cancelling STOP order after TP1 fill: {e}")
                     return
 
-
-
-
-
-
-
-
                 elif status in ["Working", "Accepted"]:
                     active_orders[label] = order_id
-
-
-
-
-
-
-
 
             if asyncio.get_event_loop().time() - monitoring_start_time > max_monitoring_time:
                 logging.warning(f"Order monitoring timeout reached for {symbol}. Stopping.")
                 return
 
-
-
-
-
-
-
-
             if not active_orders:
                 logging.info("No active orders remaining. Stopping monitoring.")
                 return
 
-
-
-
-
-
-
-
             poll_interval = 0.5 if not entry_filled else 1
             await asyncio.sleep(poll_interval)
-
-
-
-
-
-
-
 
         except Exception as e:
             logging.error(f"Error in order monitoring: {e}")
             await asyncio.sleep(2)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 @app.post("/webhook")
@@ -699,13 +452,6 @@ async def webhook(req: Request):
         logging.info(f"Content-Type: {content_type}")
         logging.info(f"Raw body: {raw_body.decode('utf-8')}")
 
-
-
-
-
-
-
-
         if content_type == "application/json":
             data = await req.json()
         elif content_type.startswith("text/plain"):
@@ -715,13 +461,6 @@ async def webhook(req: Request):
             logging.error(f"Unsupported content type: {content_type}")
             raise HTTPException(status_code=400, detail="Unsupported content type")
 
-
-
-
-
-
-
-
         logging.info(f"=== PARSED ALERT DATA: {data} ===")
        
         # Extract required fields
@@ -730,7 +469,6 @@ async def webhook(req: Request):
         price = data.get("PRICE")
         t1 = data.get("T1")
         stop = data.get("STOP")
-
 
         logging.info(f"Extracted fields - Symbol: {symbol}, Action: {action}, Price: {price}, T1: {t1}, Stop: {stop}")
 
@@ -754,9 +492,6 @@ async def webhook(req: Request):
             logging.info("🔍 === CHECKING FOR RAPID-FIRE DUPLICATES ONLY ===")
             cleanup_old_tracking_data()  # Clean up old data first
 
-
-
-
             if is_duplicate_alert(symbol, action, data):
                 logging.warning(f"🚫 RAPID-FIRE DUPLICATE BLOCKED: {symbol} {action}")
                 logging.warning(f"🚫 Reason: Identical alert within 30 seconds")
@@ -765,9 +500,6 @@ async def webhook(req: Request):
                     "reason": "rapid_fire_duplicate",
                     "message": f"Rapid-fire duplicate alert blocked for {symbol} {action}"
                 }
-
-
-
 
             logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
            
@@ -918,13 +650,6 @@ async def webhook(req: Request):
         logging.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-
-
-
-
-
-
-
 @app.get("/")
 async def root():
     """Health check endpoint"""
@@ -938,13 +663,6 @@ async def root():
         "message": "Webhook service is running. Send POST requests to /webhook"
     }
 
-
-
-
-
-
-
-
 @app.post("/")
 async def root_post(req: Request):
     """Handle POST requests to root and redirect to webhook"""
@@ -953,41 +671,7 @@ async def root_post(req: Request):
    
     # Forward the request to the webhook endpoint
     return await webhook(req)
-
-
-
-
-
-
-
-
+    
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     uvicorn.run("main:app", host="0.0.0.0", port=port)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
