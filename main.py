@@ -249,17 +249,27 @@ def is_duplicate_alert(symbol: str, action: str, data: dict) -> bool:
     current_time = datetime.now()
     alert_hash = hash_alert(data)
    
+    # ALWAYS ALLOW THE FIRST ALERT after startup/redeployment
+    if symbol not in last_alert:
+        logging.info(f"🆕 FIRST ALERT for {symbol}: {action} - Always allowed")
+        # Update tracking for future alerts
+        last_alert[symbol] = {
+            "direction": action.lower(),
+            "timestamp": current_time,
+            "alert_hash": alert_hash
+        }
+        return False
+   
     # ONLY Check for rapid-fire identical alerts (same exact parameters)
-    if symbol in last_alert:
-        last_alert_data = last_alert[symbol]
-        time_diff = (current_time - last_alert_data["timestamp"]).total_seconds()
-       
-        # Only block if EXACT same alert within 30 seconds
-        if (last_alert_data.get("alert_hash") == alert_hash and
-            time_diff < DUPLICATE_THRESHOLD_SECONDS):
-            logging.warning(f"🚫 RAPID-FIRE DUPLICATE BLOCKED: {symbol} {action}")
-            logging.warning(f"🚫 Identical alert received {time_diff:.1f} seconds ago")
-            return True
+    last_alert_data = last_alert[symbol]
+    time_diff = (current_time - last_alert_data["timestamp"]).total_seconds()
+   
+    # Only block if EXACT same alert within 30 seconds
+    if (last_alert_data.get("alert_hash") == alert_hash and
+        time_diff < DUPLICATE_THRESHOLD_SECONDS):
+        logging.warning(f"🚫 RAPID-FIRE DUPLICATE BLOCKED: {symbol} {action}")
+        logging.warning(f"🚫 Identical alert received {time_diff:.1f} seconds ago")
+        return True
    
     # 🔥 REMOVED: Direction-based blocking - allow all direction changes
     # 🔥 REMOVED: Post-completion blocking - allow immediate new signals
@@ -563,33 +573,17 @@ async def webhook(req: Request):
             symbol = "NQU5"  # Changed from NQM5 to NQU5
             logging.info(f"Mapped symbol to: {symbol}")
            
-        # 🔄 STRATEGY REVERSAL: Flip the order direction and price targets
-        # If original was BUY, we'll SELL and vice versa
-        original_action = action
-        original_t1 = t1
-        original_stop = stop
-       
-        # Flip the direction: Buy becomes Sell, Sell becomes Buy
-        action = "Sell" if original_action.lower() == "buy" else "Buy"
-       
-        # Flip the targets: STOP becomes T1, T1 becomes STOP
-        t1 = original_stop
-        stop = original_t1
-       
-        logging.info(f"🔄 STRATEGY REVERSAL: Flipped {original_action} to {action}")
-        logging.info(f"🔄 STRATEGY REVERSAL: Flipped T1 from {original_t1} to {t1}")
-        logging.info(f"🔄 STRATEGY REVERSAL: Flipped STOP from {original_stop} to {stop}")
-       
+        # � DUPLICATE DETECTION BEFORE STRATEGY REVERSAL - Check using original alert data
+        logging.info("🔍 === CHECKING FOR RAPID-FIRE DUPLICATES (BEFORE REVERSAL) ===")
+        cleanup_old_tracking_data()  # Clean up old data first
+        
         # Ensure sequential handling per symbol to prevent race conditions
         lock = symbol_locks.setdefault(symbol, asyncio.Lock())
         logging.info(f"📌 Waiting for lock for symbol {symbol}")
         async with lock:
             logging.info(f"🔒 Acquired lock for {symbol}")
-            # 🔥 MINIMAL DUPLICATE DETECTION - Only prevent rapid-fire identical alerts
-            logging.info("🔍 === CHECKING FOR RAPID-FIRE DUPLICATES ONLY ===")
-            cleanup_old_tracking_data()  # Clean up old data first
-
-
+            
+            # Check for duplicates using ORIGINAL alert data (before reversal)
             if is_duplicate_alert(symbol, action, data):
                 logging.warning(f"🚫 RAPID-FIRE DUPLICATE BLOCKED: {symbol} {action}")
                 logging.warning(f"🚫 Reason: Identical alert within 30 seconds")
@@ -598,9 +592,26 @@ async def webhook(req: Request):
                     "reason": "rapid_fire_duplicate",
                     "message": f"Rapid-fire duplicate alert blocked for {symbol} {action}"
                 }
+                
+            logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with strategy reversal")
+           
+            # 🔄 STRATEGY REVERSAL: Flip the order direction and price targets
+            # If original was BUY, we'll SELL and vice versa
+            original_action = action
+            original_t1 = t1
+            original_stop = stop
+           
+            # Flip the direction: Buy becomes Sell, Sell becomes Buy
+            action = "Sell" if original_action.lower() == "buy" else "Buy"
+           
+            # Flip the targets: STOP becomes T1, T1 becomes STOP
+            t1 = original_stop
+            stop = original_t1
+           
+            logging.info(f"🔄 STRATEGY REVERSAL: Flipped {original_action} to {action}")
+            logging.info(f"🔄 STRATEGY REVERSAL: Flipped T1 from {original_t1} to {t1}")
+            logging.info(f"🔄 STRATEGY REVERSAL: Flipped STOP from {original_stop} to {stop}")
 
-
-            logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
             
             # Intelligent order type selection based on alert strategy
             # Since we can't easily get real-time market data, use the strategy context from the alert
