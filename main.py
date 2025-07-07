@@ -545,7 +545,13 @@ async def webhook(req: Request):
         t1 = data.get("T1")
         stop = data.get("STOP")
 
+
+
+
         logging.info(f"Extracted fields - Symbol: {symbol}, Action: {action}, Price: {price}, T1: {t1}, Stop: {stop}")
+
+
+
 
         if not all([symbol, action, price, t1, stop]):
             missing = [k for k, v in {"symbol": symbol, "action": action, "PRICE": price, "T1": t1, "STOP": stop}.items() if not v]
@@ -557,12 +563,29 @@ async def webhook(req: Request):
             symbol = "NQU5"  # Changed from NQM5 to NQU5
             logging.info(f"Mapped symbol to: {symbol}")
            
+        # 🔄 STRATEGY REVERSAL: Flip the order direction and price targets
+        # If original was BUY, we'll SELL and vice versa
+        original_action = action
+        original_t1 = t1
+        original_stop = stop
+       
+        # Flip the direction: Buy becomes Sell, Sell becomes Buy
+        action = "Sell" if original_action.lower() == "buy" else "Buy"
+       
+        # Flip the targets: STOP becomes T1, T1 becomes STOP
+        t1 = original_stop
+        stop = original_t1
+       
+        logging.info(f"🔄 STRATEGY REVERSAL: Flipped {original_action} to {action}")
+        logging.info(f"🔄 STRATEGY REVERSAL: Flipped T1 from {original_t1} to {t1}")
+        logging.info(f"🔄 STRATEGY REVERSAL: Flipped STOP from {original_stop} to {stop}")
+       
         # Ensure sequential handling per symbol to prevent race conditions
         lock = symbol_locks.setdefault(symbol, asyncio.Lock())
-        logging.info(f"� Waiting for lock for symbol {symbol}")
+        logging.info(f"📌 Waiting for lock for symbol {symbol}")
         async with lock:
             logging.info(f"🔒 Acquired lock for {symbol}")
-            # �🔥 MINIMAL DUPLICATE DETECTION - Only prevent rapid-fire identical alerts
+            # 🔥 MINIMAL DUPLICATE DETECTION - Only prevent rapid-fire identical alerts
             logging.info("🔍 === CHECKING FOR RAPID-FIRE DUPLICATES ONLY ===")
             cleanup_old_tracking_data()  # Clean up old data first
 
@@ -579,17 +602,21 @@ async def webhook(req: Request):
 
             logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
             
-            # 🎯 SMART ORDER TYPE SELECTION TO AVOID REJECTIONS
-            # Check if this is a breakout (price above/below current market) or pullback
+            # Intelligent order type selection based on alert strategy
+            # Since we can't easily get real-time market data, use the strategy context from the alert
+            order_price = price  # Always use exact alert PRICE
             
-            # Always use Stop orders for entries to avoid immediate fills
-            # Stop orders wait at the exact price level until triggered
+            # Default strategy: Use Stop orders for breakout entries to prevent immediate fills
+            # This is safer than Limit orders which can fill immediately if price has moved past the level
             order_type = "Stop"
-            entry_price = price  # Use exact PRICE from alert
             
-            logging.info(f"🎯 STOP ORDER ENTRY at exact price {entry_price}")
-            logging.info(f"🎯 Alert PRICE={price}, T1={t1}, STOP={stop}")
-            logging.info(f"🎯 Entry will trigger when market reaches {entry_price}")
+            if action.lower() == "buy":
+                logging.info(f"🎯 BUY ENTRY: Using Stop order at {price} to wait for breakout confirmation")
+            else:  # SELL
+                logging.info(f"🎯 SELL ENTRY: Using Stop order at {price} to wait for breakdown confirmation")
+                    
+            logging.info(f"🎯 ENTRY ORDER: {order_type} at exact alert PRICE={order_price}, TP={t1}, SL={stop}")
+            logging.info(f"🎯 This ensures the order waits at the level and doesn't fill immediately")
        
         # 🔥 REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
         # Every new alert will now automatically flatten existing positions and place new orders
@@ -605,6 +632,9 @@ async def webhook(req: Request):
         except Exception as e:
             logging.error(f"❌ CRITICAL ERROR closing positions: {e}")
             # Continue anyway - user wants new orders placed regardless
+
+
+
 
         # STEP 2: Cancel existing orders to avoid duplicates
         logging.info("=== CANCELLING ALL PENDING ORDERS ===")
@@ -627,136 +657,133 @@ async def webhook(req: Request):
         # Final wait
         await wait_until_no_open_orders(symbol)
         logging.info(f"✅ Confirmed no open orders remain for {symbol} after all cancellations")
-        
         # STEP 3: Place entry order with automatic bracket orders (OSO)
-        logging.info(f"=== PLACING OSO BRACKET ORDER WITH STOP ENTRY ===")
-        logging.info(f"Symbol: {symbol}, Order Type: {order_type}, Entry: {entry_price}, TP: {t1}, SL: {stop}")
-       
-        logging.info("📊 STOP entry order - will wait at exact PRICE level from alert")
+        logging.info(f"=== PLACING OSO BRACKET ORDER ===")
+        logging.info(f"Symbol: {symbol}, Order Type: {order_type}, Entry: {order_price}, TP: {t1}, SL: {stop}")
        
         # Determine opposite action for take profit and stop loss
         opposite_action = "Sell" if action.lower() == "buy" else "Buy"
-        
-        # � PRE-FLIGHT CHECKS TO PREVENT REJECTIONS
-        logging.info("🔍 === PERFORMING PRE-FLIGHT CHECKS ===")
-        
-        # Check 1: Market hours
-        market_open = await check_market_hours(symbol)
-        if not market_open:
-            logging.error("🕐 MARKET CLOSED - Cannot place orders")
-            raise HTTPException(status_code=400, detail="Market is closed for this symbol")
-        
-        # Check 2: Account requirements  
-        account_check = await validate_account_requirements()
-        if not account_check.get("valid", False):
-            logging.error(f"❌ ACCOUNT VALIDATION FAILED: {account_check.get('error')}")
-            raise HTTPException(status_code=400, detail=f"Account validation failed: {account_check.get('error')}")
-        
-        logging.info(f"✅ Account buying power: {account_check.get('buying_power', 'unknown')}")
-        
-        # Check 3: Symbol specifications
-        symbol_specs = await get_symbol_specifications(symbol)
-        if not symbol_specs.get("valid", False):
-            logging.error(f"❌ SYMBOL VALIDATION FAILED: {symbol_specs.get('error')}")
-            raise HTTPException(status_code=400, detail=f"Symbol validation failed: {symbol_specs.get('error')}")
-        
-        logging.info(f"✅ Symbol specs: tick_size={symbol_specs.get('tick_size')}, point_value={symbol_specs.get('point_value')}")
-        
-        # �🛠️ BUILD ROBUST OSO PAYLOAD WITH VALIDATION
-        oso_payload, validation_result = await build_robust_oso_payload(symbol, action, entry_price, t1, stop)
-        
-        logging.info(f"=== VALIDATED OSO PAYLOAD ===")
-        logging.info(f"{json.dumps(oso_payload, indent=2)}")
-        
-        # Log validation results
-        if validation_result["warnings"]:
-            logging.warning("⚠️ ORDER VALIDATION WARNINGS:")
-            for warning in validation_result["warnings"]:
-                logging.warning(f"  {warning}")
-        
-        if validation_result["adjustments"]:
-            logging.info("🔧 APPLIED PRICE ADJUSTMENTS:")
-            for field, value in validation_result["adjustments"].items():
-                logging.info(f"  {field}: {value}")
-                
-        current_market = validation_result.get("current_price")
-        if current_market:
-            logging.info(f"📊 Current market price: {current_market}")
-        
-        # STEP 4: Place OSO bracket order with speed optimizations
+          # Build OSO payload with intelligent order type selection and exact alert values
+        oso_payload = {
+            "accountSpec": client.account_spec,
+            "accountId": client.account_id,
+            "action": action.capitalize(),  # "Buy" or "Sell"
+            "symbol": symbol,
+            "orderQty": 1,
+            "orderType": order_type,   # "Limit" or "Stop" based on market conditions
+            "timeInForce": "GTC",
+            "isAutomated": True,
+            # Take Profit bracket (bracket1) - Always use exact T1 value
+            "bracket1": {
+                "accountSpec": client.account_spec,
+                "accountId": client.account_id,
+                "action": opposite_action,
+                "symbol": symbol,
+                "orderQty": 1,
+                "orderType": "Limit",
+                "price": t1,  # Exact T1 from alert
+                "timeInForce": "GTC",
+                "isAutomated": True
+            },
+            # Stop Loss bracket (bracket2) - Always use exact STOP value
+            "bracket2": {
+                "accountSpec": client.account_spec,
+                "accountId": client.account_id,
+                "action": opposite_action,
+                "symbol": symbol,
+                "orderQty": 1,
+                "orderType": "Stop",
+                "stopPrice": stop,  # Exact STOP from alert
+                "timeInForce": "GTC",
+                "isAutomated": True
+            }
+        }
+       
+        # Set entry price based on order type - Always use exact alert PRICE
+        if order_type == "Limit":
+            oso_payload["price"] = order_price  # Exact alert PRICE
+            logging.info(f"🎯 LIMIT ENTRY at exact alert PRICE={order_price}")
+        elif order_type == "Stop":
+            oso_payload["stopPrice"] = order_price  # Exact alert PRICE 
+            logging.info(f"🎯 STOP ENTRY at exact alert PRICE={order_price}")
+       
+        logging.info(f"=== OSO PAYLOAD ===")
+        logging.info(f"Entry: {order_type} at {order_price}, TP: Limit at {t1}, SL: Stop at {stop}")
+        logging.info(f"{json.dumps(oso_payload, indent=2)}")        # STEP 4: Place OSO bracket order with speed optimizations
         logging.info("=== PLACING OSO BRACKET ORDER ===")
-        
+       
         # 🔥 SPEED OPTIMIZATION: Validate payload before submission to prevent rejection delays
         required_fields = ['accountSpec', 'accountId', 'action', 'symbol', 'orderQty', 'orderType', 'timeInForce']
         for field in required_fields:
             if field not in oso_payload:
                 raise HTTPException(status_code=400, detail=f"Missing required OSO field: {field}")
-        
+       
         try:
-            # 🚀 INTELLIGENT OSO PLACEMENT WITH RETRY LOGIC
-            oso_result = await place_oso_with_retry(oso_payload, max_retries=3)
-            
-            logging.info(f"✅ OSO BRACKET ORDER PLACED SUCCESSFULLY")
+            # 🚀 FASTEST EXECUTION: Place OSO order immediately
+            start_time = time.time()
+            oso_result = await client.place_oso_order(oso_payload)
+            execution_time = (time.time() - start_time) * 1000  # Convert to milliseconds
+           
+            logging.info(f"✅ OSO BRACKET ORDER PLACED SUCCESSFULLY in {execution_time:.2f}ms")
             logging.info(f"OSO Result: {oso_result}")
-            
-            # Extract final prices used
-            final_entry = oso_payload.get("stopPrice")
-            final_tp = oso_payload["bracket1"]["price"]
-            final_sl = oso_payload["bracket2"]["stopPrice"]
-            
+           
+            # 🔥 MARK SUCCESSFUL TRADE PLACEMENT - This helps prevent immediate duplicates
+            # When this trade completes (hits TP or SL), we'll prevent duplicate signals for a period
+            logging.info(f"📝 Recording successful trade placement: {symbol} {action}")
+            # Note: We mark completion when the trade actually completes, not just when placed
+           
             return {
                 "status": "success",
                 "order": oso_result,
+                "execution_time_ms": execution_time,
                 "order_type": order_type,
-                "symbol": symbol,
-                "entry_price": final_entry,
-                "take_profit": final_tp,
-                "stop_loss": final_sl,
-                "market_price": validation_result.get("current_price"),
-                "adjustments_applied": len(validation_result.get("adjustments", {})) > 0,
-                "warnings": validation_result.get("warnings", [])
+                "entry_price": order_price,
+                "take_profit": t1,
+                "stop_loss": stop,
+                "symbol": symbol
             }
         except Exception as e:
-            logging.error(f"❌ OSO placement failed: {e}")
+            execution_time = (time.time() - start_time) * 1000 if 'start_time' in locals() else 0
+            logging.error(f"❌ OSO placement failed after {execution_time:.2f}ms: {e}")
             
-            # 🔥 ENHANCED ERROR HANDLING FOR ORDER REJECTIONS
+            # 🔥 ENHANCED ERROR HANDLING: Provide specific guidance based on error type
             error_msg = str(e).lower()
             
-            if "price is already at or past this level" in error_msg:
-                logging.error("🎯 PRICE LEVEL ERROR: Market has already moved past the entry price")
-                logging.error(f"🎯 Alert Entry Price: {entry_price}")
-                logging.error(f"🎯 Alert T1: {t1}, Alert STOP: {stop}")
-                logging.error("🎯 SOLUTION: This is normal for fast-moving markets - alert may be stale")
+            if "price is already at or past this level" in error_msg or "stop price" in error_msg:
+                logging.error("🎯 PRICE LEVEL ERROR: Entry price conflicts with current market")
+                logging.error(f"🎯 Alert PRICE: {price}, Order type: {order_type}")
+                logging.error(f"🎯 This usually means the market moved past the entry before order placement")
+                logging.error(f"🎯 Solution: Check if alert timing is appropriate or consider using different order type")
                 
-                # For debugging: log the exact values being used
-                logging.error(f"🔍 DEBUG - Entry stopPrice: {oso_payload.get('stopPrice')}")
-                logging.error(f"🔍 DEBUG - TP price: {oso_payload['bracket1']['price']}")
-                logging.error(f"🔍 DEBUG - SL stopPrice: {oso_payload['bracket2']['stopPrice']}")
-                
-            elif "insufficient buying power" in error_msg:
+            elif "insufficient buying power" in error_msg or "margin" in error_msg:
                 logging.error("💰 MARGIN ERROR: Insufficient buying power for position size")
-                logging.error("💰 SOLUTION: Reduce position size or add more margin")
+                logging.error(f"💰 Required for 1 contract of {symbol} with entry at {price}")
+                logging.error(f"💰 Solution: Reduce position size or increase account balance")
                 
-            elif "invalid symbol" in error_msg:
+            elif "invalid symbol" in error_msg or "contract" in error_msg:
                 logging.error(f"📊 SYMBOL ERROR: Contract symbol {symbol} may be expired or invalid")
-                logging.error("📊 SOLUTION: Check if contract has rolled to new month")
+                logging.error(f"📊 Original symbol from alert, mapped symbol: {symbol}")
+                logging.error(f"📊 Solution: Update symbol mapping or check contract expiration")
                 
-            elif "order quantity" in error_msg:
-                logging.error("📏 QUANTITY ERROR: Invalid order quantity")
-                logging.error("📏 SOLUTION: Check minimum order size requirements")
-                
-            elif "market is closed" in error_msg:
-                logging.error("🕐 MARKET CLOSED ERROR: Cannot place orders outside market hours")
-                logging.error("🕐 SOLUTION: Wait for market to open")
+            elif "duplicate" in error_msg or "existing" in error_msg:
+                logging.error(f"🔄 DUPLICATE ORDER ERROR: Similar order already exists")
+                logging.error(f"🔄 This may indicate incomplete order cancellation")
+                logging.error(f"🔄 Solution: Wait for existing orders to clear or improve cancellation logic")
                 
             else:
-                logging.error(f"❓ UNKNOWN ERROR: {error_msg}")
-                
+                logging.error(f"❓ UNKNOWN ERROR TYPE: {error_msg}")
+                logging.error(f"❓ Entry details: {order_type} {action} at {price}, TP: {t1}, SL: {stop}")
+            
             # Log the detailed error for debugging
             import traceback
             logging.error(f"OSO Error traceback: {traceback.format_exc()}")
             
-            raise HTTPException(status_code=500, detail=f"OSO order placement failed: {str(e)}")
+            raise HTTPException(
+                status_code=500, 
+                detail=f"OSO order placement failed: {str(e)} | Entry: {order_type} {action} at {price}"
+            )
+
+
     except Exception as e:
         logging.error(f"=== ERROR IN WEBHOOK ===")
         logging.error(f"Error: {e}")
@@ -795,422 +822,9 @@ async def root_post(req: Request):
 
 
 
-async def get_current_market_price(symbol: str) -> dict:
-    """
-    Fetch current market data for a symbol to make intelligent order decisions.
-    """
-    if not client.access_token:
-        await client.authenticate()
-    
-    headers = {"Authorization": f"Bearer {client.access_token}"}
-    
-    try:
-        async with httpx.AsyncClient() as http_client:
-            # Get contract info first
-            contract_url = f"https://demo-api.tradovate.com/v1/contract/find"
-            contract_resp = await http_client.get(f"{contract_url}?name={symbol}", headers=headers)
-            contract_resp.raise_for_status()
-            contract_data = contract_resp.json()
-            
-            if not contract_data:
-                logging.error(f"❌ Contract not found for symbol: {symbol}")
-                return None
-                
-            contract_id = contract_data.get("id")
-            
-            # Get current market data
-            tick_url = f"https://demo-api.tradovate.com/v1/md/getChart"
-            tick_params = {
-                "symbol": symbol,
-                "chartDescription": {
-                    "underlyingType": "MinuteBar",
-                    "elementSize": 1,
-                    "elementSizeUnit": "UnderlyingUnits"
-                },
-                "timeRange": {
-                    "closestTimestamp": int(time.time() * 1000),
-                    "asMuchAsElements": 1
-                }
-            }
-            
-            tick_resp = await http_client.post(tick_url, headers=headers, json=tick_params)
-            
-            if tick_resp.status_code == 200:
-                tick_data = tick_resp.json()
-                if tick_data and "bars" in tick_data and tick_data["bars"]:
-                    latest_bar = tick_data["bars"][-1]
-                    return {
-                        "symbol": symbol,
-                        "current_price": latest_bar.get("close", latest_bar.get("high", 0)),
-                        "high": latest_bar.get("high"),
-                        "low": latest_bar.get("low"),
-                        "open": latest_bar.get("open"),
-                        "close": latest_bar.get("close")
-                    }
-            
-            # Fallback: try to get from positions or orders
-            logging.warning(f"⚠️ Could not get market data for {symbol}, using fallback")
-            return {"symbol": symbol, "current_price": None}
-            
-    except Exception as e:
-        logging.error(f"❌ Error getting market data for {symbol}: {e}")
-        return {"symbol": symbol, "current_price": None}
-
-
-async def validate_order_prices(symbol: str, action: str, entry_price: float, t1: float, stop: float) -> dict:
-    """
-    Validate order prices against current market conditions to prevent rejections.
-    """
-    logging.info(f"🔍 VALIDATING ORDER PRICES for {symbol}")
-    
-    # Get symbol specifications for proper price rounding
-    symbol_specs = await get_symbol_specifications(symbol)
-    tick_size = symbol_specs.get("tick_size", 0.25)
-    
-    # Round all prices to proper tick increments
-    entry_price = round_to_tick_size(entry_price, tick_size)
-    t1 = round_to_tick_size(t1, tick_size)
-    stop = round_to_tick_size(stop, tick_size)
-    
-    logging.info(f"🔍 Prices rounded to tick size {tick_size}: Entry={entry_price}, T1={t1}, Stop={stop}")
-    
-    market_data = await get_current_market_price(symbol)
-    current_price = market_data.get("current_price") if market_data else None
-    
-    validation_result = {
-        "valid": True,
-        "warnings": [],
-        "adjustments": {},
-        "current_price": current_price,
-        "tick_size": tick_size
-    }
-    
-    if current_price is None:
-        validation_result["warnings"].append("⚠️ Could not fetch current market price - proceeding with original prices")
-        # Still apply tick size rounding
-        validation_result["adjustments"]["entry_price"] = entry_price
-        validation_result["adjustments"]["t1"] = t1
-        validation_result["adjustments"]["stop"] = stop
-        return validation_result
-    
-    # Round current price for comparison
-    current_price = round_to_tick_size(current_price, tick_size)
-    validation_result["current_price"] = current_price
-    
-    logging.info(f"🔍 Current market price: {current_price}")
-    logging.info(f"🔍 Entry price: {entry_price}, T1: {t1}, Stop: {stop}")
-    
-    # Enhanced validation with buffer zones
-    buffer_ticks = 2  # 2 tick buffer
-    buffer_amount = buffer_ticks * tick_size
-    
-    if action.lower() == "buy":
-        # For BUY Stop orders, entry should be above current market
-        min_entry = current_price + buffer_amount
-        if entry_price <= current_price:
-            adjustment = round_to_tick_size(min_entry, tick_size)
-            validation_result["warnings"].append(f"⚠️ BUY Stop entry {entry_price} too close to market {current_price}")
-            validation_result["adjustments"]["entry_price"] = adjustment
-            logging.warning(f"⚠️ Adjusting BUY Stop entry from {entry_price} to {adjustment}")
-            entry_price = adjustment  # Update for further validation
-            
-        # Validate stop loss is below entry with minimum distance
-        min_stop_distance = entry_price * 0.005  # Minimum 0.5% distance
-        max_stop = entry_price - max(buffer_amount, min_stop_distance)
-        if stop >= entry_price:
-            adjustment = round_to_tick_size(max_stop, tick_size)
-            validation_result["warnings"].append(f"⚠️ Stop loss {stop} should be below entry {entry_price}")
-            validation_result["adjustments"]["stop"] = adjustment
-            logging.warning(f"⚠️ Adjusting stop loss from {stop} to {adjustment}")
-            
-        # Validate take profit is above entry
-        if t1 <= entry_price:
-            min_tp = entry_price + buffer_amount
-            adjustment = round_to_tick_size(min_tp, tick_size)
-            validation_result["warnings"].append(f"⚠️ Take profit {t1} should be above entry {entry_price}")
-            validation_result["adjustments"]["t1"] = adjustment
-            logging.warning(f"⚠️ Adjusting take profit from {t1} to {adjustment}")
-            
-    else:  # SELL
-        # For SELL Stop orders, entry should be below current market
-        max_entry = current_price - buffer_amount
-        if entry_price >= current_price:
-            adjustment = round_to_tick_size(max_entry, tick_size)
-            validation_result["warnings"].append(f"⚠️ SELL Stop entry {entry_price} too close to market {current_price}")
-            validation_result["adjustments"]["entry_price"] = adjustment
-            logging.warning(f"⚠️ Adjusting SELL Stop entry from {entry_price} to {adjustment}")
-            entry_price = adjustment  # Update for further validation
-            
-        # Validate stop loss is above entry with minimum distance
-        min_stop_distance = entry_price * 0.005  # Minimum 0.5% distance
-        min_stop = entry_price + max(buffer_amount, min_stop_distance)
-        if stop <= entry_price:
-            adjustment = round_to_tick_size(min_stop, tick_size)
-            validation_result["warnings"].append(f"⚠️ Stop loss {stop} should be above entry {entry_price}")
-            validation_result["adjustments"]["stop"] = adjustment
-            logging.warning(f"⚠️ Adjusting stop loss from {stop} to {adjustment}")
-            
-        # Validate take profit is below entry
-        if t1 >= entry_price:
-            max_tp = entry_price - buffer_amount
-            adjustment = round_to_tick_size(max_tp, tick_size)
-            validation_result["warnings"].append(f"⚠️ Take profit {t1} should be below entry {entry_price}")
-            validation_result["adjustments"]["t1"] = adjustment
-            logging.warning(f"⚠️ Adjusting take profit from {t1} to {adjustment}")
-    
-    # Apply tick size rounding to any prices that weren't adjusted
-    if "entry_price" not in validation_result["adjustments"]:
-        validation_result["adjustments"]["entry_price"] = entry_price
-    if "t1" not in validation_result["adjustments"]:
-        validation_result["adjustments"]["t1"] = t1
-    if "stop" not in validation_result["adjustments"]:
-        validation_result["adjustments"]["stop"] = stop
-    
-    return validation_result
-
-
-async def build_robust_oso_payload(symbol: str, action: str, entry_price: float, t1: float, stop: float) -> dict:
-    """
-    Build a robust OSO payload with validation and error prevention.
-    """
-    logging.info("🛠️ BUILDING ROBUST OSO PAYLOAD")
-    
-    # Validate prices first
-    validation = await validate_order_prices(symbol, action, entry_price, t1, stop)
-    
-    # Apply any adjustments
-    final_entry = validation["adjustments"].get("entry_price", entry_price)
-    final_stop = validation["adjustments"].get("stop", stop)
-    final_t1 = validation["adjustments"].get("t1", t1)
-    
-    # Log any warnings
-    for warning in validation["warnings"]:
-        logging.warning(warning)
-    
-    opposite_action = "Sell" if action.lower() == "buy" else "Buy"
-    
-    # Build the payload with all required fields
-    oso_payload = {
-        "accountSpec": client.account_spec,
-        "accountId": client.account_id,
-        "action": action.capitalize(),
-        "symbol": symbol,
-        "orderQty": 1,
-        "orderType": "Stop",
-        "stopPrice": final_entry,
-        "timeInForce": "GTC",
-        "isAutomated": True,
-        # Take Profit bracket
-        "bracket1": {
-            "accountSpec": client.account_spec,
-            "accountId": client.account_id,
-            "action": opposite_action,
-            "symbol": symbol,
-            "orderQty": 1,
-            "orderType": "Limit",
-            "price": final_t1,
-            "timeInForce": "GTC",
-            "isAutomated": True
-        },
-        # Stop Loss bracket
-        "bracket2": {
-            "accountSpec": client.account_spec,
-            "accountId": client.account_id,
-            "action": opposite_action,
-            "symbol": symbol,
-            "orderQty": 1,
-            "orderType": "Stop",
-            "stopPrice": final_stop,
-            "timeInForce": "GTC",
-            "isAutomated": True
-        }
-    }
-    
-    # Log final values
-    logging.info(f"🛠️ FINAL OSO VALUES:")
-    logging.info(f"🛠️ Entry Stop Price: {final_entry} (original: {entry_price})")
-    logging.info(f"🛠️ Take Profit: {final_t1} (original: {t1})")
-    logging.info(f"🛠️ Stop Loss: {final_stop} (original: {stop})")
-    
-    return oso_payload, validation
-
-
-async def place_oso_with_retry(oso_payload: dict, max_retries: int = 3) -> dict:
-    """
-    Place OSO order with intelligent retry logic for common rejection scenarios.
-    """
-    last_error = None
-    
-    for attempt in range(max_retries):
-        try:
-            logging.info(f"🚀 OSO PLACEMENT ATTEMPT {attempt + 1}/{max_retries}")
-            
-            start_time = time.time()
-            result = await client.place_oso_order(oso_payload)
-            execution_time = (time.time() - start_time) * 1000
-            
-            logging.info(f"✅ OSO ORDER PLACED SUCCESSFULLY in {execution_time:.2f}ms on attempt {attempt + 1}")
-            return result
-            
-        except Exception as e:
-            last_error = e
-            error_msg = str(e).lower()
-            
-            logging.error(f"❌ OSO ATTEMPT {attempt + 1} FAILED: {error_msg}")
-            
-            # Handle specific rejection scenarios
-            if "price is already at or past this level" in error_msg:
-                logging.warning("🔄 PRICE LEVEL REJECTION - Adjusting entry price")
-                
-                # Adjust entry price slightly
-                current_stop_price = oso_payload.get("stopPrice")
-                action = oso_payload.get("action", "").lower()
-                
-                if action == "buy":
-                    # For BUY stops, increase the stop price slightly
-                    new_stop_price = current_stop_price * 1.001  # 0.1% higher
-                    oso_payload["stopPrice"] = new_stop_price
-                    logging.info(f"🔄 Adjusted BUY stop price from {current_stop_price} to {new_stop_price}")
-                else:
-                    # For SELL stops, decrease the stop price slightly
-                    new_stop_price = current_stop_price * 0.999  # 0.1% lower
-                    oso_payload["stopPrice"] = new_stop_price
-                    logging.info(f"🔄 Adjusted SELL stop price from {current_stop_price} to {new_stop_price}")
-                
-                # Continue to next attempt
-                continue
-                
-            elif "insufficient buying power" in error_msg:
-                logging.error("💰 INSUFFICIENT MARGIN - Cannot retry, this requires manual intervention")
-                break
-                
-            elif "invalid symbol" in error_msg:
-                logging.error("📊 INVALID SYMBOL - Cannot retry, symbol may be expired")
-                break
-                
-            elif "market is closed" in error_msg:
-                logging.error("🕐 MARKET CLOSED - Cannot retry until market opens")
-                break
-                
-            # Wait before retry
-            if attempt < max_retries - 1:
-                retry_delay = 2 ** attempt  # Exponential backoff
-                logging.info(f"⏳ Waiting {retry_delay}s before retry...")
-                await asyncio.sleep(retry_delay)
-    
-    # All retries failed
-    logging.error(f"❌ ALL {max_retries} OSO PLACEMENT ATTEMPTS FAILED")
-    raise last_error
-
-
-async def check_market_hours(symbol: str) -> bool:
-    """
-    Check if the market is open for the given symbol.
-    """
-    try:
-        # This is a simplified check - in production you'd want more sophisticated market hours checking
-        current_time = datetime.now()
-        
-        # Basic US market hours check (EST/EDT)
-        if symbol.startswith("NQ") or symbol.startswith("ES") or symbol.startswith("YM"):
-            # Futures trade almost 24/7, but there are brief maintenance windows
-            return True
-            
-        # For now, assume markets are open
-        return True
-        
-    except Exception as e:
-        logging.warning(f"⚠️ Could not determine market hours for {symbol}: {e}")
-        return True  # Assume open if we can't determine
-
-
-async def validate_account_requirements() -> dict:
-    """
-    Validate account status and requirements before placing orders.
-    """
-    try:
-        if not client.access_token:
-            await client.authenticate()
-            
-        headers = {"Authorization": f"Bearer {client.access_token}"}
-        
-        # Check account status
-        async with httpx.AsyncClient() as http_client:
-            account_url = f"https://demo-api.tradovate.com/v1/account/{client.account_id}"
-            response = await http_client.get(account_url, headers=headers)
-            response.raise_for_status()
-            account_data = response.json()
-            
-            buying_power = account_data.get("dayTradeBuyingPower", 0)
-            net_liquidation = account_data.get("netLiq", 0)
-            
-            return {
-                "valid": True,
-                "buying_power": buying_power,
-                "net_liquidation": net_liquidation,
-                "account_status": account_data.get("status", "unknown")
-            }
-            
-    except Exception as e:
-        logging.error(f"❌ Error validating account: {e}")
-        return {
-            "valid": False,
-            "error": str(e)
-        }
-
-
-async def get_symbol_specifications(symbol: str) -> dict:
-    """
-    Get symbol specifications to ensure proper order sizing and pricing.
-    """
-    try:
-        if not client.access_token:
-            await client.authenticate()
-            
-        headers = {"Authorization": f"Bearer {client.access_token}"}
-        
-        async with httpx.AsyncClient() as http_client:
-            # Get contract specifications
-            contract_url = f"https://demo-api.tradovate.com/v1/contract/find"
-            response = await http_client.get(f"{contract_url}?name={symbol}", headers=headers)
-            response.raise_for_status()
-            contract_data = response.json()
-            
-            if not contract_data:
-                return {"valid": False, "error": f"Contract not found for {symbol}"}
-                
-            return {
-                "valid": True,
-                "contract_id": contract_data.get("id"),
-                "tick_size": contract_data.get("tickSize", 0.25),
-                "point_value": contract_data.get("pointValue", 20),
-                "min_quantity": 1,
-                "symbol": symbol
-            }
-            
-    except Exception as e:
-        logging.error(f"❌ Error getting symbol specs for {symbol}: {e}")
-        return {
-            "valid": False,
-            "error": str(e),
-            "tick_size": 0.25,  # Default for NQ
-            "point_value": 20,  # Default for NQ
-            "min_quantity": 1
-        }
-
-
-def round_to_tick_size(price: float, tick_size: float = 0.25) -> float:
-    """
-    Round price to the nearest valid tick size.
-    """
-    try:
-        if tick_size <= 0:
-            return price
-        return round(price / tick_size) * tick_size
-    except Exception:
-        return price
-
-
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 10000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
 
 
 
