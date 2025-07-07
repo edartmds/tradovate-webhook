@@ -619,27 +619,17 @@ async def webhook(req: Request):
             "isAutomated": True,
             # Take Profit bracket
             "bracket1": {
-                "accountSpec": client.account_spec,
-                "accountId": client.account_id,
                 "action": "Sell" if action.lower() == "buy" else "Buy",
-                "symbol": symbol,
-                "orderQty": 1,
                 "orderType": "Limit",
                 "price": t1,
                 "timeInForce": "GTC",
-                "isAutomated": True
             },
             # Stop Loss bracket
             "bracket2": {
-                "accountSpec": client.account_spec,
-                "accountId": client.account_id,
                 "action": "Sell" if action.lower() == "buy" else "Buy",
-                "symbol": symbol,
-                "orderQty": 1,
                 "orderType": "Stop",
                 "stopPrice": stop,
                 "timeInForce": "GTC",
-                "isAutomated": True
             }
         }
         logging.info(f"🎯 LIMIT ENTRY at exact price={price}")
