@@ -605,26 +605,23 @@ async def webhook(req: Request):
         await wait_until_no_open_orders(symbol)
         logging.info(f"✅ Confirmed no open orders remain for {symbol} after all cancellations")
 
-# STEP 3: Place entry order with automatic bracket orders (OSO) - Limit entry at alert PRICE
-        logging.info(f"=== PLACING OSO BRACKET ORDER WITH LIMIT ENTRY ===")
-        logging.info(f"Symbol: {symbol}, Order Type: {order_type}, Entry: {order_price}, TP: {t1}, SL: {stop}")
-        logging.info("📊 LIMIT entry order - using standard execution path")
-        # Determine opposite action for take profit and stop loss
-        opposite_action = "Sell" if action.lower() == "buy" else "Buy"
-        # Build OSO payload with force limit entry
+        # STEP 3: Place bracket OSO order with forced limit entry at alert PRICE
+        logging.info("=== PLACING OSO BRACKET ORDER WITH LIMIT ENTRY ===")
         oso_payload = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
             "action": action.capitalize(),
             "symbol": symbol,
             "orderQty": 1,
-            "orderType": order_type,
+            "orderType": "Limit",
+            "price": price,
             "timeInForce": "GTC",
             "isAutomated": True,
+            # Take Profit bracket
             "bracket1": {
                 "accountSpec": client.account_spec,
                 "accountId": client.account_id,
-                "action": opposite_action,
+                "action": "Sell" if action.lower() == "buy" else "Buy",
                 "symbol": symbol,
                 "orderQty": 1,
                 "orderType": "Limit",
@@ -632,68 +629,27 @@ async def webhook(req: Request):
                 "timeInForce": "GTC",
                 "isAutomated": True
             },
+            # Stop Loss bracket
             "bracket2": {
                 "accountSpec": client.account_spec,
                 "accountId": client.account_id,
-                "action": opposite_action,
+                "action": "Sell" if action.lower() == "buy" else "Buy",
                 "symbol": symbol,
                 "orderQty": 1,
                 "orderType": "Stop",
                 "stopPrice": stop,
                 "timeInForce": "GTC",
                 "isAutomated": True
-            },
-            "price": order_price
-        }
-        logging.info(f"🎯 LIMIT ENTRY at exact price={order_price}")
-        logging.info(f"{json.dumps(oso_payload, indent=2)}")        # STEP 4: Place OSO bracket order with speed optimizations
-        logging.info("=== PLACING OSO BRACKET ORDER ===")
-       
-        # 🔥 SPEED OPTIMIZATION: Validate payload before submission to prevent rejection delays
-        required_fields = ['accountSpec', 'accountId', 'action', 'symbol', 'orderQty', 'orderType', 'timeInForce']
-        for field in required_fields:
-            if field not in oso_payload:
-                raise HTTPException(status_code=400, detail=f"Missing required OSO field: {field}")
-       
-        try:
-            # 🚀 FASTEST EXECUTION: Place OSO order immediately
-            start_time = time.time()
-            oso_result = await client.place_oso_order(oso_payload)
-            execution_time = (time.time() - start_time) * 1000  # Convert to milliseconds
-           
-            logging.info(f"✅ OSO BRACKET ORDER PLACED SUCCESSFULLY in {execution_time:.2f}ms")
-            logging.info(f"OSO Result: {oso_result}")
-           
-            # 🔥 MARK SUCCESSFUL TRADE PLACEMENT - This helps prevent immediate duplicates
-            # When this trade completes (hits TP or SL), we'll prevent duplicate signals for a period
-            logging.info(f"📝 Recording successful trade placement: {symbol} {action}")
-            # Note: We mark completion when the trade actually completes, not just when placed
-           
-            return {
-                "status": "success",
-                "order": oso_result,
-                "execution_time_ms": execution_time,
-                "order_type": order_type,
-                "symbol": symbol
             }
-        except Exception as e:
-            execution_time = (time.time() - start_time) * 1000 if 'start_time' in locals() else 0
-            logging.error(f"❌ OSO placement failed after {execution_time:.2f}ms: {e}")
-            # 🔥 SMART ERROR HANDLING: Provide specific guidance based on error type
-            error_msg = str(e).lower()
-            if "price is already at or past this level" in error_msg:
-                logging.error("🎯 PRICE LEVEL ERROR: The intelligent order type selection may need adjustment")
-                logging.error(f"🎯 Entry price: {price}, Current market data needed for diagnosis")
-            elif "insufficient buying power" in error_msg:
-                logging.error("💰 MARGIN ERROR: Insufficient buying power for position size")
-            elif "invalid symbol" in error_msg:
-                logging.error(f"📊 SYMBOL ERROR: Contract symbol {symbol} may be expired or invalid")
-            # Log the detailed error for debugging
-            import traceback
-            logging.error(f"OSO Error traceback: {traceback.format_exc()}")
-            raise HTTPException(status_code=500, detail=f"OSO order placement failed: {str(e)}")
-
-
+        }
+        logging.info(f"🎯 LIMIT ENTRY at exact price={price}")
+        logging.info(f"=== OSO PAYLOAD ===")
+        logging.info(f"{json.dumps(oso_payload, indent=2)}")
+        # Place OSO bracket order
+        oso_result = await client.place_oso_order(oso_payload)
+        logging.info(f"✅ OSO BRACKET ORDER PLACED: {oso_result}")
+        return {"status": "success", "order": oso_result}
+# ...existing error handling...
     except Exception as e:
         logging.error(f"=== ERROR IN WEBHOOK ===")
         logging.error(f"Error: {e}")
