@@ -51,6 +51,8 @@ logging.basicConfig(
 
 app = FastAPI()
 client = TradovateClient()
+# Dictionary of asyncio locks per symbol to serialize webhook handling and prevent race conditions
+symbol_locks = {}
 
 
 
@@ -534,7 +536,9 @@ async def webhook(req: Request):
 
 
 
-        logging.info(f"=== PARSED ALERT DATA: {data} ===")        # Extract required fields
+        logging.info(f"=== PARSED ALERT DATA: {data} ===")
+       
+        # Extract required fields
         symbol = data.get("symbol")
         action = data.get("action")
         price = data.get("PRICE")
@@ -552,47 +556,55 @@ async def webhook(req: Request):
         if not all([symbol, action, price, t1, stop]):
             missing = [k for k, v in {"symbol": symbol, "action": action, "PRICE": price, "T1": t1, "STOP": stop}.items() if not v]
             logging.error(f"Missing required fields: {missing}")
-            raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")        # Map TradingView symbol to Tradovate symbol
+            raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")
+           
+        # Map TradingView symbol to Tradovate symbol
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
             symbol = "NQU5"  # Changed from NQM5 to NQU5
             logging.info(f"Mapped symbol to: {symbol}")
-       
-        # 🔥 MINIMAL DUPLICATE DETECTION - Only prevent rapid-fire identical alerts
-        logging.info("🔍 === CHECKING FOR RAPID-FIRE DUPLICATES ONLY ===")
-        cleanup_old_tracking_data()  # Clean up old data first
-       
-        if is_duplicate_alert(symbol, action, data):
-            logging.warning(f"🚫 RAPID-FIRE DUPLICATE BLOCKED: {symbol} {action}")
-            logging.warning(f"🚫 Reason: Identical alert within 30 seconds")
-            return {
-                "status": "rejected",
-                "reason": "rapid_fire_duplicate",
-                "message": f"Rapid-fire duplicate alert blocked for {symbol} {action}"
-            }
-       
-        logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
-          # Determine optimal order type based on current market conditions
-        logging.info("🔍 Analyzing market conditions for optimal order type...")
-        try:
-            order_config = await client.determine_optimal_order_type(symbol, action, price)
-            order_type = order_config["orderType"]
-            order_price = order_config.get("price")
-            stop_price = order_config.get("stopPrice")
            
-            logging.info(f"💡 OPTIMAL ORDER TYPE: {order_type}")
-            if order_type == "Stop":
-                logging.info(f"📊 STOP ORDER: Will trigger when price reaches {stop_price}")
-            else:
-                logging.info(f"📊 LIMIT ORDER: Will execute at price {order_price}")
-               
-        except Exception as e:
-            # 🔥 FALLBACK: If intelligent selection fails, default to traditional approach
-            logging.warning(f"⚠️ Intelligent order type selection failed: {e}")
-            logging.info("🔄 FALLBACK: Using traditional Stop order entry")
-            order_type = "Stop"
-            stop_price = price
-            order_price = None
-            logging.info(f"🔄 FALLBACK STOP ORDER: Will trigger at stopPrice={stop_price}")
+        # 🔄 STRATEGY REVERSAL: Flip the order direction and price targets
+        # If original was BUY, we'll SELL and vice versa
+        original_action = action
+        original_t1 = t1
+        original_stop = stop
+       
+        # Flip the direction: Buy becomes Sell, Sell becomes Buy
+        action = "Sell" if original_action.lower() == "buy" else "Buy"
+       
+        # Flip the targets: STOP becomes T1, T1 becomes STOP
+        t1 = original_stop
+        stop = original_t1
+       
+        logging.info(f"🔄 STRATEGY REVERSAL: Flipped {original_action} to {action}")
+        logging.info(f"🔄 STRATEGY REVERSAL: Flipped T1 from {original_t1} to {t1}")
+        logging.info(f"🔄 STRATEGY REVERSAL: Flipped STOP from {original_stop} to {stop}")
+       
+        # Ensure sequential handling per symbol to prevent race conditions
+        lock = symbol_locks.setdefault(symbol, asyncio.Lock())
+        logging.info(f"📌 Waiting for lock for symbol {symbol}")
+        async with lock:
+            logging.info(f"🔒 Acquired lock for {symbol}")
+            # 🔥 MINIMAL DUPLICATE DETECTION - Only prevent rapid-fire identical alerts
+            logging.info("🔍 === CHECKING FOR RAPID-FIRE DUPLICATES ONLY ===")
+            cleanup_old_tracking_data()  # Clean up old data first
+
+
+            if is_duplicate_alert(symbol, action, data):
+                logging.warning(f"🚫 RAPID-FIRE DUPLICATE BLOCKED: {symbol} {action}")
+                logging.warning(f"🚫 Reason: Identical alert within 30 seconds")
+                return {
+                    "status": "rejected",
+                    "reason": "rapid_fire_duplicate",
+                    "message": f"Rapid-fire duplicate alert blocked for {symbol} {action}"
+                }
+
+
+            logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
+            # Force Limit entry at the exact alert price
+            order_type = "Limit"
+            order_price = price
+            logging.info(f"🎯 FORCE LIMIT ENTRY at exact price {order_price}")
        
         # 🔥 REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
         # Every new alert will now automatically flatten existing positions and place new orders
@@ -612,23 +624,32 @@ async def webhook(req: Request):
 
 
 
-        # STEP 2: Cancel all existing pending orders to prevent over-leveraging
+        # STEP 2: Cancel existing orders to avoid duplicates
         logging.info("=== CANCELLING ALL PENDING ORDERS ===")
         try:
-            cancelled_orders = await client.cancel_all_pending_orders()
-            logging.info(f"Successfully cancelled {len(cancelled_orders)} pending orders")
+            cancelled = await client.cancel_all_pending_orders()
+            logging.info(f"Successfully cancelled {len(cancelled)} pending orders")
         except Exception as e:
             logging.warning(f"Failed to cancel some orders: {e}")
-            # Continue with new order placement even if cancellation partially fails        # STEP 3: Place entry order with automatic bracket orders (OSO)
-        logging.info(f"=== PLACING OSO BRACKET ORDER WITH INTELLIGENT ORDER TYPE ===")
-        logging.info(f"Symbol: {symbol}, Order Type: {order_type}, Entry: {price}, TP: {t1}, SL: {stop}")
+        # Wait for orders to clear
+        await wait_until_no_open_orders(symbol)
+        logging.info(f"✅ No open orders remain after generic cancel for {symbol}")
        
-        # 🔥 SPEED OPTIMIZATION: For STOP orders, prioritize fastest possible execution
-        if order_type == "Stop":
-            logging.info("⚡ SPEED MODE: STOP order detected - optimizing for fastest execution")
-            # For breakout/breakdown strategies, speed is critical
-        else:
-            logging.info("📊 LIMIT order - using standard execution path")
+        logging.info("=== CANCELLING ANY REMAINING ORDERS FOR SYMBOL ===")
+        try:
+            # Targeted cancellation
+            await cancel_all_orders(symbol)
+            logging.info(f"✅ cancel_all_orders cleared remaining orders for {symbol}")
+        except Exception as e:
+            logging.warning(f"cancel_all_orders(symbol) failed: {e}")
+        # Final wait
+        await wait_until_no_open_orders(symbol)
+        logging.info(f"✅ Confirmed no open orders remain for {symbol} after all cancellations")
+        # STEP 3: Place entry order with automatic bracket orders (OSO)
+        logging.info(f"=== PLACING OSO BRACKET ORDER WITH LIMIT ENTRY ===")
+        logging.info(f"Symbol: {symbol}, Order Type: {order_type}, Entry: {order_price}, TP: {t1}, SL: {stop}")
+       
+        logging.info("📊 LIMIT entry order - using standard execution path")
        
         # Determine opposite action for take profit and stop loss
         opposite_action = "Sell" if action.lower() == "buy" else "Buy"
@@ -639,7 +660,7 @@ async def webhook(req: Request):
             "action": action.capitalize(),  # "Buy" or "Sell"
             "symbol": symbol,
             "orderQty": 1,
-            "orderType": order_type,   # Intelligently selected based on market conditions
+            "orderType": order_type,   # "Limit"
             "timeInForce": "GTC",
             "isAutomated": True,
             # Take Profit bracket (bracket1)
@@ -668,15 +689,9 @@ async def webhook(req: Request):
             }
         }
        
-        # 🔥 CRITICAL: Add dynamic price/stopPrice fields based on intelligent order type
-        if order_type == "Stop":
-            # Stop order needs stopPrice field
-            oso_payload["stopPrice"] = stop_price
-            logging.info(f"🎯 STOP ORDER: Entry will trigger at stopPrice={stop_price}")
-        else:
-            # Limit order needs price field  
-            oso_payload["price"] = order_price
-            logging.info(f"🎯 LIMIT ORDER: Entry will execute at price={order_price}")
+        # Force Limit entry at the exact alert price
+        oso_payload["price"] = order_price
+        logging.info(f"🎯 LIMIT ENTRY at exact price={order_price}")
        
         logging.info(f"=== OSO PAYLOAD ===")
         logging.info(f"{json.dumps(oso_payload, indent=2)}")        # STEP 4: Place OSO bracket order with speed optimizations
@@ -753,14 +768,6 @@ async def root():
 
 
 
-@app.post("/")
-async def root_post(req: Request):
-    """Handle POST requests to root and redirect to webhook"""
-    logging.warning("POST request received at root path '/' - redirecting to /webhook")
-    logging.info("If you're sending webhooks, please update your URL to include '/webhook' at the end")
-   
-    # Forward the request to the webhook endpoint
-    return await webhook(req)
 
 
 
@@ -768,3 +775,12 @@ async def root_post(req: Request):
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     uvicorn.run("main:app", host="0.0.0.0", port=port)
+
+
+
+
+
+
+
+
+
