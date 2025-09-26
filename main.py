@@ -563,7 +563,7 @@ async def webhook(req: Request):
            
         # Map TradingView symbol to Tradovate symbol
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
-            symbol = "NQU5"  # Changed from NQM5 to NQU5
+            symbol = "NQZ5"  # Changed from NQM5 to NQU5
             logging.info(f"Mapped symbol to: {symbol}")
            
         # 🔄 STRATEGY REVERSAL: Flip the order direction and price targets
