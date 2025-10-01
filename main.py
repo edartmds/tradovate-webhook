@@ -535,7 +535,7 @@ async def webhook(req: Request):
            
         # Map TradingView symbol to Tradovate symbol
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
-            symbol = "NQU5"  # Changed from NQM5 to NQU5
+            symbol = "NQZ5"  # Changed from NQM5 to NQU5
             logging.info(f"Mapped symbol to: {symbol}")
            
         # Ensure sequential handling per symbol to prevent race conditions
@@ -734,6 +734,7 @@ async def root_post(req: Request):
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     uvicorn.run("main:app", host="0.0.0.0", port=port)
+
 
 
 
