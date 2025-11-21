@@ -631,15 +631,14 @@ async def webhook(req: Request):
             tp_price = max(float(t1), float(stop))
             sl_price = min(float(t1), float(stop))
 
-        # 🔥 FINAL FIX: Prevent bracket rejection by ensuring prices are not identical.
-        # If TP and SL prices are the same, add one tick (0.25 for NQ) to the Stop Loss.
+        # 🔥 FINAL FIX: Prevent bracket rejection by ensuring prices are not identical and have minimum separation.
         if tp_price == sl_price:
-            logging.warning(f"STOP and T1 prices are identical ({tp_price}). Adding one tick to Stop Loss to prevent rejection.")
+            logging.warning(f"STOP and T1 prices are identical ({tp_price}). Adjusting Stop Loss to prevent rejection.")
             if action.lower() == "sell": # For a sell, SL is higher
-                sl_price += 0.25
+                sl_price += 1.0 # Add 1 point (4 ticks)
             else: # For a buy, SL is lower
-                sl_price -= 0.25
-            logging.info(f"Adjusted prices: TP={tp_price}, SL={sl_price}")
+                sl_price -= 1.0 # Subtract 1 point (4 ticks)
+            logging.info(f"Adjusted prices for separation: TP={tp_price}, SL={sl_price}")
         
         oso_payload = {
             "accountSpec": client.account_spec,
