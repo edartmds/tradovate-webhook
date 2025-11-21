@@ -13,7 +13,7 @@ import httpx
 import hashlib
 
 
-# 🔥 RELAXED DUPLICATE DETECTION FOR AUTOMATED TRADING
+# RELAXED DUPLICATE DETECTION FOR AUTOMATED TRADING
 last_alert = {}  # {symbol: {"direction": "buy"/"sell", "timestamp": datetime, "alert_hash": str}}
 completed_trades = {}  # {symbol: {"last_completed_direction": "buy"/"sell", "completion_time": datetime}}
 active_orders = []  # Track active order IDs to manage cancellation
@@ -29,7 +29,7 @@ LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
 
 
-# 🚀 SPEED OPTIMIZATION: Faster logging configuration
+# SPEED OPTIMIZATION: Faster logging configuration
 log_file = os.path.join(LOG_DIR, "webhook_trades.log")
 
 
@@ -42,7 +42,7 @@ console_handler = logging.StreamHandler()
 console_handler.setLevel(logging.INFO)
 
 
-# 🚀 SPEED: Simpler log format for faster processing
+# SPEED: Simpler log format for faster processing
 formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
 file_handler.setFormatter(formatter)
 console_handler.setFormatter(formatter)
@@ -56,7 +56,7 @@ logger.addHandler(file_handler)
 logger.addHandler(console_handler)
 
 
-# 🚀 SPEED: Disable debug logging for httpx to reduce noise
+# SPEED: Disable debug logging for httpx to reduce noise
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
@@ -66,7 +66,7 @@ client = TradovateClient()
 symbol_locks = {}
 
 
-# 🚀 SPEED OPTIMIZATION: Persistent HTTP client to avoid connection overhead
+# SPEED OPTIMIZATION: Persistent HTTP client to avoid connection overhead
 persistent_http_client = None
 
 
@@ -88,8 +88,8 @@ async def get_http_client():
 @app.on_event("startup")
 async def startup_event():
     logging.info("=== APPLICATION STARTING UP ===")
-    logging.info("🔴 *** FORCED LIVE TRADING MODE ***")
-    logging.info("🔴 *** CONNECTING TO LIVE API ENDPOINTS ***")
+    logging.info("*** FORCED LIVE TRADING MODE ***")
+    logging.info("*** CONNECTING TO LIVE API ENDPOINTS ***")
     try:
         await client.authenticate()
         logging.info(f"=== LIVE AUTHENTICATION SUCCESSFUL ===")
@@ -119,7 +119,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """🚀 SPEED: Cleanup persistent HTTP client on shutdown"""
+    """SPEED: Cleanup persistent HTTP client on shutdown"""
     global persistent_http_client
     if persistent_http_client:
         await persistent_http_client.aclose()
@@ -128,14 +128,14 @@ async def shutdown_event():
 
 
 async def cancel_all_orders(symbol):
-    """🚀 ULTRA-FAST order cancellation with parallel processing"""
-    list_url = f"https://live-api.tradovate.com/v1/order/list"  # 🔴 LIVE API
-    cancel_url = f"https://live-api.tradovate.com/v1/order/cancel"  # 🔴 LIVE API
+    """ULTRA-FAST order cancellation with parallel processing"""
+    list_url = f"https://live-api.tradovate.com/v1/order/list"  # LIVE API
+    cancel_url = f"https://live-api.tradovate.com/v1/order/cancel"  # LIVE API
     headers = {"Authorization": f"Bearer {client.access_token}"}
    
     http_client = await get_http_client()
    
-    # 🚀 SPEED: Reduced max retries and faster polling
+    # SPEED: Reduced max retries and faster polling
     max_retries = 3  # Reduced from 8
     for attempt in range(max_retries):
         # Get all orders
@@ -148,7 +148,7 @@ async def cancel_all_orders(symbol):
         if not open_orders:
             break
            
-        # 🚀 PARALLEL CANCELLATION: Cancel all orders simultaneously
+        # PARALLEL CANCELLATION: Cancel all orders simultaneously
         cancel_tasks = []
         for order in open_orders:
             oid = order.get("id")
@@ -160,10 +160,10 @@ async def cancel_all_orders(symbol):
         if cancel_tasks:
             await asyncio.gather(*cancel_tasks, return_exceptions=True)
        
-        # 🚀 SPEED: Reduced sleep from 0.5 to 0.1 seconds
+        # SPEED: Reduced sleep from 0.5 to 0.1 seconds
         await asyncio.sleep(0.1)
    
-    # 🚀 SPEED: Skip final verification check for maximum speed
+    # SPEED: Skip final verification check for maximum speed
     # Final check removed to save time - if orders remain, they'll be handled in next cycle
 
 
@@ -171,25 +171,25 @@ async def cancel_single_order(http_client, cancel_url, order_id, symbol, status)
     """Cancel a single order - used for parallel processing"""
     try:
         await http_client.post(f"{cancel_url}/{order_id}", headers={"Authorization": f"Bearer {client.access_token}"})
-        # 🚀 SPEED: Reduced logging verbosity
-        logging.info(f"✅ Cancelled {order_id} ({status})")
+        # SPEED: Reduced logging verbosity
+        logging.info(f"CANCELLED {order_id} ({status})")
     except Exception as e:
-        logging.error(f"❌ Cancel failed {order_id}: {e}")
+        logging.error(f"Cancel failed {order_id}: {e}")
 
 
 async def flatten_position(symbol):
-    """🚀 ULTRA-FAST position flattening"""
-    url = f"https://live-api.tradovate.com/v1/position/closeposition"  # 🔴 LIVE API
+    """ULTRA-FAST position flattening"""
+    url = f"https://live-api.tradovate.com/v1/position/closeposition"  # LIVE API
     headers = {"Authorization": f"Bearer {client.access_token}"}
     http_client = await get_http_client()
     await http_client.post(url, headers=headers, json={"symbol": symbol})
 
 
-async def wait_until_no_open_orders(symbol, timeout=5):  # 🚀 SPEED: Reduced timeout from 10 to 5 seconds
+async def wait_until_no_open_orders(symbol, timeout=5):  # SPEED: Reduced timeout from 10 to 5 seconds
     """
-    🚀 OPTIMIZED: Poll Tradovate with faster intervals until no open orders remain
+    OPTIMIZED: Poll Tradovate with faster intervals until no open orders remain
     """
-    url = f"https://live-api.tradovate.com/v1/order/list"  # 🔴 LIVE API
+    url = f"https://live-api.tradovate.com/v1/order/list"  # LIVE API
     headers = {"Authorization": f"Bearer {client.access_token}"}
     http_client = await get_http_client()
     start = asyncio.get_event_loop().time()
@@ -202,14 +202,14 @@ async def wait_until_no_open_orders(symbol, timeout=5):  # 🚀 SPEED: Reduced t
         if not open_orders:
             return
         if asyncio.get_event_loop().time() - start > timeout:
-            logging.warning(f"⚡ Timeout waiting for orders to clear: {symbol}")
+            logging.warning(f"Timeout waiting for orders to clear: {symbol}")
             return
-        # 🚀 SPEED: Reduced sleep from 0.5 to 0.1 seconds for faster polling
+        # SPEED: Reduced sleep from 0.5 to 0.1 seconds for faster polling
         await asyncio.sleep(0.1)
 
 
 def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
-    # 🚀 SPEED: Reduced logging verbosity for faster parsing
+    # SPEED: Reduced logging verbosity for faster parsing
     parsed_data = {}
     if alert_text.startswith("="):
         try:
@@ -231,8 +231,8 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
             parsed_data["action"] = line.strip().capitalize()
 
 
-    # 🚀 SPEED: Single comprehensive log instead of multiple logs
-    logging.info(f"⚡ Parsed: {parsed_data}")
+    # SPEED: Single comprehensive log instead of multiple logs
+    logging.info(f"Parsed: {parsed_data}")
 
 
     required_fields = ["symbol", "action"]
@@ -266,7 +266,7 @@ def hash_alert(data: dict) -> str:
 
 def is_duplicate_alert(symbol: str, action: str, data: dict) -> bool:
     """
-    🔥 RELAXED DUPLICATE DETECTION FOR AUTOMATED TRADING
+    RELAXED DUPLICATE DETECTION FOR AUTOMATED TRADING
    
     Only blocks truly rapid-fire identical alerts within 30 seconds.
     Allows direction changes and new signals for automated flattening strategy.
@@ -285,12 +285,12 @@ def is_duplicate_alert(symbol: str, action: str, data: dict) -> bool:
         # Only block if EXACT same alert within 30 seconds
         if (last_alert_data.get("alert_hash") == alert_hash and
             time_diff < DUPLICATE_THRESHOLD_SECONDS):
-            logging.warning(f"🚫 RAPID-FIRE DUPLICATE BLOCKED: {symbol} {action}")
-            logging.warning(f"🚫 Identical alert received {time_diff:.1f} seconds ago")
+            logging.warning(f"RAPID-FIRE DUPLICATE BLOCKED: {symbol} {action}")
+            logging.warning(f"Identical alert received {time_diff:.1f} seconds ago")
             return True
    
-    # 🔥 REMOVED: Direction-based blocking - allow all direction changes
-    # 🔥 REMOVED: Post-completion blocking - allow immediate new signals
+    # REMOVED: Direction-based blocking - allow all direction changes
+    # REMOVED: Post-completion blocking - allow immediate new signals
     # This enables full automated trading with position flattening
    
     # Update tracking for rapid-fire detection only
@@ -300,7 +300,7 @@ def is_duplicate_alert(symbol: str, action: str, data: dict) -> bool:
         "alert_hash": alert_hash
     }
    
-    logging.info(f"✅ ALERT ACCEPTED: {symbol} {action} - Automated trading enabled")
+    logging.info(f"ALERT ACCEPTED: {symbol} {action} - Automated trading enabled")
     return False
 
 
@@ -310,7 +310,7 @@ def mark_trade_completed(symbol: str, direction: str):
         "last_completed_direction": direction.lower(),
         "completion_time": datetime.now()
     }
-    logging.info(f"🏁 TRADE COMPLETION MARKED: {symbol} {direction}")
+    logging.info(f"TRADE COMPLETION MARKED: {symbol} {direction}")
    
 def cleanup_old_tracking_data():
     """Clean up old tracking data to prevent memory leaks."""
@@ -346,30 +346,30 @@ async def place_stop_loss_order_legacy(stop_order_data):
 
 async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
     """
-    🚀 ULTRA-FAST enhanced monitoring with optimized polling
+    ULTRA-FAST enhanced monitoring with optimized polling
     """
-    logging.info(f"⚡ Starting fast order monitoring: {symbol}")
+    logging.info(f"Starting fast order monitoring: {symbol}")
     entry_filled = False
     monitoring_start_time = asyncio.get_event_loop().time()
-    max_monitoring_time = 1800  # 🚀 SPEED: Reduced from 3600 to 1800 seconds (30 min)
+    max_monitoring_time = 1800  # SPEED: Reduced from 3600 to 1800 seconds (30 min)
    
     if not stop_order_data:
         logging.error("CRITICAL: No stop_order_data provided")
    
-    http_client = await get_http_client()  # 🚀 SPEED: Use persistent client
+    http_client = await get_http_client()  # SPEED: Use persistent client
    
     while True:
         try:
             headers = {"Authorization": f"Bearer {client.access_token}"}
             active_orders = {}
            
-            # 🚀 SPEED: Parallel order status checks
+            # SPEED: Parallel order status checks
             status_tasks = []
             for label, order_id in order_tracking.items():
                 if order_id is None:
                     continue
                
-                url = f"https://live-api.tradovate.com/v1/order/{order_id}"  # 🔴 LIVE API
+                url = f"https://live-api.tradovate.com/v1/order/{order_id}"  # LIVE API
                 task = asyncio.create_task(http_client.get(url, headers=headers))
                 status_tasks.append((label, order_id, task))
            
@@ -384,7 +384,7 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
 
                     if label == "ENTRY" and status and status.lower() == "filled" and not entry_filled:
                         entry_filled = True
-                        logging.info(f"⚡ ENTRY filled: {symbol}")
+                        logging.info(f"ENTRY filled: {symbol}")
 
 
                         if stop_order_data and "T1" in stop_order_data:
@@ -408,7 +408,7 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
 
                             try:
                                 response = await http_client.post(
-                                    f"https://live-api.tradovate.com/v1/order/placeOSO",  # 🔴 LIVE API
+                                    f"https://live-api.tradovate.com/v1/order/placeOSO",  # LIVE API
                                     headers={"Authorization": f"Bearer {client.access_token}", "Content-Type": "application/json"},
                                     json=oso_payload
                                 )
@@ -417,24 +417,24 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
 
 
                                 if "orderId" in oso_result:
-                                    logging.info(f"⚡ OSO placed: {oso_result}")
+                                    logging.info(f"OSO placed: {oso_result}")
                                 else:
                                     raise ValueError(f"OSO failed: {oso_result}")
                             except Exception as e:
-                                logging.error(f"⚡ OSO error: {e}")
+                                logging.error(f"OSO error: {e}")
 
 
                     elif label == "STOP" and status and status.lower() == "filled":
-                        logging.info(f"⚡ STOP filled: {symbol}")
+                        logging.info(f"STOP filled: {symbol}")
                         trade_direction = stop_order_data.get("action", "unknown") if stop_order_data else "unknown"
                         mark_trade_completed(symbol, trade_direction)
 
 
-                        # 🚀 SPEED: Quick cancel of TP order
+                        # SPEED: Quick cancel of TP order
                         if order_tracking.get("TP1"):
                             asyncio.create_task(
                                 http_client.post(
-                                    f"https://live-api.tradovate.com/v1/order/cancel/{order_tracking['TP1']}",  # 🔴 LIVE API
+                                    f"https://live-api.tradovate.com/v1/order/cancel/{order_tracking['TP1']}",  # LIVE API
                                     headers=headers
                                 )
                             )
@@ -442,16 +442,16 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
 
 
                     elif label == "TP1" and status and status.lower() == "filled":
-                        logging.info(f"⚡ TP1 filled: {symbol}")
+                        logging.info(f"TP1 filled: {symbol}")
                         trade_direction = stop_order_data.get("action", "unknown") if stop_order_data else "unknown"
                         mark_trade_completed(symbol, trade_direction)
 
 
-                        # 🚀 SPEED: Quick cancel of STOP order
+                        # SPEED: Quick cancel of STOP order
                         if order_tracking.get("STOP"):
                             asyncio.create_task(
                                 http_client.post(
-                                    f"https://live-api.tradovate.com/v1/order/cancel/{order_tracking['STOP']}",  # 🔴 LIVE API
+                                    f"https://live-api.tradovate.com/v1/order/cancel/{order_tracking['STOP']}",  # LIVE API
                                     headers=headers
                                 )
                             )
@@ -462,27 +462,27 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                         active_orders[label] = order_id
                        
                 except Exception as e:
-                    logging.error(f"⚡ Status check error {label}: {e}")
+                    logging.error(f"Status check error {label}: {e}")
 
 
             if asyncio.get_event_loop().time() - monitoring_start_time > max_monitoring_time:
-                logging.warning(f"⚡ Monitoring timeout: {symbol}")
+                logging.warning(f"Monitoring timeout: {symbol}")
                 return
 
 
             if not active_orders:
-                logging.info("⚡ No active orders - monitoring complete")
+                logging.info("No active orders - monitoring complete")
                 return
 
 
-            # 🚀 SPEED: Adaptive polling - faster when entry not filled, slower after
+            # SPEED: Adaptive polling - faster when entry not filled, slower after
             poll_interval = 0.2 if not entry_filled else 0.5
             await asyncio.sleep(poll_interval)
 
 
         except Exception as e:
-            logging.error(f"⚡ Monitoring error: {e}")
-            await asyncio.sleep(1)  # 🚀 SPEED: Reduced error recovery time
+            logging.error(f"Monitoring error: {e}")
+            await asyncio.sleep(1)  # SPEED: Reduced error recovery time
 
 
 @app.post("/webhook")
@@ -529,7 +529,7 @@ async def webhook(req: Request):
             symbol = "NQZ5"  # Changed from NQM5 to NQU5
             logging.info(f"Mapped symbol to: {symbol}")
            
-        # 🔄 STRATEGY REVERSAL: Flip the order direction and price targets
+        # STRATEGY REVERSAL: Flip the order direction and price targets
         # If original was BUY, we'll SELL and vice versa
         original_action = action
         original_t1 = t1
@@ -542,23 +542,23 @@ async def webhook(req: Request):
         t1 = original_stop
         stop = original_t1
        
-        logging.info(f"🔄 STRATEGY REVERSAL: Flipped {original_action} to {action}")
-        logging.info(f"🔄 STRATEGY REVERSAL: Flipped T1 from {original_t1} to {t1}")
-        logging.info(f"🔄 STRATEGY REVERSAL: Flipped STOP from {original_stop} to {stop}")
+        logging.info(f"STRATEGY REVERSAL: Flipped {original_action} to {action}")
+        logging.info(f"STRATEGY REVERSAL: Flipped T1 from {original_t1} to {t1}")
+        logging.info(f"STRATEGY REVERSAL: Flipped STOP from {original_stop} to {stop}")
        
         # Ensure sequential handling per symbol to prevent race conditions
         lock = symbol_locks.setdefault(symbol, asyncio.Lock())
-        logging.info(f"📌 Waiting for lock for symbol {symbol}")
+        logging.info(f"Waiting for lock for symbol {symbol}")
         async with lock:
-            logging.info(f"🔒 Acquired lock for {symbol}")
-            # 🔥 MINIMAL DUPLICATE DETECTION - Only prevent rapid-fire identical alerts
-            logging.info("🔍 === CHECKING FOR RAPID-FIRE DUPLICATES ONLY ===")
+            logging.info(f"Acquired lock for {symbol}")
+            # MINIMAL DUPLICATE DETECTION - Only prevent rapid-fire identical alerts
+            logging.info("=== CHECKING FOR RAPID-FIRE DUPLICATES ONLY ===")
             cleanup_old_tracking_data()  # Clean up old data first
 
 
             if is_duplicate_alert(symbol, action, data):
-                logging.warning(f"🚫 RAPID-FIRE DUPLICATE BLOCKED: {symbol} {action}")
-                logging.warning(f"🚫 Reason: Identical alert within 30 seconds")
+                logging.warning(f"RAPID-FIRE DUPLICATE BLOCKED: {symbol} {action}")
+                logging.warning(f"Reason: Identical alert within 30 seconds")
                 return {
                     "status": "rejected",
                     "reason": "rapid_fire_duplicate",
@@ -566,17 +566,17 @@ async def webhook(req: Request):
                 }
 
 
-            logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
+            logging.info(f"ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
             # Force Limit entry at the exact alert price
             order_type = "Limit"
             order_price = price
-            logging.info(f"🎯 FORCE LIMIT ENTRY at exact price {order_price}")
+            logging.info(f"FORCE LIMIT ENTRY at exact price {order_price}")
        
-        # 🔥 REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
+        # REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
         # Every new alert will now automatically flatten existing positions and place new orders
        
-        # 🚀 SPEED OPTIMIZATION: Parallel cleanup operations for maximum speed
-        logging.info("⚡ === ULTRA-FAST PARALLEL CLEANUP === ⚡")
+        # SPEED OPTIMIZATION: Parallel cleanup operations for maximum speed
+        logging.info("=== ULTRA-FAST PARALLEL CLEANUP ===")
        
         cleanup_tasks = []
        
@@ -600,19 +600,19 @@ async def webhook(req: Request):
             for i, (name, task) in enumerate(cleanup_tasks):
                 result = results[i]
                 if isinstance(result, Exception):
-                    logging.warning(f"⚡ {name} failed: {result}")
+                    logging.warning(f"{name} failed: {result}")
                 else:
-                    logging.info(f"✅ {name} completed")
+                    logging.info(f"{name} completed")
                    
         except Exception as e:
-            logging.error(f"⚡ Parallel cleanup error: {e}")
+            logging.error(f"Parallel cleanup error: {e}")
             # Continue anyway - speed is priority
        
-        # 🚀 SPEED: Skip final order verification wait - place order immediately
+        # SPEED: Skip final order verification wait - place order immediately
         # This saves 1-5 seconds of polling time
        
         # STEP 3: Place entry order with automatic bracket orders (OSO)
-        logging.info(f"⚡ === ULTRA-FAST OSO PLACEMENT ===")
+        logging.info(f"=== ULTRA-FAST OSO PLACEMENT ===")
        
         # Determine opposite action for take profit and stop loss
         opposite_action = "Sell" if action.lower() == "buy" else "Buy"
@@ -644,22 +644,22 @@ async def webhook(req: Request):
             }
         }
        
-        # � FINAL ATTEMPT: LIVE API SPECIFIC STRUCTURE
-        logging.info(f"🔥 LIVE API OSO: {symbol} {action} Market order | TP:{t1} SL:{stop}")
-        logging.info(f"🔥 LIVE API OSO: Entry=Market+IOC | TP=Limit | SL=StopMarket")
-        logging.info(f"🔥 LIVE API OSO: Brackets simplified - no extra account fields")
+        # FINAL ATTEMPT: LIVE API SPECIFIC STRUCTURE
+        logging.info(f"LIVE API OSO: {symbol} {action} Market order | TP:{t1} SL:{stop}")
+        logging.info(f"LIVE API OSO: Entry=Market+IOC | TP=Limit | SL=StopMarket")
+        logging.info(f"LIVE API OSO: Brackets simplified - no extra account fields")
         
         logging.info(f"=== LIVE API OSO PAYLOAD ===")
         logging.info(f"{json.dumps(oso_payload, indent=2)}")
        
         # STEP 4: Place OSO bracket order with maximum speed optimizations
         try:
-            # 🚀 FASTEST EXECUTION: Place OSO order immediately with timer
+            # FASTEST EXECUTION: Place OSO order immediately with timer
             start_time = time.time()
             oso_result = await client.place_oso_order(oso_payload)
             execution_time = (time.time() - start_time) * 1000  # Convert to milliseconds
            
-            logging.info(f"⚡ OSO SUCCESS in {execution_time:.1f}ms: {oso_result.get('orderId', 'ID_PENDING')}")
+            logging.info(f"OSO SUCCESS in {execution_time:.1f}ms: {oso_result.get('orderId', 'ID_PENDING')}")
            
             return {
                 "status": "success",
@@ -670,16 +670,16 @@ async def webhook(req: Request):
             }
         except Exception as e:
             execution_time = (time.time() - start_time) * 1000 if 'start_time' in locals() else 0
-            logging.error(f"⚡ OSO FAILED after {execution_time:.1f}ms: {e}")
+            logging.error(f"OSO FAILED after {execution_time:.1f}ms: {e}")
            
-            # 🚀 SPEED: Minimal error analysis for faster recovery
+            # SPEED: Minimal error analysis for faster recovery
             error_msg = str(e).lower()
             if "price" in error_msg:
-                logging.error(f"⚡ PRICE ERROR: {order_price}")
+                logging.error(f"PRICE ERROR: {order_price}")
             elif "buying power" in error_msg:
-                logging.error("⚡ MARGIN ERROR")
+                logging.error("MARGIN ERROR")
             elif "symbol" in error_msg:
-                logging.error(f"⚡ SYMBOL ERROR: {symbol}")
+                logging.error(f"SYMBOL ERROR: {symbol}")
            
             raise HTTPException(status_code=500, detail=f"OSO failed: {str(e)}")
 
