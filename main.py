@@ -617,30 +617,30 @@ async def webhook(req: Request):
         # Determine opposite action for take profit and stop loss
         opposite_action = "Sell" if action.lower() == "buy" else "Buy"
        
-        # 🔥 TRADOVATE LIVE API REQUIRES DIFFERENT OSO STRUCTURE
-        # Based on official Tradovate API documentation for live trading
+        # FIXED LIVE API OSO STRUCTURE - This is completely different from demo!
+        # Live trading requires specific bracket structure
         oso_payload = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
             "action": action.capitalize(),
             "symbol": symbol,
             "orderQty": 1,
-            "orderType": "Market",  # 🔥 CRITICAL: Use Market for immediate fill in live
-            "timeInForce": "IOC",
-            "isAutomated": True,
-            # Take Profit bracket - LIVE API SIMPLIFIED STRUCTURE
+            "orderType": "Market",
+            "timeInForce": "Day",  # CRITICAL: Live API needs Day, not IOC for OSO
+            # LIVE API BRACKET STRUCTURE - Must include both brackets
             "bracket1": {
+                "qty": 1,
                 "action": opposite_action,
                 "orderType": "Limit",
-                "price": t1,
-                "timeInForce": "GTC"
+                "price": round(float(t1), 2),  # Ensure 2 decimal precision
+                "timeInForce": "Day"
             },
-            # Stop Loss bracket - LIVE API WORKING STRUCTURE
             "bracket2": {
+                "qty": 1,
                 "action": opposite_action,
-                "orderType": "StopMarket", 
-                "stopPrice": stop,
-                "timeInForce": "GTC"
+                "orderType": "Stop",  # Use "Stop" not "StopMarket" for live API
+                "stopPrice": round(float(stop), 2),  # Ensure 2 decimal precision
+                "timeInForce": "Day"
             }
         }
        
@@ -652,36 +652,57 @@ async def webhook(req: Request):
         logging.info(f"=== LIVE API OSO PAYLOAD ===")
         logging.info(f"{json.dumps(oso_payload, indent=2)}")
        
-        # STEP 4: Place OSO bracket order with maximum speed optimizations
+        # STEP 4: Place OSO bracket order with enhanced error handling
         try:
-            # FASTEST EXECUTION: Place OSO order immediately with timer
+            # Validate prices before sending
+            entry_price = float(price) if price else None
+            target_price = float(t1)
+            stop_price = float(stop)
+            
+            logging.info(f"PRICE VALIDATION: Entry={entry_price}, Target={target_price}, Stop={stop_price}")
+            
+            # Check minimum price differences (Tradovate requires minimum 0.25 point separation for NQ)
+            if abs(target_price - stop_price) < 1.0:
+                raise ValueError(f"Target and Stop too close: {abs(target_price - stop_price)} points apart (need >1.0)")
+            
             start_time = time.time()
             oso_result = await client.place_oso_order(oso_payload)
-            execution_time = (time.time() - start_time) * 1000  # Convert to milliseconds
+            execution_time = (time.time() - start_time) * 1000
            
-            logging.info(f"OSO SUCCESS in {execution_time:.1f}ms: {oso_result.get('orderId', 'ID_PENDING')}")
+            logging.info(f"=== OSO SUCCESS in {execution_time:.1f}ms ===")
+            logging.info(f"Order ID: {oso_result.get('orderId', 'UNKNOWN')}")
+            logging.info(f"Full Response: {json.dumps(oso_result, indent=2)}")
            
             return {
                 "status": "success",
                 "order": oso_result,
                 "execution_time_ms": execution_time,
                 "order_type": order_type,
-                "symbol": symbol
+                "symbol": symbol,
+                "target_price": target_price,
+                "stop_price": stop_price
             }
         except Exception as e:
             execution_time = (time.time() - start_time) * 1000 if 'start_time' in locals() else 0
-            logging.error(f"OSO FAILED after {execution_time:.1f}ms: {e}")
+            logging.error(f"=== OSO FAILED after {execution_time:.1f}ms ===")
+            logging.error(f"Error Type: {type(e).__name__}")
+            logging.error(f"Full Error: {str(e)}")
+            
+            # Log the exact payload that failed
+            logging.error(f"Failed OSO Payload: {json.dumps(oso_payload, indent=2)}")
            
-            # SPEED: Minimal error analysis for faster recovery
+            # Detailed error analysis
             error_msg = str(e).lower()
-            if "price" in error_msg:
-                logging.error(f"PRICE ERROR: {order_price}")
-            elif "buying power" in error_msg:
-                logging.error("MARGIN ERROR")
+            if "price" in error_msg or "invalid" in error_msg:
+                logging.error(f"PRICE VALIDATION FAILED - Entry:{entry_price}, Target:{target_price}, Stop:{stop_price}")
+            elif "buying power" in error_msg or "margin" in error_msg:
+                logging.error("INSUFFICIENT MARGIN - Check account buying power")
             elif "symbol" in error_msg:
-                logging.error(f"SYMBOL ERROR: {symbol}")
-           
-            raise HTTPException(status_code=500, detail=f"OSO failed: {str(e)}")
+                logging.error(f"SYMBOL ERROR - Check if {symbol} is valid for live trading")
+            elif "bracket" in error_msg:
+                logging.error("BRACKET STRUCTURE ERROR - OSO format rejected")
+            
+            raise HTTPException(status_code=500, detail=f"OSO placement failed: {str(e)}")
 
 
     except Exception as e:
