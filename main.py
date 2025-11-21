@@ -693,39 +693,49 @@ async def webhook(req: Request):
         # Determine opposite action for take profit and stop loss
         opposite_action = "Sell" if action.lower() == "buy" else "Buy"
         
-        # 🔥 CRITICAL FIX: STOP LOSS BRACKET FIELD MAPPING
+        # 🔥 USING EXACT WORKING DEMO STRUCTURE - COPY FROM YOUR WORKING SCRIPT
         oso_payload = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
-            "action": action.capitalize(),
+            "action": action.capitalize(),  # "Buy" or "Sell"
             "symbol": symbol,
             "orderQty": 1,
-            "orderType": "Limit",
-            "price": order_price,
+            "orderType": order_type,   # "Limit"
+            "price": order_price,  # 🚀 SPEED: Set price immediately
             "timeInForce": "GTC",
             "isAutomated": True,
-            # Take Profit bracket
+            # Take Profit bracket (bracket1) - EXACT COPY FROM WORKING DEMO
             "bracket1": {
+                "accountSpec": client.account_spec,
+                "accountId": client.account_id,
                 "action": opposite_action,
-                "orderType": "Limit", 
+                "symbol": symbol,
+                "orderQty": 1,
+                "orderType": "Limit",
                 "price": t1,
-                "timeInForce": "GTC"
+                "timeInForce": "GTC",
+                "isAutomated": True
             },
-            # 🔥 STOP LOSS FIX: Use "price" field for Stop orders in brackets!
+            # Stop Loss bracket (bracket2) - EXACT COPY FROM WORKING DEMO
             "bracket2": {
+                "accountSpec": client.account_spec,
+                "accountId": client.account_id,
                 "action": opposite_action,
-                "orderType": "StopMarket",  # 🔥 CRITICAL: Use StopMarket for brackets
-                "price": stop,  # 🔥 CRITICAL: Use "price" not "stopPrice" in brackets
-                "timeInForce": "GTC"
+                "symbol": symbol,
+                "orderQty": 1,
+                "orderType": "Stop",
+                "stopPrice": stop,
+                "timeInForce": "GTC",
+                "isAutomated": True
             }
         }
        
-        # 🔥 STOP LOSS BRACKET FIXES APPLIED:
-        logging.info(f"🔥 STOP LOSS FIX: {symbol} {action} @ {order_price} | TP:{t1} SL:{stop}")
-        logging.info(f"🔥 STOP LOSS FIX: Using StopMarket (not Stop) for brackets")
-        logging.info(f"🔥 STOP LOSS FIX: Using 'price' field (not stopPrice) for bracket stops")
-        logging.info(f"🔥 STOP LOSS FIX: Entry=Limit | TP=Limit | SL=StopMarket")
-        logging.info(f"🔥 STOP LOSS VALIDATION: {opposite_action} StopMarket at {stop}")
+        # 🔥 USING EXACT WORKING DEMO SCRIPT STRUCTURE:
+        logging.info(f"🔥 EXACT DEMO COPY: {symbol} {action} @ {order_price} | TP:{t1} SL:{stop}")
+        logging.info(f"🔥 EXACT DEMO COPY: Entry=Limit | TP=Limit + accountSpec/ID | SL=Stop + accountSpec/ID")
+        logging.info(f"🔥 EXACT DEMO COPY: Stop loss uses orderType='Stop' + stopPrice={stop}")
+        logging.info(f"🔥 EXACT DEMO COPY: All brackets include full accountSpec, accountId, symbol, orderQty, isAutomated")
+        logging.info(f"🔥 EXACT DEMO COPY: This is the EXACT structure from your working demo script")
        
         logging.info(f"=== OSO PAYLOAD ===")
         logging.info(f"{json.dumps(oso_payload, indent=2)}")
