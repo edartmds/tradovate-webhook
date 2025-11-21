@@ -416,13 +416,14 @@ class TradovateClient:
             raise HTTPException(status_code=500, detail="Internal server error cancelling orders")
 
 
-    async def place_oco_order(self, order1: dict, order2: dict):
+    async def place_oco_order(self, symbol: str, order1: dict, order2: dict):
         """
         Places an Order Cancels Order (OCO) order on Tradovate.
        
         Args:
-            order1 (dict): First order payload
-            order2 (dict): Second order payload
+            symbol (str): The contract symbol.
+            order1 (dict): First order payload (e.g., Take Profit).
+            order2 (dict): Second order payload (e.g., Stop Loss).
            
         Returns:
             dict: The response from the Tradovate API.
@@ -430,18 +431,19 @@ class TradovateClient:
         if not self.access_token:
             await self.authenticate()
 
-
         headers = {
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json"
         }
 
-
-        # OCO requires a different format - orders as an array
+        # The API expects a single JSON object with account details and an 'orders' array.
+        # The individual orders should NOT contain account details.
         oco_payload = {
+            "accountId": self.account_id,
+            "accountSpec": self.account_spec,
+            "symbol": symbol,
             "orders": [order1, order2]
         }
-
 
         try:
             async with httpx.AsyncClient() as client:
