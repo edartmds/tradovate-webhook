@@ -617,8 +617,20 @@ async def webhook(req: Request):
         # Determine opposite action for take profit and stop loss
         opposite_action = "Sell" if action.lower() == "buy" else "Buy"
        
-        # FIXED LIVE API OSO STRUCTURE - This is completely different from demo!
-        # Live trading requires specific bracket structure
+        # LIVE API OSO STRUCTURE - Brackets must match direction logic
+        # For SELL entry: TP is BELOW (Limit), SL is ABOVE (Stop)
+        # For BUY entry: TP is ABOVE (Limit), SL is BELOW (Stop)
+        
+        # Determine which price is TP and which is SL based on entry direction
+        if action.lower() == "sell":
+            # Selling: TP should be below entry, SL above
+            tp_price = min(float(t1), float(stop))  # Lower price = Take Profit
+            sl_price = max(float(t1), float(stop))  # Higher price = Stop Loss
+        else:
+            # Buying: TP should be above entry, SL below
+            tp_price = max(float(t1), float(stop))  # Higher price = Take Profit
+            sl_price = min(float(t1), float(stop))  # Lower price = Stop Loss
+        
         oso_payload = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
@@ -626,44 +638,43 @@ async def webhook(req: Request):
             "symbol": symbol,
             "orderQty": 1,
             "orderType": "Market",
-            "timeInForce": "Day",  # CRITICAL: Live API needs Day, not IOC for OSO
-            # LIVE API BRACKET STRUCTURE - Must include both brackets
+            "timeInForce": "Day",
+            "isAutomated": True,
+            # BRACKET 1: Take Profit (LIMIT order)
             "bracket1": {
-                "qty": 1,
                 "action": opposite_action,
+                "orderQty": 1,
                 "orderType": "Limit",
-                "price": round(float(t1), 2),  # Ensure 2 decimal precision
-                "timeInForce": "Day"
+                "price": round(tp_price, 2),
+                "timeInForce": "GTC",
+                "isAutomated": True
             },
+            # BRACKET 2: Stop Loss (STOP order)
             "bracket2": {
-                "qty": 1,
                 "action": opposite_action,
-                "orderType": "Stop",  # Use "Stop" not "StopMarket" for live API
-                "stopPrice": round(float(stop), 2),  # Ensure 2 decimal precision
-                "timeInForce": "Day"
+                "orderQty": 1,
+                "orderType": "Stop",
+                "stopPrice": round(sl_price, 2),
+                "timeInForce": "GTC",
+                "isAutomated": True
             }
         }
        
-        # FINAL ATTEMPT: LIVE API SPECIFIC STRUCTURE
-        logging.info(f"LIVE API OSO: {symbol} {action} Market order | TP:{t1} SL:{stop}")
-        logging.info(f"LIVE API OSO: Entry=Market+IOC | TP=Limit | SL=StopMarket")
-        logging.info(f"LIVE API OSO: Brackets simplified - no extra account fields")
-        
-        logging.info(f"=== LIVE API OSO PAYLOAD ===")
+        # Log the corrected bracket structure
+        logging.info(f"=== LIVE API OSO ===")
+        logging.info(f"{symbol} {action} Market | TP(Limit):{tp_price} | SL(Stop):{sl_price}")
+        logging.info(f"Original alert: T1={t1} STOP={stop}")
+        logging.info(f"Bracket logic: {'SELL entry (TP below, SL above)' if action.lower() == 'sell' else 'BUY entry (TP above, SL below)'}")
         logging.info(f"{json.dumps(oso_payload, indent=2)}")
        
         # STEP 4: Place OSO bracket order with enhanced error handling
         try:
-            # Validate prices before sending
-            entry_price = float(price) if price else None
-            target_price = float(t1)
-            stop_price = float(stop)
+            # Validate bracket separation
+            bracket_separation = abs(tp_price - sl_price)
+            logging.info(f"VALIDATION: TP={tp_price} | SL={sl_price} | Separation={bracket_separation} points")
             
-            logging.info(f"PRICE VALIDATION: Entry={entry_price}, Target={target_price}, Stop={stop_price}")
-            
-            # Check minimum price differences (Tradovate requires minimum 0.25 point separation for NQ)
-            if abs(target_price - stop_price) < 1.0:
-                raise ValueError(f"Target and Stop too close: {abs(target_price - stop_price)} points apart (need >1.0)")
+            if bracket_separation < 1.0:
+                raise ValueError(f"Brackets too close: {bracket_separation} points (need >1.0)")
             
             start_time = time.time()
             
@@ -679,8 +690,8 @@ async def webhook(req: Request):
                 "execution_time_ms": execution_time,
                 "order_type": order_type,
                 "symbol": symbol,
-                "target_price": target_price,
-                "stop_price": stop_price
+                "tp_price": tp_price,
+                "sl_price": sl_price
             }
         except Exception as e:
             execution_time = (time.time() - start_time) * 1000 if 'start_time' in locals() else 0
@@ -694,7 +705,7 @@ async def webhook(req: Request):
             # Detailed error analysis
             error_msg = str(e).lower()
             if "price" in error_msg or "invalid" in error_msg:
-                logging.error(f"PRICE VALIDATION FAILED - Entry:{entry_price}, Target:{target_price}, Stop:{stop_price}")
+                logging.error(f"PRICE VALIDATION FAILED - TP:{tp_price}, SL:{sl_price}")
             elif "buying power" in error_msg or "margin" in error_msg:
                 logging.error("INSUFFICIENT MARGIN - Check account buying power")
             elif "symbol" in error_msg:
