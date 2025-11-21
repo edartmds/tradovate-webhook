@@ -639,10 +639,14 @@ async def webhook(req: Request):
             # 🎯 SMART ORDER TYPE SELECTION TO AVOID REJECTIONS
             # Check if this is a breakout (price above/below current market) or pullback
            
-            # Force Limit entry at the exact alert price
-            order_type = "Limit"
-            order_price = price
-            logging.info(f"🎯 FORCE LIMIT ENTRY at exact price {order_price}")
+            # Always use Stop orders for entries to avoid immediate fills
+            # Stop orders wait at the exact price level until triggered
+            order_type = "Stop"
+            order_price = price  # Use exact PRICE from alert
+           
+            logging.info(f"🎯 STOP ORDER ENTRY at exact price {order_price}")
+            logging.info(f"🎯 Alert PRICE={price}, T1={t1}, STOP={stop}")
+            logging.info(f"🎯 Entry will trigger when market reaches {order_price}")
        
         # 🔥 REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
         # Every new alert will now automatically flatten existing positions and place new orders
@@ -689,29 +693,29 @@ async def webhook(req: Request):
         # Determine opposite action for take profit and stop loss
         opposite_action = "Sell" if action.lower() == "buy" else "Buy"
         
-        # 🚀 SPEED: Pre-build OSO payload for fastest execution
+        # 🚀 SPEED: Pre-build OSO payload for fastest execution - MATCH WORKING FORWARD EXAMPLE
         oso_payload = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
             "action": action.capitalize(),  # "Buy" or "Sell"
             "symbol": symbol,
             "orderQty": 1,
-            "orderType": order_type,   # "Limit"
-            "price": order_price,  # 🚀 SPEED: Set price immediately
+            "orderType": "Stop",   # 🎯 CRITICAL: Use Stop like working forward example
+            "stopPrice": order_price,  # 🎯 CRITICAL: Use stopPrice for Stop orders
             "timeInForce": "GTC",
             "isAutomated": True,
             # Take Profit bracket (bracket1)
             "bracket1": {
                 "action": opposite_action,
                 "orderType": "Limit",
-                "price": round(float(t1), 2),
+                "price": t1,
                 "timeInForce": "GTC"
             },
             # Stop Loss bracket (bracket2)
             "bracket2": {
                 "action": opposite_action,
                 "orderType": "Stop",
-                "stopPrice": round(float(stop), 2),
+                "stopPrice": stop,
                 "timeInForce": "GTC"
             }
         }
