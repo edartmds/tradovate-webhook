@@ -467,11 +467,13 @@ async def handle_trade_logic(data: dict):
 
         # Correctly position TP and SL
         if action.lower() == "sell":
-            tp_price = min(float(original_t1), float(original_stop))
-            sl_price = max(float(original_t1), float(original_stop))
-        else:
-            tp_price = max(float(original_t1), float(original_stop))
-            sl_price = min(float(original_t1), float(original_stop))
+            # For a SELL, TP is lower, SL is higher
+            tp_price = min(float(t1), float(stop))
+            sl_price = max(float(t1), float(stop))
+        else: # "buy"
+            # For a BUY, TP is higher, SL is lower
+            tp_price = max(float(t1), float(stop))
+            sl_price = min(float(t1), float(stop))
 
         # Ensure minimum separation
         if abs(tp_price - sl_price) < 1.0:
