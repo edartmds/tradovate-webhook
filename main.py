@@ -334,6 +334,38 @@ def cleanup_old_tracking_data():
         del completed_trades[symbol]
 
 
+async def monitor_order_fill(order_id: int, timeout: int = 30) -> bool:
+    """
+    Monitors an order until it is filled or timeout is reached.
+    Returns True if filled, False otherwise.
+    """
+    start_time = time.time()
+    logging.info(f"Monitoring order {order_id} for fill status...")
+    while time.time() - start_time < timeout:
+        try:
+            order_status = await client.get_order_status(order_id)
+            status = order_status.get("ordStatus")
+            logging.info(f"Order {order_id} status: {status}")
+
+            if status == "Filled":
+                logging.info(f"✅ Order {order_id} confirmed as FILLED.")
+                return True
+            elif status in ["Cancelled", "Rejected", "Expired"]:
+                logging.warning(f"Order {order_id} is in a terminal state: {status}. Stopping monitoring.")
+                return False
+            
+            # Wait for a short period before polling again
+            await asyncio.sleep(1)
+
+        except Exception as e:
+            logging.error(f"Error while monitoring order {order_id}: {e}", exc_info=True)
+            # If there's an error, stop monitoring to be safe
+            return False
+            
+    logging.warning(f"Timeout reached while monitoring order {order_id}. Assuming not filled.")
+    return False
+
+
 async def handle_trade_logic(data: dict):
     """
     Main function to handle the trade logic after webhook parsing.
@@ -404,7 +436,11 @@ async def handle_trade_logic(data: dict):
             "isAutomated": True
         }
         
-        entry_order_result = await client.place_order(order_data=entry_order_payload)
+        entry_order_result = await client.place_order(
+            symbol=symbol, 
+            action=action, 
+            order_data=entry_order_payload
+        )
         entry_order_id = entry_order_result.get("orderId")
         if not entry_order_id:
             raise ValueError("Failed to get orderId from entry order placement.")
