@@ -637,7 +637,8 @@ async def webhook(req: Request):
             "action": action.capitalize(),
             "symbol": symbol,
             "orderQty": 1,
-            "orderType": "Market",
+            "orderType": "Limit",  # CORRECTED: Use Limit order for entry
+            "price": round(price, 2),  # CORRECTED: Set the entry price
             "timeInForce": "Day",
             "isAutomated": True,
             # BRACKET 1: Take Profit (LIMIT order)
@@ -662,7 +663,7 @@ async def webhook(req: Request):
        
         # Log the corrected bracket structure
         logging.info(f"=== LIVE API OSO ===")
-        logging.info(f"{symbol} {action} Market | TP(Limit):{tp_price} | SL(Stop):{sl_price}")
+        logging.info(f"{symbol} {action} Limit @ {price} | TP(Limit):{tp_price} | SL(Stop):{sl_price}")
         logging.info(f"Original alert: T1={t1} STOP={stop}")
         logging.info(f"Bracket logic: {'SELL entry (TP below, SL above)' if action.lower() == 'sell' else 'BUY entry (TP above, SL below)'}")
         logging.info(f"{json.dumps(oso_payload, indent=2)}")
