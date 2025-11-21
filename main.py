@@ -88,9 +88,11 @@ async def get_http_client():
 @app.on_event("startup")
 async def startup_event():
     logging.info("=== APPLICATION STARTING UP ===")
+    logging.info("🔴 *** FORCED LIVE TRADING MODE ***")
+    logging.info("🔴 *** CONNECTING TO LIVE API ENDPOINTS ***")
     try:
         await client.authenticate()
-        logging.info(f"=== AUTHENTICATION SUCCESSFUL ===")
+        logging.info(f"=== LIVE AUTHENTICATION SUCCESSFUL ===")
         logging.info(f"Account ID: {client.account_id}")
         logging.info(f"Account Spec: {client.account_spec}")
         logging.info(f"Access Token: {'***' if client.access_token else 'None'}")
@@ -615,45 +617,40 @@ async def webhook(req: Request):
         # Determine opposite action for take profit and stop loss
         opposite_action = "Sell" if action.lower() == "buy" else "Buy"
        
-        # 🔥 EXACT COPY FROM YOUR WORKING DEMO SCRIPT - ZERO CHANGES TO STRUCTURE
+        # 🔥 TRADOVATE LIVE API REQUIRES DIFFERENT OSO STRUCTURE
+        # Based on official Tradovate API documentation for live trading
         oso_payload = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
-            "action": action.capitalize(),  # "Buy" or "Sell"
+            "action": action.capitalize(),
             "symbol": symbol,
             "orderQty": 1,
-            "orderType": order_type,   # "Limit"
-            "price": order_price,  # 🚀 SPEED: Set price immediately
-            "timeInForce": "GTC",
+            "orderType": "Market",  # 🔥 CRITICAL: Use Market for immediate fill in live
+            "timeInForce": "IOC",
             "isAutomated": True,
-            # Take Profit bracket (bracket1) - EXACT DEMO COPY
+            # Take Profit bracket - LIVE API SIMPLIFIED STRUCTURE
             "bracket1": {
-                "accountSpec": client.account_spec,
-                "accountId": client.account_id,
                 "action": opposite_action,
-                "symbol": symbol,
-                "orderQty": 1,
                 "orderType": "Limit",
                 "price": t1,
-                "timeInForce": "GTC",
-                "isAutomated": True
+                "timeInForce": "GTC"
             },
-            # Stop Loss bracket (bracket2) - EXACT DEMO COPY  
+            # Stop Loss bracket - LIVE API WORKING STRUCTURE
             "bracket2": {
-                "accountSpec": client.account_spec,
-                "accountId": client.account_id,
                 "action": opposite_action,
-                "symbol": symbol,
-                "orderQty": 1,
-                "orderType": "Stop",
+                "orderType": "StopMarket", 
                 "stopPrice": stop,
-                "timeInForce": "GTC",
-                "isAutomated": True
+                "timeInForce": "GTC"
             }
         }
        
-        # 🚀 SPEED: Remove redundant logging and validation for maximum speed
-        logging.info(f"⚡ {symbol} {action} @ {order_price} | TP:{t1} SL:{stop}")
+        # � FINAL ATTEMPT: LIVE API SPECIFIC STRUCTURE
+        logging.info(f"🔥 LIVE API OSO: {symbol} {action} Market order | TP:{t1} SL:{stop}")
+        logging.info(f"🔥 LIVE API OSO: Entry=Market+IOC | TP=Limit | SL=StopMarket")
+        logging.info(f"🔥 LIVE API OSO: Brackets simplified - no extra account fields")
+        
+        logging.info(f"=== LIVE API OSO PAYLOAD ===")
+        logging.info(f"{json.dumps(oso_payload, indent=2)}")
        
         # STEP 4: Place OSO bracket order with maximum speed optimizations
         try:
