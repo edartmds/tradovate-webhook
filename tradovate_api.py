@@ -190,10 +190,13 @@ class TradovateClient:
 
     async def place_oso_order(self, initial_order: dict):
         """
-        Places an Order Sends Order (OSO) order on Tradovate LIVE API.
-        
-        CRITICAL: Live API OSO structure is completely different from demo!
-        Live API requires specific bracket format and validation.
+        Places an Order Sends Order (OSO) order on Tradovate.
+
+        Args:
+            initial_order (dict): The JSON payload for the initial order with brackets.
+
+        Returns:
+            dict: The response from the Tradovate API.
         """
         if not self.access_token:
             await self.authenticate()
@@ -202,215 +205,22 @@ class TradovateClient:
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json"
         }
-
-        # LIVE API CRITICAL FIX: Use Limit instead of Market to allow brackets to attach
-        # Market orders fill instantly and brackets get rejected
-        entry_action = initial_order.get("action")
-        
-        # Get reference price from brackets to calculate entry limit
-        bracket1_price = initial_order.get("bracket1", {}).get("price")
-        bracket2_stop = initial_order.get("bracket2", {}).get("stopPrice")
-        
-        # Calculate mid-point between TP and SL as reference
-        if bracket1_price is not None and bracket2_stop is not None:
-            mid_price = (float(bracket1_price) + float(bracket2_stop)) / 2.0
-        elif bracket1_price is not None:
-            # Use TP price as reference
-            mid_price = float(bracket1_price)
-        elif bracket2_stop is not None:
-            # Use SL price as reference
-            mid_price = float(bracket2_stop)
-        else:
-            # Last resort fallback
-            mid_price = 20000.0
-        
-        # Calculate aggressive limit price that will fill immediately
-        if entry_action == "Buy":
-            # For Buy: Use price above mid (aggressive buy)
-            aggressive_price = round(mid_price + 10.0, 2)  # +10 points above mid
-        else:
-            # For Sell: Use price below mid (aggressive sell)  
-            aggressive_price = round(mid_price - 10.0, 2)  # -10 points below mid
-        
-        logging.info(f"=== BRACKET FIX: Using Limit @ {aggressive_price} (mid={mid_price:.2f}) ===")
-        
-        fixed_payload = {
-            "accountSpec": initial_order.get("accountSpec"),
-            "accountId": initial_order.get("accountId"), 
-            "action": entry_action,
-            "symbol": initial_order.get("symbol"),
-            "orderQty": initial_order.get("orderQty", 1),
-            "orderType": "Limit",   # Limit allows brackets to attach properly
-            "price": aggressive_price,  # Aggressive limit price for instant fill
-            "timeInForce": "GTC"    # GTC keeps order alive until filled
-        }
-        
-        # Add brackets if they exist
-        if "bracket1" in initial_order:
-            fixed_payload["bracket1"] = {
-                "qty": initial_order["bracket1"].get("qty", 1),
-                "action": initial_order["bracket1"]["action"],
-                "orderType": initial_order["bracket1"]["orderType"],
-                "price": round(float(initial_order["bracket1"]["price"]), 2),
-                "timeInForce": "Day"
-            }
-            
-        if "bracket2" in initial_order:
-            fixed_payload["bracket2"] = {
-                "qty": initial_order["bracket2"].get("qty", 1),
-                "action": initial_order["bracket2"]["action"],
-                "orderType": "Stop",  # Live API uses "Stop" not "StopMarket"
-                "stopPrice": round(float(initial_order["bracket2"]["stopPrice"]), 2),
-                "timeInForce": "Day"
-            }
-
-        logging.info(f"=== LIVE API OSO PAYLOAD (BRACKET FIX APPLIED) ===")
-        logging.info(f"ENTRY: Limit order @ {aggressive_price} (aggressive price for instant fill)")
-        logging.info(f"BRACKETS: Will attach BEFORE entry fills (Limit+GTC prevents instant fill issue)")
-        logging.info(f"{json.dumps(fixed_payload, indent=2)}")
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(f"{BASE_URL}/order/placeOSO", json=fixed_payload, headers=headers)
-                
-                # Enhanced error handling for Live API
-                if response.status_code != 200:
-                    error_text = response.text
-                    logging.error(f"LIVE API OSO REJECTION: Status {response.status_code}")
-                    logging.error(f"Error Response: {error_text}")
-                    
-                    # Parse common Live API errors
-                    if "price" in error_text.lower():
-                        raise ValueError(f"Price validation failed: {error_text}")
-                    elif "margin" in error_text.lower() or "buying power" in error_text.lower():
-                        raise ValueError(f"Insufficient margin: {error_text}")
-                    elif "bracket" in error_text.lower():
-                        raise ValueError(f"Bracket structure error: {error_text}")
-                    else:
-                        raise ValueError(f"Live API rejected OSO: {error_text}")
-                
+            async with httpx.AsyncClient() as client:
+                logging.debug(f"Sending OSO order payload: {json.dumps(initial_order, indent=2)}")
+                response = await client.post(f"{BASE_URL}/order/placeoso", json=initial_order, headers=headers)
+                response.raise_for_status()
                 response_data = response.json()
-                logging.info(f"=== LIVE API OSO SUCCESS ===")
-                logging.info(f"Response: {json.dumps(response_data, indent=2)}")
+                logging.info(f"OSO order response: {json.dumps(response_data, indent=2)}")
                 return response_data
-                
         except httpx.HTTPStatusError as e:
-            error_detail = e.response.text if hasattr(e, 'response') else str(e)
-            logging.error(f"LIVE API OSO HTTP Error: {error_detail}")
-            raise ValueError(f"Live API OSO failed: {error_detail}")
+            logging.error(f"OSO order placement failed: {e.response.text}")
+            raise HTTPException(status_code=e.response.status_code, detail=f"OSO order placement failed: {e.response.text}")
         except Exception as e:
-            logging.error(f"LIVE API OSO Unexpected Error: {str(e)}")
-            raise ValueError(f"Live API OSO error: {str(e)}")
+            logging.error(f"Unexpected error during OSO order placement: {e}")
+            raise HTTPException(status_code=500, detail="Internal server error during OSO order placement")
 
-
-    async def place_market_with_oco_brackets(self, symbol: str, action: str, qty: int, tp_price: float, sl_price: float):
-        """
-        LIVE API FIX: Place Market entry first, then OCO brackets separately.
-        This avoids the OSO rejection issue when entry fills instantly.
-        
-        Args:
-            symbol: Trading symbol (e.g., 'NQZ5')
-            action: 'Buy' or 'Sell'
-            qty: Quantity (usually 1)
-            tp_price: Take profit limit price
-            sl_price: Stop loss stop price
-            
-        Returns:
-            dict: Contains entryId, tpId, slId
-        """
-        if not self.access_token:
-            await self.authenticate()
-            
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json"
-        }
-        
-        # STEP 1: Place Market entry order
-        entry_payload = {
-            "accountSpec": self.account_spec,
-            "accountId": self.account_id,
-            "action": action,
-            "symbol": symbol,
-            "orderQty": qty,
-            "orderType": "Market",
-            "timeInForce": "IOC",  # Fill immediately or cancel
-            "isAutomated": True
-        }
-        
-        logging.info(f"=== LIVE API: MARKET ENTRY ===")
-        logging.info(f"{json.dumps(entry_payload, indent=2)}")
-        
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            # Place entry
-            entry_response = await client.post(f"{BASE_URL}/order/placeorder", json=entry_payload, headers=headers)
-            
-            if entry_response.status_code != 200:
-                raise ValueError(f"Entry order failed: {entry_response.text}")
-                
-            entry_data = entry_response.json()
-            entry_id = entry_data.get("orderId")
-            logging.info(f"=== ENTRY ORDER PLACED: ID={entry_id} ===")
-            
-            # Wait for entry to fill and position to register
-            logging.info("Waiting 2 seconds for entry fill and position registration...")
-            await asyncio.sleep(2.0)  # Increased wait time
-            
-            # STEP 2: Place OCO brackets (TP + SL linked together)
-            # CRITICAL: Must use placeOCO so TP and SL are linked (when one fills, other cancels)
-            opposite_action = "Buy" if action == "Sell" else "Sell"
-            
-            # OCO structure: first order + other order
-            oco_payload = {
-                "accountSpec": self.account_spec,
-                "accountId": self.account_id,
-                "action": opposite_action,
-                "symbol": symbol,
-                "orderQty": qty,
-                "orderType": "Limit",
-                "price": round(float(tp_price), 2),
-                "timeInForce": "GTC",
-                "isAutomated": True,
-                "other": {
-                    "action": opposite_action,
-                    "orderQty": qty,
-                    "orderType": "Stop",
-                    "stopPrice": round(float(sl_price), 2),
-                    "timeInForce": "GTC",
-                    "isAutomated": True
-                }
-            }
-            
-            logging.info(f"=== LIVE API: OCO BRACKETS (TP + SL LINKED) ===")
-            logging.info(f"TP: Limit @ {tp_price} | SL: Stop @ {sl_price}")
-            logging.info(f"{json.dumps(oco_payload, indent=2)}")
-            
-            oco_response = await client.post(f"{BASE_URL}/order/placeOCO", json=oco_payload, headers=headers)
-            
-            if oco_response.status_code != 200:
-                error_text = oco_response.text
-                logging.error(f"OCO brackets failed: {error_text}")
-                return {
-                    "orderId": entry_id,
-                    "oso1Id": None,
-                    "oso2Id": None,
-                    "error": f"OCO failed: {error_text}"
-                }
-            
-            oco_data = oco_response.json()
-            tp_id = oco_data.get("orderId")  # First order (TP)
-            sl_id = oco_data.get("ocoId")     # OCO order (SL)
-            
-            logging.info(f"=== OCO BRACKETS PLACED SUCCESSFULLY ===")
-            logging.info(f"TP Order ID: {tp_id}")
-            logging.info(f"SL Order ID: {sl_id}")
-            logging.info(f"Full OCO Response: {json.dumps(oco_data, indent=2)}")
-            
-            return {
-                "orderId": entry_id,
-                "oso1Id": tp_id,  # TP order
-                "oso2Id": sl_id   # SL order
-            }
 
     async def place_stop_order(self, entry_order_id: int, stop_price: float):
         """
