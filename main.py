@@ -29,6 +29,7 @@ logging.info(f"Loaded WEBHOOK_SECRET: {WEBHOOK_SECRET}")
 TRADOVATE_LIVE_MODE = True
 logging.info("🔴 *** LIVE TRADING MODE ENABLED - REAL MONEY TRADES ***")
 
+
 LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
 
@@ -66,6 +67,7 @@ symbol_locks = {}
 # 🚀 SPEED OPTIMIZATION: Persistent HTTP client to avoid connection overhead
 persistent_http_client = None
 
+
 async def get_http_client():
     """Get or create a persistent HTTP client for maximum speed"""
     global persistent_http_client
@@ -90,7 +92,8 @@ async def startup_event():
     logging.info("🔴 *** LIVE TRADING MODE ENABLED ***")
     logging.info("🔴 *** REAL MONEY TRADING ACTIVE ***") 
     logging.info("🔴 *** ALL TRADES WILL USE REAL FUNDS ***")
-    logging.info("🔴 *** REVERSE STRATEGY ACTIVE ***")
+    logging.info("🔄 *** REVERSE STRATEGY: BUY signals become SELL orders ***")
+    logging.info("🔄 *** REVERSE STRATEGY: SELL signals become BUY orders ***")
     logging.info("🔴" * 50)
     
     try:
@@ -102,7 +105,6 @@ async def startup_event():
         
         # Additional safety confirmation
         logging.info("🔴 *** CONFIRMED: Connected to LIVE Tradovate account ***")
-        logging.info("🔄 *** REVERSE STRATEGY: BUY signals become SELL orders ***")
         
         # Close any existing positions and cancel pending orders on startup to start clean
         logging.info("=== CLEANING UP EXISTING POSITIONS AND ORDERS ON STARTUP ===")
@@ -551,8 +553,11 @@ async def webhook(req: Request):
 
             logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
             
-            # 🎯 SMART ORDER TYPE SELECTION FOR LIVE TRADING
-            # Use Stop orders for entries to avoid immediate fills
+            # 🎯 SMART ORDER TYPE SELECTION TO AVOID REJECTIONS
+            # Check if this is a breakout (price above/below current market) or pullback
+           
+            # Always use Stop orders for entries to avoid immediate fills
+            # Stop orders wait at the exact price level until triggered
             order_type = "Stop"
             entry_price = price  # Use exact PRICE from alert
            
@@ -565,43 +570,46 @@ async def webhook(req: Request):
        
         # 🚀 SPEED OPTIMIZATION: Parallel cleanup operations for maximum speed
         logging.info("⚡ === ULTRA-FAST PARALLEL CLEANUP === ⚡")
-       
+        
         cleanup_tasks = []
-       
+        
         # Start position closing and order cancellation in parallel
         try:
             # Task 1: Close all positions
             close_task = asyncio.create_task(client.force_close_all_positions_immediately())
             cleanup_tasks.append(("close_positions", close_task))
-           
+            
             # Task 2: Cancel all pending orders (generic)
             cancel_task = asyncio.create_task(client.cancel_all_pending_orders())
             cleanup_tasks.append(("cancel_orders", cancel_task))
-           
+            
             # Task 3: Cancel symbol-specific orders
             symbol_cancel_task = asyncio.create_task(cancel_all_orders(symbol))
             cleanup_tasks.append(("cancel_symbol_orders", symbol_cancel_task))
-           
+            
             # Execute all cleanup operations in parallel
             results = await asyncio.gather(*[task for name, task in cleanup_tasks], return_exceptions=True)
-           
+            
             for i, (name, task) in enumerate(cleanup_tasks):
                 result = results[i]
                 if isinstance(result, Exception):
                     logging.warning(f"⚡ {name} failed: {result}")
                 else:
                     logging.info(f"✅ {name} completed")
-                   
+                    
         except Exception as e:
             logging.error(f"⚡ Parallel cleanup error: {e}")
             # Continue anyway - speed is priority
-       
+        
+        # 🚀 SPEED: Skip final order verification wait - place order immediately
+        # This saves 1-5 seconds of polling time
+        
         # STEP 3: Place entry order with automatic bracket orders (OSO)
         logging.info(f"⚡ === ULTRA-FAST OSO PLACEMENT ===")
-       
+        
         # Determine opposite action for take profit and stop loss
         opposite_action = "Sell" if action.lower() == "buy" else "Buy"
-       
+        
         # 🚀 SPEED: Pre-build OSO payload for fastest execution
         oso_payload = {
             "accountSpec": client.account_spec,
@@ -641,6 +649,16 @@ async def webhook(req: Request):
        
         # 🚀 SPEED: Remove redundant logging and validation for maximum speed
         logging.info(f"⚡ {symbol} {action} @ {entry_price} | TP:{t1} SL:{stop}")
+        oso_payload["stopPrice"] = entry_price
+        logging.info(f"🎯 STOP ENTRY at exact alert PRICE={entry_price}")
+        logging.info(f"🎯 Take Profit at T1={t1}")
+        logging.info(f"🎯 Stop Loss at STOP={stop}")
+       
+        logging.info(f"=== OSO PAYLOAD ===")
+        logging.info(f"{json.dumps(oso_payload, indent=2)}")
+       
+        # STEP 4: Place OSO bracket order with speed optimizations
+        logging.info("=== PLACING OSO BRACKET ORDER ===")
        
         # STEP 4: Place OSO bracket order with maximum speed optimizations
         try:
@@ -658,13 +676,16 @@ async def webhook(req: Request):
                 "order_type": order_type,
                 "symbol": symbol,
                 "strategy": "REVERSE",
-                "original_signal": f"{original_action} {original_t1}/{original_stop}",
-                "executed_order": f"{action} {t1}/{stop}"
+                "original_signal": f"{original_action} TP:{original_t1} SL:{original_stop}",
+                "executed_order": f"{action} TP:{t1} SL:{stop}",
+                "entry_price": entry_price,
+                "take_profit": t1,
+                "stop_loss": stop
             }
         except Exception as e:
             execution_time = (time.time() - start_time) * 1000 if 'start_time' in locals() else 0
             logging.error(f"⚡ OSO FAILED after {execution_time:.1f}ms: {e}")
-           
+            
             # 🚀 SPEED: Minimal error analysis for faster recovery
             error_msg = str(e).lower()
             if "price" in error_msg:
@@ -673,22 +694,14 @@ async def webhook(req: Request):
                 logging.error("⚡ MARGIN ERROR")
             elif "symbol" in error_msg:
                 logging.error(f"⚡ SYMBOL ERROR: {symbol}")
-           
+            
             raise HTTPException(status_code=500, detail=f"OSO failed: {str(e)}")
-
     except Exception as e:
         logging.error(f"=== ERROR IN WEBHOOK ===")
         logging.error(f"Error: {e}")
         import traceback
         logging.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-
-@app.post("/")
-async def root_post(req: Request):
-    """Accept POST requests at root and handle as webhook"""
-    # Process alert via webhook handler
-    return await webhook(req)
 
 
 @app.get("/")
@@ -705,10 +718,19 @@ async def root():
             "health": "/"
         },
         "message": "🔴 LIVE REVERSE TRADING WEBHOOK - Real money trades active",
-        "warning": "⚠️ All trades will use real funds with REVERSE strategy"
+        "warning": "⚠️ All trades will use real funds and execute OPPOSITE of signals"
     }
 
 
+@app.post("/")
+async def root_post(req: Request):
+    """Handle POST requests to root and redirect to webhook"""
+    logging.warning("POST request received at root path '/' - redirecting to /webhook")
+    logging.info("If you're sending webhooks, please update your URL to include '/webhook' at the end")
+   
+    # Forward the request to the webhook endpoint
+    return await webhook(req)
+    
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     uvicorn.run("main:app", host="0.0.0.0", port=port)
