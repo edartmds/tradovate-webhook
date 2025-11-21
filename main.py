@@ -624,12 +624,22 @@ async def webhook(req: Request):
         # Determine which price is TP and which is SL based on entry direction
         if action.lower() == "sell":
             # Selling: TP should be below entry, SL above
-            tp_price = min(float(t1), float(stop))  # Lower price = Take Profit
-            sl_price = max(float(t1), float(stop))  # Higher price = Stop Loss
+            tp_price = min(float(t1), float(stop))
+            sl_price = max(float(t1), float(stop))
         else:
             # Buying: TP should be above entry, SL below
-            tp_price = max(float(t1), float(stop))  # Higher price = Take Profit
-            sl_price = min(float(t1), float(stop))  # Lower price = Stop Loss
+            tp_price = max(float(t1), float(stop))
+            sl_price = min(float(t1), float(stop))
+
+        # 🔥 FINAL FIX: Prevent bracket rejection by ensuring prices are not identical.
+        # If TP and SL prices are the same, add one tick (0.25 for NQ) to the Stop Loss.
+        if tp_price == sl_price:
+            logging.warning(f"STOP and T1 prices are identical ({tp_price}). Adding one tick to Stop Loss to prevent rejection.")
+            if action.lower() == "sell": # For a sell, SL is higher
+                sl_price += 0.25
+            else: # For a buy, SL is lower
+                sl_price -= 0.25
+            logging.info(f"Adjusted prices: TP={tp_price}, SL={sl_price}")
         
         oso_payload = {
             "accountSpec": client.account_spec,
@@ -732,7 +742,7 @@ async def root_post(req: Request):
     return await webhook(req)
 
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 async def root():
     """Health check endpoint"""
     return {
