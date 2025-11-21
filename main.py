@@ -720,10 +720,38 @@ async def webhook(req: Request):
         # Flip the targets: STOP becomes T1, T1 becomes STOP
         t1 = original_stop
         stop = original_t1
+        
+        # 🎯 FIX PRICE PRECISION: Round to 2 decimal places for NQ futures
+        t1 = round(float(t1), 2)
+        stop = round(float(stop), 2)
+        price = round(float(price), 2)
        
         logging.info(f"🔄 STRATEGY REVERSAL: Flipped {original_action} to {action}")
         logging.info(f"🔄 STRATEGY REVERSAL: Flipped T1 from {original_t1} to {t1}")
         logging.info(f"🔄 STRATEGY REVERSAL: Flipped STOP from {original_stop} to {stop}")
+        logging.info(f"🎯 PRICE PRECISION: Entry={price}, TP={t1}, SL={stop}")
+        
+        # 🎯 VALIDATION: Ensure minimum distance between entry and targets
+        min_distance = 2.0  # Minimum 2 points distance for NQ futures
+        
+        if action.lower() == "buy":
+            # For BUY orders: TP should be higher than entry, SL should be lower
+            if t1 <= price + min_distance:
+                t1 = price + min_distance
+                logging.warning(f"🎯 ADJUSTED TP: Too close to entry, set to {t1}")
+            if stop >= price - min_distance:
+                stop = price - min_distance
+                logging.warning(f"🎯 ADJUSTED SL: Too close to entry, set to {stop}")
+        else:
+            # For SELL orders: TP should be lower than entry, SL should be higher  
+            if t1 >= price - min_distance:
+                t1 = price - min_distance
+                logging.warning(f"🎯 ADJUSTED TP: Too close to entry, set to {t1}")
+            if stop <= price + min_distance:
+                stop = price + min_distance
+                logging.warning(f"🎯 ADJUSTED SL: Too close to entry, set to {stop}")
+        
+        logging.info(f"🎯 VALIDATED PRICES: Entry={price}, TP={t1}, SL={stop}")
        
         # Ensure sequential handling per symbol to prevent race conditions
         lock = symbol_locks.setdefault(symbol, asyncio.Lock())
@@ -821,7 +849,7 @@ async def webhook(req: Request):
                 "symbol": symbol,
                 "orderQty": 1,
                 "orderType": "Limit",
-                "price": t1,
+                "price": round(float(t1), 2),  # 🎯 ENSURE PROPER PRICE FORMAT
                 "timeInForce": "GTC",
                 "isAutomated": True
             },
@@ -833,7 +861,7 @@ async def webhook(req: Request):
                 "symbol": symbol,
                 "orderQty": 1,
                 "orderType": "Stop",
-                "stopPrice": stop,
+                "stopPrice": round(float(stop), 2),  # 🎯 ENSURE PROPER PRICE FORMAT
                 "timeInForce": "GTC",
                 "isAutomated": True
             }
@@ -933,7 +961,6 @@ async def root():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     uvicorn.run("main:app", host="0.0.0.0", port=port)
-
 
 
 
