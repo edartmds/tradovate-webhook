@@ -702,27 +702,17 @@ async def webhook(req: Request):
             "isAutomated": True,
             # Take Profit bracket (bracket1)
             "bracket1": {
-                "accountSpec": client.account_spec,
-                "accountId": client.account_id,
                 "action": opposite_action,
-                "symbol": symbol,
-                "orderQty": 1,
                 "orderType": "Limit",
-                "price": round(float(t1), 2),  # 🎯 ENSURE PROPER PRICE FORMAT
-                "timeInForce": "GTC",
-                "isAutomated": True
+                "price": round(float(t1), 2),
+                "timeInForce": "GTC"
             },
             # Stop Loss bracket (bracket2)
             "bracket2": {
-                "accountSpec": client.account_spec,
-                "accountId": client.account_id,
                 "action": opposite_action,
-                "symbol": symbol,
-                "orderQty": 1,
-                "orderType": "Stop",  # 🎯 FIXED: Use correct Tradovate enum "Stop"
-                "stopPrice": round(float(stop), 2),  # 🎯 ENSURE PROPER PRICE FORMAT
-                "timeInForce": "GTC",
-                "isAutomated": True
+                "orderType": "Stop",
+                "stopPrice": round(float(stop), 2),
+                "timeInForce": "GTC"
             }
         }
        
