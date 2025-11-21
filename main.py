@@ -693,39 +693,39 @@ async def webhook(req: Request):
         # Determine opposite action for take profit and stop loss
         opposite_action = "Sell" if action.lower() == "buy" else "Buy"
         
-        # 🎯 CRITICAL FIX: Use exact OSO structure that works with live API
+        # 🔥 CRITICAL FIX: STOP LOSS BRACKET FIELD MAPPING
         oso_payload = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
             "action": action.capitalize(),
             "symbol": symbol,
             "orderQty": 1,
-            "orderType": "Limit",  # 🔥 FIX: Use Limit for immediate execution
+            "orderType": "Limit",
             "price": order_price,
             "timeInForce": "GTC",
             "isAutomated": True,
-            # Take Profit bracket - SIMPLIFIED STRUCTURE
+            # Take Profit bracket
             "bracket1": {
                 "action": opposite_action,
                 "orderType": "Limit", 
                 "price": t1,
                 "timeInForce": "GTC"
             },
-            # Stop Loss bracket - SIMPLIFIED STRUCTURE  
+            # 🔥 STOP LOSS FIX: Use "price" field for Stop orders in brackets!
             "bracket2": {
                 "action": opposite_action,
-                "orderType": "Stop",
-                "stopPrice": stop,
+                "orderType": "StopMarket",  # 🔥 CRITICAL: Use StopMarket for brackets
+                "price": stop,  # 🔥 CRITICAL: Use "price" not "stopPrice" in brackets
                 "timeInForce": "GTC"
             }
         }
        
-        # � CRITICAL FIXES APPLIED:
-        logging.info(f"🔥 FIXED OSO: {symbol} {action} @ {order_price} | TP:{t1} SL:{stop}")
-        logging.info(f"🔥 FIXED ENTRY: Limit order (not Stop) for immediate execution")
-        logging.info(f"🔥 FIXED BRACKETS: Simplified structure without extra fields")
-        logging.info(f"🔥 FIXED ENDPOINT: Using /placeOSO (not /placeoso)")
-        logging.info(f"🔥 FIXED STOP FIELD: Using stopPrice (not price) for stop orders")
+        # 🔥 STOP LOSS BRACKET FIXES APPLIED:
+        logging.info(f"🔥 STOP LOSS FIX: {symbol} {action} @ {order_price} | TP:{t1} SL:{stop}")
+        logging.info(f"🔥 STOP LOSS FIX: Using StopMarket (not Stop) for brackets")
+        logging.info(f"🔥 STOP LOSS FIX: Using 'price' field (not stopPrice) for bracket stops")
+        logging.info(f"🔥 STOP LOSS FIX: Entry=Limit | TP=Limit | SL=StopMarket")
+        logging.info(f"🔥 STOP LOSS VALIDATION: {opposite_action} StopMarket at {stop}")
        
         logging.info(f"=== OSO PAYLOAD ===")
         logging.info(f"{json.dumps(oso_payload, indent=2)}")
