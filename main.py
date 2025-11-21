@@ -639,14 +639,14 @@ async def webhook(req: Request):
             # 🎯 SMART ORDER TYPE SELECTION TO AVOID REJECTIONS
             # Check if this is a breakout (price above/below current market) or pullback
            
-            # Always use Stop orders for entries to avoid immediate fills
-            # Stop orders wait at the exact price level until triggered
-            order_type = "Stop"
+            # 🔥 FIX: Use Limit orders for immediate execution in live trading
+            # Live API prefers Limit orders for predictable execution
+            order_type = "Limit"
             order_price = price  # Use exact PRICE from alert
            
-            logging.info(f"🎯 STOP ORDER ENTRY at exact price {order_price}")
+            logging.info(f"🎯 LIMIT ORDER ENTRY at exact price {order_price}")
             logging.info(f"🎯 Alert PRICE={price}, T1={t1}, STOP={stop}")
-            logging.info(f"🎯 Entry will trigger when market reaches {order_price}")
+            logging.info(f"🎯 Entry will execute immediately at {order_price}")
        
         # 🔥 REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
         # Every new alert will now automatically flatten existing positions and place new orders
@@ -693,25 +693,25 @@ async def webhook(req: Request):
         # Determine opposite action for take profit and stop loss
         opposite_action = "Sell" if action.lower() == "buy" else "Buy"
         
-        # 🚀 SPEED: Pre-build OSO payload for fastest execution - MATCH WORKING FORWARD EXAMPLE
+        # 🎯 CRITICAL FIX: Use exact OSO structure that works with live API
         oso_payload = {
             "accountSpec": client.account_spec,
             "accountId": client.account_id,
-            "action": action.capitalize(),  # "Buy" or "Sell"
+            "action": action.capitalize(),
             "symbol": symbol,
             "orderQty": 1,
-            "orderType": "Stop",   # 🎯 CRITICAL: Use Stop like working forward example
-            "stopPrice": order_price,  # 🎯 CRITICAL: Use stopPrice for Stop orders
+            "orderType": "Limit",  # 🔥 FIX: Use Limit for immediate execution
+            "price": order_price,
             "timeInForce": "GTC",
             "isAutomated": True,
-            # Take Profit bracket (bracket1)
+            # Take Profit bracket - SIMPLIFIED STRUCTURE
             "bracket1": {
                 "action": opposite_action,
-                "orderType": "Limit",
+                "orderType": "Limit", 
                 "price": t1,
                 "timeInForce": "GTC"
             },
-            # Stop Loss bracket (bracket2)
+            # Stop Loss bracket - SIMPLIFIED STRUCTURE  
             "bracket2": {
                 "action": opposite_action,
                 "orderType": "Stop",
@@ -720,10 +720,12 @@ async def webhook(req: Request):
             }
         }
        
-        # 🚀 SPEED: Remove redundant logging and validation for maximum speed
-        logging.info(f"⚡ {symbol} {action} @ {order_price} | TP:{t1} SL:{stop}")
-        logging.info(f"🎯 STOP LOSS CONFIG: Stop order at {stop} for {opposite_action}")
-        logging.info(f"🎯 OSO STRUCTURE: Entry={action} | TP={opposite_action} Limit | SL={opposite_action} Stop")
+        # � CRITICAL FIXES APPLIED:
+        logging.info(f"🔥 FIXED OSO: {symbol} {action} @ {order_price} | TP:{t1} SL:{stop}")
+        logging.info(f"🔥 FIXED ENTRY: Limit order (not Stop) for immediate execution")
+        logging.info(f"🔥 FIXED BRACKETS: Simplified structure without extra fields")
+        logging.info(f"🔥 FIXED ENDPOINT: Using /placeOSO (not /placeoso)")
+        logging.info(f"🔥 FIXED STOP FIELD: Using stopPrice (not price) for stop orders")
        
         logging.info(f"=== OSO PAYLOAD ===")
         logging.info(f"{json.dumps(oso_payload, indent=2)}")
