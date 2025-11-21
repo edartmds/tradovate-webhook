@@ -356,11 +356,12 @@ class TradovateClient:
             logging.info("Waiting 2 seconds for entry fill and position registration...")
             await asyncio.sleep(2.0)  # Increased wait time
             
-            # STEP 2: Place SEPARATE TP and SL orders (NOT OCO - simpler and more reliable)
+            # STEP 2: Place OCO brackets (TP + SL linked together)
+            # CRITICAL: Must use placeOCO so TP and SL are linked (when one fills, other cancels)
             opposite_action = "Buy" if action == "Sell" else "Sell"
             
-            # Place Take Profit (Limit order)
-            tp_payload = {
+            # OCO structure: first order + other order
+            oco_payload = {
                 "accountSpec": self.account_spec,
                 "accountId": self.account_id,
                 "action": opposite_action,
@@ -369,62 +370,46 @@ class TradovateClient:
                 "orderType": "Limit",
                 "price": round(float(tp_price), 2),
                 "timeInForce": "GTC",
-                "isAutomated": True
+                "isAutomated": True,
+                "other": {
+                    "action": opposite_action,
+                    "orderQty": qty,
+                    "orderType": "Stop",
+                    "stopPrice": round(float(sl_price), 2),
+                    "timeInForce": "GTC",
+                    "isAutomated": True
+                }
             }
             
-            logging.info(f"=== LIVE API: TAKE PROFIT BRACKET ===")
-            logging.info(f"{json.dumps(tp_payload, indent=2)}")
+            logging.info(f"=== LIVE API: OCO BRACKETS (TP + SL LINKED) ===")
+            logging.info(f"TP: Limit @ {tp_price} | SL: Stop @ {sl_price}")
+            logging.info(f"{json.dumps(oco_payload, indent=2)}")
             
-            tp_response = await client.post(f"{BASE_URL}/order/placeorder", json=tp_payload, headers=headers)
+            oco_response = await client.post(f"{BASE_URL}/order/placeOCO", json=oco_payload, headers=headers)
             
-            if tp_response.status_code != 200:
-                logging.error(f"Take Profit failed: {tp_response.text}")
+            if oco_response.status_code != 200:
+                error_text = oco_response.text
+                logging.error(f"OCO brackets failed: {error_text}")
                 return {
                     "orderId": entry_id,
                     "oso1Id": None,
                     "oso2Id": None,
-                    "error": f"TP failed: {tp_response.text}"
+                    "error": f"OCO failed: {error_text}"
                 }
             
-            tp_data = tp_response.json()
-            tp_id = tp_data.get("orderId")
-            logging.info(f"=== TAKE PROFIT PLACED: ID={tp_id} ===")
+            oco_data = oco_response.json()
+            tp_id = oco_data.get("orderId")  # First order (TP)
+            sl_id = oco_data.get("ocoId")     # OCO order (SL)
             
-            # Place Stop Loss (Stop order)
-            sl_payload = {
-                "accountSpec": self.account_spec,
-                "accountId": self.account_id,
-                "action": opposite_action,
-                "symbol": symbol,
-                "orderQty": qty,
-                "orderType": "Stop",
-                "stopPrice": round(float(sl_price), 2),
-                "timeInForce": "GTC",
-                "isAutomated": True
-            }
-            
-            logging.info(f"=== LIVE API: STOP LOSS BRACKET ===")
-            logging.info(f"{json.dumps(sl_payload, indent=2)}")
-            
-            sl_response = await client.post(f"{BASE_URL}/order/placeorder", json=sl_payload, headers=headers)
-            
-            if sl_response.status_code != 200:
-                logging.error(f"Stop Loss failed: {sl_response.text}")
-                return {
-                    "orderId": entry_id,
-                    "oso1Id": tp_id,
-                    "oso2Id": None,
-                    "error": f"SL failed: {sl_response.text}"
-                }
-            
-            sl_data = sl_response.json()
-            sl_id = sl_data.get("orderId")
-            logging.info(f"=== STOP LOSS PLACED: ID={sl_id} ===")
+            logging.info(f"=== OCO BRACKETS PLACED SUCCESSFULLY ===")
+            logging.info(f"TP Order ID: {tp_id}")
+            logging.info(f"SL Order ID: {sl_id}")
+            logging.info(f"Full OCO Response: {json.dumps(oco_data, indent=2)}")
             
             return {
                 "orderId": entry_id,
                 "oso1Id": tp_id,  # TP order
-                "oso2Id": sl_id  # SL order
+                "oso2Id": sl_id   # SL order
             }
 
     async def place_stop_order(self, entry_order_id: int, stop_price: float):
