@@ -667,22 +667,11 @@ async def webhook(req: Request):
             
             start_time = time.time()
             
-            # LIVE API FIX: Use Market + OCO instead of OSO
-            logging.info(f"=== USING MARKET + OCO BRACKETS (LIVE API FIX) ===")
-            oso_result = await client.place_market_with_oco_brackets(
-                symbol=symbol,
-                action=action.capitalize(),
-                qty=1,
-                tp_price=target_price,
-                sl_price=stop_price
-            )
+            # Place OSO bracket order (simple version that works)
+            oso_result = await client.place_oso_order(oso_payload)
             execution_time = (time.time() - start_time) * 1000
            
-            logging.info(f"=== MARKET + OCO SUCCESS in {execution_time:.1f}ms ===")
-            logging.info(f"Entry ID: {oso_result.get('orderId', 'UNKNOWN')}")
-            logging.info(f"TP ID: {oso_result.get('oso1Id', 'UNKNOWN')}")
-            logging.info(f"SL ID: {oso_result.get('oso2Id', 'UNKNOWN')}")
-            logging.info(f"Full Response: {json.dumps(oso_result, indent=2)}")
+            logging.info(f"⚡ OSO SUCCESS in {execution_time:.1f}ms: {oso_result.get('orderId', 'ID_PENDING')}")
            
             return {
                 "status": "success",
