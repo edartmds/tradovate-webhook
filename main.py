@@ -1,4 +1,4 @@
-# Main (flipped LIVE)
+# main reversed live
 import os
 import logging
 import json
@@ -97,11 +97,11 @@ async def startup_event():
     # 🔴 LIVE TRADING SAFETY WARNINGS
     logging.info("🔴" * 50)
     logging.info("🔴 *** LIVE TRADING MODE ENABLED ***")
-    logging.info("🔴 *** REAL MONEY TRADING ACTIVE ***") 
+    logging.info("🔴 *** REAL MONEY TRADING ACTIVE ***")
     logging.info("🔴 *** ALL TRADES WILL USE REAL FUNDS ***")
-    logging.info("� *** REVERSE STRATEGY: BUY signals become SELL orders ***")
+    logging.info("🔄 *** REVERSE STRATEGY: BUY signals become SELL orders ***")
     logging.info("🔄 *** REVERSE STRATEGY: SELL signals become BUY orders ***")
-    logging.info("�🔴" * 50)
+    logging.info("🔴" * 50)
     
     try:
         await client.authenticate()
@@ -199,8 +199,6 @@ async def flatten_position(symbol):
     headers = {"Authorization": f"Bearer {client.access_token}"}
     http_client = await get_http_client()
     await http_client.post(url, headers=headers, json={"symbol": symbol})
-
-
 
 
 async def wait_until_no_open_orders(symbol, timeout=5):  # 🚀 SPEED: Reduced timeout from 10 to 5 seconds
@@ -554,7 +552,7 @@ async def webhook(req: Request):
            
         # Map TradingView symbol to Tradovate symbol
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
-            symbol = "NQZ5"  # Changed from NQM5 to NQU5
+            symbol = "NQZ5"  # Changed from NQU5 to NQZ5
             logging.info(f"Mapped symbol to: {symbol}")
            
         # 🔄 STRATEGY REVERSAL: Flip the order direction and price targets
@@ -569,16 +567,15 @@ async def webhook(req: Request):
         # Flip the targets: STOP becomes T1, T1 becomes STOP
         t1 = original_stop
         stop = original_t1
-       
-        logging.info(f"🔄 STRATEGY REVERSAL: Flipped {original_action} to {action}")
-        logging.info(f"🔄 STRATEGY REVERSAL: Flipped T1 from {original_t1} to {t1}")
-        logging.info(f"🔄 STRATEGY REVERSAL: Flipped STOP from {original_stop} to {stop}")
         
         # 🎯 FIX PRICE PRECISION: Round to 2 decimal places for NQ futures
         t1 = round(float(t1), 2)
         stop = round(float(stop), 2)
         price = round(float(price), 2)
-        
+       
+        logging.info(f"🔄 STRATEGY REVERSAL: Flipped {original_action} to {action}")
+        logging.info(f"🔄 STRATEGY REVERSAL: Flipped T1 from {original_t1} to {t1}")
+        logging.info(f"🔄 STRATEGY REVERSAL: Flipped STOP from {original_stop} to {stop}")
         logging.info(f"🎯 PRICE PRECISION: Entry={price}, TP={t1}, SL={stop}")
         
         # 🎯 VALIDATION: Ensure minimum distance between entry and targets
@@ -642,14 +639,10 @@ async def webhook(req: Request):
             # 🎯 SMART ORDER TYPE SELECTION TO AVOID REJECTIONS
             # Check if this is a breakout (price above/below current market) or pullback
            
-            # Always use Stop orders for entries to avoid immediate fills
-            # Stop orders wait at the exact price level until triggered
-            order_type = "Stop"
-            entry_price = price  # Use exact PRICE from alert
-           
-            logging.info(f"🎯 STOP ORDER ENTRY at exact price {entry_price}")
-            logging.info(f"🎯 Alert PRICE={price}, T1={t1}, STOP={stop}")
-            logging.info(f"🎯 Entry will trigger when market reaches {entry_price}")
+            # Force Limit entry at the exact alert price
+            order_type = "Limit"
+            order_price = price
+            logging.info(f"🎯 FORCE LIMIT ENTRY at exact price {order_price}")
        
         # 🔥 REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
         # Every new alert will now automatically flatten existing positions and place new orders
@@ -703,8 +696,8 @@ async def webhook(req: Request):
             "action": action.capitalize(),  # "Buy" or "Sell"
             "symbol": symbol,
             "orderQty": 1,
-            "orderType": order_type,   # "Stop"
-            "stopPrice": entry_price,  # 🚀 SPEED: Set exact price immediately
+            "orderType": order_type,   # "Limit"
+            "price": order_price,  # 🚀 SPEED: Set price immediately
             "timeInForce": "GTC",
             "isAutomated": True,
             # Take Profit bracket (bracket1)
@@ -715,7 +708,7 @@ async def webhook(req: Request):
                 "symbol": symbol,
                 "orderQty": 1,
                 "orderType": "Limit",
-                "price": t1,
+                "price": round(float(t1), 2),  # 🎯 ENSURE PROPER PRICE FORMAT
                 "timeInForce": "GTC",
                 "isAutomated": True
             },
@@ -734,7 +727,7 @@ async def webhook(req: Request):
         }
        
         # 🚀 SPEED: Remove redundant logging and validation for maximum speed
-        logging.info(f"⚡ {symbol} {action} @ {price} | TP:{t1} SL:{stop}")
+        logging.info(f"⚡ {symbol} {action} @ {order_price} | TP:{t1} SL:{stop}")
         logging.info(f"🎯 STOP LOSS CONFIG: Stop order at {stop} for {opposite_action}")
         logging.info(f"🎯 OSO STRUCTURE: Entry={action} | TP={opposite_action} Limit | SL={opposite_action} Stop")
        
@@ -762,7 +755,7 @@ async def webhook(req: Request):
                 "strategy": "REVERSE",
                 "original_signal": f"{original_action} TP:{original_t1} SL:{original_stop}",
                 "executed_order": f"{action} TP:{t1} SL:{stop}",
-                "entry_price": entry_price,
+                "entry_price": order_price,
                 "take_profit": t1,
                 "stop_loss": stop
             }
@@ -773,7 +766,7 @@ async def webhook(req: Request):
             # 🚀 SPEED: Minimal error analysis for faster recovery
             error_msg = str(e).lower()
             if "price" in error_msg:
-                logging.error(f"⚡ PRICE ERROR: {entry_price}")
+                logging.error(f"⚡ PRICE ERROR: {order_price}")
             elif "buying power" in error_msg:
                 logging.error("⚡ MARGIN ERROR")
             elif "symbol" in error_msg:
@@ -793,15 +786,16 @@ async def root():
     """Health check endpoint"""
     return {
         "status": "active",
-        "service": "tradovate-webhook-LIVE",
+        "service": "tradovate-webhook-LIVE-REVERSE",
         "trading_mode": "🔴 LIVE TRADING - REAL MONEY",
+        "strategy": "🔄 REVERSE - Opposite of signals",
         "account_id": getattr(client, 'account_id', 'Not authenticated'),
         "endpoints": {
-            "webhook": "/webhook", 
+            "webhook": "/webhook",
             "health": "/"
         },
-        "message": "🔴 LIVE TRADING WEBHOOK - Real money trades active",
-        "warning": "⚠️ All trades will use real funds"
+        "message": "🔴 LIVE REVERSE TRADING WEBHOOK - Real money trades active",
+        "warning": "⚠️ All trades will use real funds and execute OPPOSITE of signals"
     }
 
 
