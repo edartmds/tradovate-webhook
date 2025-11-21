@@ -334,156 +334,157 @@ def cleanup_old_tracking_data():
         del completed_trades[symbol]
 
 
-# Direct API function to place a stop loss order (DEPRECATED - using OCO/OSO instead)
-async def place_stop_loss_order_legacy(stop_order_data):
+async def handle_trade_logic(data: dict):
     """
-    DEPRECATED: This function is kept for reference only.
-    We now use OCO/OSO bracket orders instead of manual stop loss placement.
+    Main function to handle the trade logic after webhook parsing.
+    This function is called within the lock to ensure serial processing.
     """
-    logging.warning("DEPRECATED: place_stop_loss_order_legacy called - use OCO/OSO instead")
-    return None, "DEPRECATED: Use OCO/OSO bracket orders instead"
+    try:
+        # 1. Extract and validate data
+        symbol = data.get("symbol")
+        action = data.get("action")
+        price = data.get("PRICE")
+        t1 = data.get("T1")
+        stop = data.get("STOP")
 
+        logging.info(f"Extracted fields - Symbol: {symbol}, Action: {action}, Price: {price}, T1: {t1}, Stop: {stop}")
 
-async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
-    """
-    ULTRA-FAST enhanced monitoring with optimized polling
-    """
-    logging.info(f"Starting fast order monitoring: {symbol}")
-    entry_filled = False
-    monitoring_start_time = asyncio.get_event_loop().time()
-    max_monitoring_time = 1800  # SPEED: Reduced from 3600 to 1800 seconds (30 min)
-   
-    if not stop_order_data:
-        logging.error("CRITICAL: No stop_order_data provided")
-   
-    http_client = await get_http_client()  # SPEED: Use persistent client
-   
-    while True:
+        if not all([symbol, action, price, t1, stop]):
+            missing = [k for k, v in {"symbol": symbol, "action": action, "PRICE": price, "T1": t1, "STOP": stop}.items() if not v]
+            logging.error(f"Missing required fields: {missing}")
+            raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")
+
+        # 2. Map symbol
+        if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
+            symbol = "NQZ5"
+            logging.info(f"Mapped symbol to: {symbol}")
+
+        # 3. STRATEGY REVERSAL
+        original_action = action
+        action = "Sell" if original_action.lower() == "buy" else "Buy"
+        original_t1 = t1
+        original_stop = stop
+        t1 = original_stop
+        stop = original_t1
+        logging.info(f"STRATEGY REVERSAL: Flipped {original_action} to {action}, T1 to {t1}, STOP to {stop}")
+
+        # 4. MINIMAL DUPLICATE DETECTION
+        if is_duplicate_alert(symbol, action, data):
+            logging.warning(f"RAPID-FIRE DUPLICATE BLOCKED: {symbol} {action}")
+            return {
+                "status": "rejected",
+                "reason": "rapid_fire_duplicate",
+                "message": f"Rapid-fire duplicate alert blocked for {symbol} {action}"
+            }
+        logging.info(f"ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
+
+        # 5. AGGRESSIVE CLEANUP: Flatten positions and cancel orders
+        logging.info("=== AGGRESSIVE CLEANUP & FLATTEN ===")
         try:
-            headers = {"Authorization": f"Bearer {client.access_token}"}
-            active_orders = {}
-           
-            # SPEED: Parallel order status checks
-            status_tasks = []
-            for label, order_id in order_tracking.items():
-                if order_id is None:
-                    continue
-               
-                url = f"https://live-api.tradovate.com/v1/order/{order_id}"  # LIVE API
-                task = asyncio.create_task(http_client.get(url, headers=headers))
-                status_tasks.append((label, order_id, task))
-           
-            # Get all statuses in parallel
-            for label, order_id, task in status_tasks:
-                try:
-                    response = await task
-                    response.raise_for_status()
-                    order_status = response.json()
-                    status = order_status.get("status")
-
-
-                    if label == "ENTRY" and status and status.lower() == "filled" and not entry_filled:
-                        entry_filled = True
-                        logging.info(f"ENTRY filled: {symbol}")
-
-
-                        if stop_order_data and "T1" in stop_order_data:
-                            oso_payload = {
-                                "accountSpec": client.account_spec,
-                                "accountId": client.account_id,
-                                "action": stop_order_data.get("action"),
-                                "symbol": stop_order_data.get("symbol"),
-                                "orderQty": stop_order_data.get("orderQty", 1),
-                                "orderType": "Stop",
-                                "price": stop_order_data.get("stopPrice"),
-                                "isAutomated": True,
-                                "bracket1": {
-                                    "action": "Sell" if stop_order_data.get("action") == "Buy" else "Buy",
-                                    "orderType": "Limit",
-                                    "price": stop_order_data.get("T1"),
-                                    "timeInForce": "GTC"
-                                }
-                            }
-
-
-                            try:
-                                response = await http_client.post(
-                                    f"https://live-api.tradovate.com/v1/order/placeOSO",  # LIVE API
-                                    headers={"Authorization": f"Bearer {client.access_token}", "Content-Type": "application/json"},
-                                    json=oso_payload
-                                )
-                                response.raise_for_status()
-                                oso_result = response.json()
-
-
-                                if "orderId" in oso_result:
-                                    logging.info(f"OSO placed: {oso_result}")
-                                else:
-                                    raise ValueError(f"OSO failed: {oso_result}")
-                            except Exception as e:
-                                logging.error(f"OSO error: {e}")
-
-
-                    elif label == "STOP" and status and status.lower() == "filled":
-                        logging.info(f"STOP filled: {symbol}")
-                        trade_direction = stop_order_data.get("action", "unknown") if stop_order_data else "unknown"
-                        mark_trade_completed(symbol, trade_direction)
-
-
-                        # SPEED: Quick cancel of TP order
-                        if order_tracking.get("TP1"):
-                            asyncio.create_task(
-                                http_client.post(
-                                    f"https://live-api.tradovate.com/v1/order/cancel/{order_tracking['TP1']}",  # LIVE API
-                                    headers=headers
-                                )
-                            )
-                        return
-
-
-                    elif label == "TP1" and status and status.lower() == "filled":
-                        logging.info(f"TP1 filled: {symbol}")
-                        trade_direction = stop_order_data.get("action", "unknown") if stop_order_data else "unknown"
-                        mark_trade_completed(symbol, trade_direction)
-
-
-                        # SPEED: Quick cancel of STOP order
-                        if order_tracking.get("STOP"):
-                            asyncio.create_task(
-                                http_client.post(
-                                    f"https://live-api.tradovate.com/v1/order/cancel/{order_tracking['STOP']}",  # LIVE API
-                                    headers=headers
-                                )
-                            )
-                        return
-
-
-                    elif status in ["Working", "Accepted"]:
-                        active_orders[label] = order_id
-                       
-                except Exception as e:
-                    logging.error(f"Status check error {label}: {e}")
-
-
-            if asyncio.get_event_loop().time() - monitoring_start_time > max_monitoring_time:
-                logging.warning(f"Monitoring timeout: {symbol}")
-                return
-
-
-            if not active_orders:
-                logging.info("No active orders - monitoring complete")
-                return
-
-
-            # SPEED: Adaptive polling - faster when entry not filled, slower after
-            poll_interval = 0.2 if not entry_filled else 0.5
-            await asyncio.sleep(poll_interval)
-
-
+            # These operations are critical, so we run them sequentially.
+            await client.force_close_all_positions_immediately()
+            logging.info("force_close_all_positions_immediately completed.")
+            await client.cancel_all_pending_orders()
+            logging.info("cancel_all_pending_orders completed.")
         except Exception as e:
-            logging.error(f"Monitoring error: {e}")
-            await asyncio.sleep(1)  # SPEED: Reduced error recovery time
+            logging.error(f"CRITICAL CLEANUP FAILED: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Critical cleanup failed: {e}")
 
+        # 6. PLACE ENTRY ORDER
+        logging.info(f"=== PLACING ENTRY ORDER: {action} {symbol} @ {price} ===")
+        entry_order_payload = {
+            "accountId": client.account_id,
+            "accountSpec": client.account_spec,
+            "action": action,
+            "symbol": symbol,
+            "orderQty": 1,
+            "orderType": "Limit",
+            "price": round(price, 2),
+            "timeInForce": "Day",
+            "isAutomated": True
+        }
+        
+        entry_order_result = await client.place_order(order_data=entry_order_payload)
+        entry_order_id = entry_order_result.get("orderId")
+        if not entry_order_id:
+            raise ValueError("Failed to get orderId from entry order placement.")
+        logging.info(f"ENTRY ORDER PLACED: ID {entry_order_id}")
+
+        # 7. MONITOR ENTRY ORDER FILL
+        logging.info(f"=== MONITORING ENTRY ORDER {entry_order_id} FOR FILL ===")
+        entry_filled = await monitor_order_fill(entry_order_id)
+
+        if not entry_filled:
+            logging.warning(f"Entry order {entry_order_id} was not filled. Cancelling and stopping.")
+            try:
+                await client.cancel_order(entry_order_id)
+            except Exception as e:
+                logging.error(f"Failed to cancel unfilled entry order {entry_order_id}: {e}")
+            return {"status": "rejected", "reason": "entry_not_filled"}
+
+        logging.info(f"✅ ENTRY ORDER {entry_order_id} FILLED!")
+
+        # 8. PLACE OCO BRACKET ORDER (TP and SL)
+        logging.info(f"=== PLACING OCO BRACKET (TP/SL) ===")
+        
+        opposite_action = "Sell" if action.lower() == "buy" else "Buy"
+
+        # Correctly position TP and SL
+        if action.lower() == "sell":
+            tp_price = min(float(original_t1), float(original_stop))
+            sl_price = max(float(original_t1), float(original_stop))
+        else:
+            tp_price = max(float(original_t1), float(original_stop))
+            sl_price = min(float(original_t1), float(original_stop))
+
+        # Ensure minimum separation
+        if abs(tp_price - sl_price) < 1.0:
+             sl_price += 1.0 if action.lower() == "sell" else -1.0
+             logging.warning(f"Adjusted SL for minimum separation: New SL is {sl_price}")
+
+        # Define Take Profit order
+        tp_order = {
+            "action": opposite_action,
+            "orderQty": 1,
+            "orderType": "Limit",
+            "price": round(tp_price, 2),
+            "timeInForce": "GTC"
+        }
+
+        # Define Stop Loss order
+        sl_order = {
+            "action": opposite_action,
+            "orderQty": 1,
+            "orderType": "Stop",
+            "stopPrice": round(sl_price, 2),
+            "timeInForce": "GTC"
+        }
+        
+        # Add account details to both orders
+        tp_order.update({"accountId": client.account_id, "accountSpec": client.account_spec, "symbol": symbol})
+        sl_order.update({"accountId": client.account_id, "accountSpec": client.account_spec, "symbol": symbol})
+
+        logging.info(f"OCO PAYLOAD: TP={json.dumps(tp_order)} SL={json.dumps(sl_order)}")
+        
+        oco_result = await client.place_oco_order(tp_order, sl_order)
+        logging.info(f"✅ OCO BRACKET PLACED: {oco_result}")
+
+        return {
+            "status": "success",
+            "entry_order": entry_order_result,
+            "oco_bracket": oco_result
+        }
+
+    except Exception as e:
+        logging.error(f"!!! ERROR IN TRADE LOGIC: {e} !!!", exc_info=True)
+        # Attempt to flatten everything as a final safety measure
+        try:
+            await client.force_close_all_positions_immediately()
+            await client.cancel_all_pending_orders()
+            logging.info("Emergency flatten/cancel executed due to error.")
+        except Exception as cleanup_e:
+            logging.error(f"EMERGENCY CLEANUP FAILED: {cleanup_e}")
+        raise HTTPException(status_code=500, detail=f"Error in trade logic: {e}")
 
 @app.post("/webhook")
 async def webhook(req: Request):
@@ -495,7 +496,6 @@ async def webhook(req: Request):
         logging.info(f"Content-Type: {content_type}")
         logging.info(f"Raw body: {raw_body.decode('utf-8')}")
 
-
         if content_type == "application/json":
             data = await req.json()
         elif content_type.startswith("text/plain"):
@@ -505,232 +505,20 @@ async def webhook(req: Request):
             logging.error(f"Unsupported content type: {content_type}")
             raise HTTPException(status_code=400, detail="Unsupported content type")
 
-
         logging.info(f"=== PARSED ALERT DATA: {data} ===")
-       
-        # Extract required fields
+        
         symbol = data.get("symbol")
-        action = data.get("action")
-        price = data.get("PRICE")
-        t1 = data.get("T1")
-        stop = data.get("STOP")
+        if not symbol:
+            raise ValueError("Symbol not found in alert data")
 
-
-        logging.info(f"Extracted fields - Symbol: {symbol}, Action: {action}, Price: {price}, T1: {t1}, Stop: {stop}")
-
-
-        if not all([symbol, action, price, t1, stop]):
-            missing = [k for k, v in {"symbol": symbol, "action": action, "PRICE": price, "T1": t1, "STOP": stop}.items() if not v]
-            logging.error(f"Missing required fields: {missing}")
-            raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")
-           
-        # Map TradingView symbol to Tradovate symbol
-        if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
-            symbol = "NQZ5"  # Changed from NQM5 to NQU5
-            logging.info(f"Mapped symbol to: {symbol}")
-           
-        # STRATEGY REVERSAL: Flip the order direction and price targets
-        # If original was BUY, we'll SELL and vice versa
-        original_action = action
-        original_t1 = t1
-        original_stop = stop
-       
-        # Flip the direction: Buy becomes Sell, Sell becomes Buy
-        action = "Sell" if original_action.lower() == "buy" else "Buy"
-       
-        # Flip the targets: STOP becomes T1, T1 becomes STOP
-        t1 = original_stop
-        stop = original_t1
-       
-        logging.info(f"STRATEGY REVERSAL: Flipped {original_action} to {action}")
-        logging.info(f"STRATEGY REVERSAL: Flipped T1 from {original_t1} to {t1}")
-        logging.info(f"STRATEGY REVERSAL: Flipped STOP from {original_stop} to {stop}")
-       
         # Ensure sequential handling per symbol to prevent race conditions
         lock = symbol_locks.setdefault(symbol, asyncio.Lock())
-        logging.info(f"Waiting for lock for symbol {symbol}")
         async with lock:
             logging.info(f"Acquired lock for {symbol}")
-            # MINIMAL DUPLICATE DETECTION - Only prevent rapid-fire identical alerts
-            logging.info("=== CHECKING FOR RAPID-FIRE DUPLICATES ONLY ===")
-            cleanup_old_tracking_data()  # Clean up old data first
-
-
-            if is_duplicate_alert(symbol, action, data):
-                logging.warning(f"RAPID-FIRE DUPLICATE BLOCKED: {symbol} {action}")
-                logging.warning(f"Reason: Identical alert within 30 seconds")
-                return {
-                    "status": "rejected",
-                    "reason": "rapid_fire_duplicate",
-                    "message": f"Rapid-fire duplicate alert blocked for {symbol} {action}"
-                }
-
-
-            logging.info(f"ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
-            # Force Limit entry at the exact alert price
-            order_type = "Limit"
-            order_price = price
-            logging.info(f"FORCE LIMIT ENTRY at exact price {order_price}")
-       
-        # REMOVED POST-COMPLETION DUPLICATE DETECTION FOR FULL AUTOMATION
-        # Every new alert will now automatically flatten existing positions and place new orders
-       
-        # SPEED OPTIMIZATION: Parallel cleanup operations for maximum speed
-        logging.info("=== ULTRA-FAST PARALLEL CLEANUP ===")
-       
-        cleanup_tasks = []
-       
-        # Start position closing and order cancellation in parallel
-        try:
-            # Task 1: Close all positions
-            close_task = asyncio.create_task(client.force_close_all_positions_immediately())
-            cleanup_tasks.append(("close_positions", close_task))
-           
-            # Task 2: Cancel all pending orders (generic)
-            cancel_task = asyncio.create_task(client.cancel_all_pending_orders())
-            cleanup_tasks.append(("cancel_orders", cancel_task))
-           
-            # Task 3: Cancel symbol-specific orders
-            symbol_cancel_task = asyncio.create_task(cancel_all_orders(symbol))
-            cleanup_tasks.append(("cancel_symbol_orders", symbol_cancel_task))
-           
-            # Execute all cleanup operations in parallel
-            results = await asyncio.gather(*[task for name, task in cleanup_tasks], return_exceptions=True)
-           
-            for i, (name, task) in enumerate(cleanup_tasks):
-                result = results[i]
-                if isinstance(result, Exception):
-                    logging.warning(f"{name} failed: {result}")
-                else:
-                    logging.info(f"{name} completed")
-                   
-        except Exception as e:
-            logging.error(f"Parallel cleanup error: {e}")
-            # Continue anyway - speed is priority
-       
-        # SPEED: Skip final order verification wait - place order immediately
-        # This saves 1-5 seconds of polling time
-       
-        # STEP 3: Place entry order with automatic bracket orders (OSO)
-        logging.info(f"=== ULTRA-FAST OSO PLACEMENT ===")
-       
-        # Determine opposite action for take profit and stop loss
-        opposite_action = "Sell" if action.lower() == "buy" else "Buy"
-       
-        # LIVE API OSO STRUCTURE - Brackets must match direction logic
-        # For SELL entry: TP is BELOW (Limit), SL is ABOVE (Stop)
-        # For BUY entry: TP is ABOVE (Limit), SL is BELOW (Stop)
-        
-        # Determine which price is TP and which is SL based on entry direction
-        if action.lower() == "sell":
-            # Selling: TP should be below entry, SL above
-            tp_price = min(float(t1), float(stop))
-            sl_price = max(float(t1), float(stop))
-        else:
-            # Buying: TP should be above entry, SL below
-            tp_price = max(float(t1), float(stop))
-            sl_price = min(float(t1), float(stop))
-
-        # 🔥 FINAL FIX: Prevent bracket rejection by ensuring prices are not identical and have minimum separation.
-        if tp_price == sl_price:
-            logging.warning(f"STOP and T1 prices are identical ({tp_price}). Adjusting Stop Loss to prevent rejection.")
-            if action.lower() == "sell": # For a sell, SL is higher
-                sl_price += 1.0 # Add 1 point (4 ticks)
-            else: # For a buy, SL is lower
-                sl_price -= 1.0 # Subtract 1 point (4 ticks)
-            logging.info(f"Adjusted prices for separation: TP={tp_price}, SL={sl_price}")
-        
-        oso_payload = {
-            "accountSpec": client.account_spec,
-            "accountId": client.account_id,
-            "action": action.capitalize(),
-            "symbol": symbol,
-            "orderQty": 1,
-            "orderType": "Limit",  # CORRECTED: Use Limit order for entry
-            "price": round(price, 2),  # CORRECTED: Set the entry price
-            "timeInForce": "Day",
-            "isAutomated": True,
-            # BRACKET 1: Take Profit (LIMIT order)
-            "bracket1": {
-                "action": opposite_action,
-                "orderQty": 1,
-                "orderType": "Limit",
-                "price": round(tp_price, 2),
-                "timeInForce": "GTC",
-                "isAutomated": True
-            },
-            # BRACKET 2: Stop Loss (STOP order)
-            "bracket2": {
-                "action": opposite_action,
-                "orderQty": 1,
-                "orderType": "Stop",
-                "stopPrice": round(sl_price, 2),
-                "timeInForce": "GTC",
-                "isAutomated": True
-            }
-        }
-       
-        # Log the corrected bracket structure
-        logging.info(f"=== LIVE API OSO ===")
-        logging.info(f"{symbol} {action} Limit @ {price} | TP(Limit):{tp_price} | SL(Stop):{sl_price}")
-        logging.info(f"Original alert: T1={t1} STOP={stop}")
-        logging.info(f"Bracket logic: {'SELL entry (TP below, SL above)' if action.lower() == 'sell' else 'BUY entry (TP above, SL below)'}")
-        logging.info(f"{json.dumps(oso_payload, indent=2)}")
-       
-        # STEP 4: Place OSO bracket order with enhanced error handling
-        try:
-            # Validate bracket separation
-            bracket_separation = abs(tp_price - sl_price)
-            logging.info(f"VALIDATION: TP={tp_price} | SL={sl_price} | Separation={bracket_separation} points")
-            
-            if bracket_separation < 1.0:
-                raise ValueError(f"Brackets too close: {bracket_separation} points (need >1.0)")
-            
-            start_time = time.time()
-            
-            # Place OSO bracket order (simple version that works)
-            oso_result = await client.place_oso_order(oso_payload)
-            execution_time = (time.time() - start_time) * 1000
-           
-            logging.info(f"⚡ OSO SUCCESS in {execution_time:.1f}ms: {oso_result.get('orderId', 'ID_PENDING')}")
-           
-            return {
-                "status": "success",
-                "order": oso_result,
-                "execution_time_ms": execution_time,
-                "order_type": order_type,
-                "symbol": symbol,
-                "tp_price": tp_price,
-                "sl_price": sl_price
-            }
-        except Exception as e:
-            execution_time = (time.time() - start_time) * 1000 if 'start_time' in locals() else 0
-            logging.error(f"=== OSO FAILED after {execution_time:.1f}ms ===")
-            logging.error(f"Error Type: {type(e).__name__}")
-            logging.error(f"Full Error: {str(e)}")
-            
-            # Log the exact payload that failed
-            logging.error(f"Failed OSO Payload: {json.dumps(oso_payload, indent=2)}")
-           
-            # Detailed error analysis
-            error_msg = str(e).lower()
-            if "price" in error_msg or "invalid" in error_msg:
-                logging.error(f"PRICE VALIDATION FAILED - TP:{tp_price}, SL:{sl_price}")
-            elif "buying power" in error_msg or "margin" in error_msg:
-                logging.error("INSUFFICIENT MARGIN - Check account buying power")
-            elif "symbol" in error_msg:
-                logging.error(f"SYMBOL ERROR - Check if {symbol} is valid for live trading")
-            elif "bracket" in error_msg:
-                logging.error("BRACKET STRUCTURE ERROR - OSO format rejected")
-            
-            raise HTTPException(status_code=500, detail=f"OSO placement failed: {str(e)}")
-
+            return await handle_trade_logic(data)
 
     except Exception as e:
-        logging.error(f"=== ERROR IN WEBHOOK ===")
-        logging.error(f"Error: {e}")
-        import traceback
-        logging.error(f"Traceback: {traceback.format_exc()}")
+        logging.error(f"=== TOP-LEVEL ERROR IN WEBHOOK: {e} ===", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
