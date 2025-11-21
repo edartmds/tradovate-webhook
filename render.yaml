@@ -6,13 +6,23 @@ services:
     startCommand: "uvicorn main:app --host 0.0.0.0 --port 10000"
     envVars:
       - key: TRADOVATE_CLIENT_ID
-        value: your_client_id
+        value: 6203
       - key: TRADOVATE_CLIENT_SECRET
-        value: your_client_secret
+        value: d2b49984-cb4d-4027-a109-e82094c001f2
       - key: TRADOVATE_USERNAME
-        value: your_username
+        value: Disisda1
       - key: TRADOVATE_PASSWORD
-        value: your_password
+        value: da1UThale$mAka
       - key: TRADOVATE_DEMO
-        value: true
+        value: false
+      - key: WEBHOOK_SECRET
+        value: new-super-secret-token
+      - key: TRADOVATE_APP_ID
+        value: ONE
+      - key: TRADOVATE_APP_VERSION
+        value: 0.0.1
+      - key: TRADOVATE_DEVICE_ID
+        value: 95d26f7c-6e2f-06aa-d2ce-250efd3620b8
+
+
 
