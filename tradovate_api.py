@@ -1,23 +1,17 @@
 import httpx
 import os
 import logging
-import json  # Added for pretty-printing JSON responses
-import asyncio  # Added for retry logic
-import httpx  # Added for HTTP requests
+import json
+import asyncio
 from dotenv import load_dotenv
 from fastapi import HTTPException
 
-
 load_dotenv()
 
+# 🔴 LIVE TRADING MODE
+BASE_URL = "https://live-api.tradovate.com/v1"
 
-# 🔴 FORCED LIVE TRADING MODE - REAL MONEY TRADING
-TRADOVATE_DEMO = False  # 🔥 HARD CODED TO LIVE - NO ENVIRONMENT VARIABLE DEPENDENCY
-BASE_URL = "https://live-api.tradovate.com/v1"  # 🔥 FORCE LIVE API ENDPOINT
-
-# Log which mode is active
-logging.info(f"🔴 FORCED LIVE MODE - Base URL: {BASE_URL}")
-logging.info("🔴 *** HARD CODED TO LIVE TRADING - REAL MONEY ***")
+logging.info(f"🔴 LIVE MODE - Base URL: {BASE_URL}")
 
 
 class TradovateClient:
