@@ -140,7 +140,9 @@ async def startup_event():
     logging.info("🔴 *** LIVE TRADING MODE ENABLED ***")
     logging.info("🔴 *** REAL MONEY TRADING ACTIVE ***")
     logging.info("🔴 *** ALL TRADES WILL USE REAL FUNDS ***")
-    logging.info("🔴" * 50)
+    logging.info("� *** REVERSE STRATEGY: BUY signals become SELL orders ***")
+    logging.info("🔄 *** REVERSE STRATEGY: SELL signals become BUY orders ***")
+    logging.info("�🔴" * 50)
    
     try:
         await client.authenticate()
@@ -751,7 +753,21 @@ async def webhook(req: Request):
                 stop = price + min_distance
                 logging.warning(f"🎯 ADJUSTED SL: Too close to entry, set to {stop}")
         
-        logging.info(f"🎯 VALIDATED PRICES: Entry={price}, TP={t1}, SL={stop}")
+        # 🎯 ADDITIONAL STOP LOSS VALIDATION
+        # Ensure stop loss is on the correct side of entry price
+        if action.lower() == "buy":
+            # For BUY: Stop loss must be BELOW entry price
+            if stop >= price:
+                stop = price - 5.0  # Force 5 points below entry
+                logging.warning(f"🎯 CRITICAL FIX: BUY stop loss moved below entry to {stop}")
+        else:
+            # For SELL: Stop loss must be ABOVE entry price  
+            if stop <= price:
+                stop = price + 5.0  # Force 5 points above entry
+                logging.warning(f"🎯 CRITICAL FIX: SELL stop loss moved above entry to {stop}")
+        
+        logging.info(f"🎯 FINAL VALIDATED PRICES: Entry={price}, TP={t1}, SL={stop}")
+        logging.info(f"🎯 STOP LOSS DIRECTION CHECK: {action} order, SL at {stop}")
        
         # Ensure sequential handling per symbol to prevent race conditions
         lock = symbol_locks.setdefault(symbol, asyncio.Lock())
@@ -860,7 +876,7 @@ async def webhook(req: Request):
                 "action": opposite_action,
                 "symbol": symbol,
                 "orderQty": 1,
-                "orderType": "Stop",
+                "orderType": "StopMarket",  # 🎯 FIXED: Use StopMarket instead of Stop
                 "stopPrice": round(float(stop), 2),  # 🎯 ENSURE PROPER PRICE FORMAT
                 "timeInForce": "GTC",
                 "isAutomated": True
@@ -869,6 +885,8 @@ async def webhook(req: Request):
        
         # 🚀 SPEED: Remove redundant logging and validation for maximum speed
         logging.info(f"⚡ {symbol} {action} @ {order_price} | TP:{t1} SL:{stop}")
+        logging.info(f"🎯 STOP LOSS CONFIG: StopMarket order at {stop} for {opposite_action}")
+        logging.info(f"🎯 OSO STRUCTURE: Entry={action} | TP={opposite_action} Limit | SL={opposite_action} StopMarket")
        
         # STEP 4: Place OSO bracket order with maximum speed optimizations
         try:
@@ -944,15 +962,16 @@ async def root():
     """Health check endpoint"""
     return {
         "status": "active",
-        "service": "tradovate-webhook-LIVE",
+        "service": "tradovate-webhook-LIVE-REVERSE",
         "trading_mode": "🔴 LIVE TRADING - REAL MONEY",
+        "strategy": "🔄 REVERSE - Opposite of signals",
         "account_id": getattr(client, 'account_id', 'Not authenticated'),
         "endpoints": {
             "webhook": "/webhook",
             "health": "/"
         },
-        "message": "🔴 LIVE TRADING WEBHOOK - Real money trades active",
-        "warning": "⚠️ All trades will use real funds"
+        "message": "🔴 LIVE REVERSE TRADING WEBHOOK - Real money trades active",
+        "warning": "⚠️ All trades will use real funds and execute OPPOSITE of signals"
     }
 
 
