@@ -480,7 +480,7 @@ async def handle_trade_logic(data: dict):
              sl_price += 1.0 if action.lower() == "sell" else -1.0
              logging.warning(f"Adjusted SL for minimum separation: New SL is {sl_price}")
 
-        # Define Take Profit order
+        # Define Take Profit order (without account details)
         tp_order = {
             "action": opposite_action,
             "orderQty": 1,
@@ -489,7 +489,7 @@ async def handle_trade_logic(data: dict):
             "timeInForce": "GTC"
         }
 
-        # Define Stop Loss order
+        # Define Stop Loss order (without account details)
         sl_order = {
             "action": opposite_action,
             "orderQty": 1,
@@ -498,13 +498,10 @@ async def handle_trade_logic(data: dict):
             "timeInForce": "GTC"
         }
         
-        # Add account details to both orders
-        tp_order.update({"accountId": client.account_id, "accountSpec": client.account_spec, "symbol": symbol})
-        sl_order.update({"accountId": client.account_id, "accountSpec": client.account_spec, "symbol": symbol})
-
         logging.info(f"OCO PAYLOAD: TP={json.dumps(tp_order)} SL={json.dumps(sl_order)}")
         
-        oco_result = await client.place_oco_order(tp_order, sl_order)
+        # Pass the symbol separately to the updated place_oco_order function
+        oco_result = await client.place_oco_order(symbol, tp_order, sl_order)
         logging.info(f"✅ OCO BRACKET PLACED: {oco_result}")
 
         return {
