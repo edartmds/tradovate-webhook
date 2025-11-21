@@ -1,4 +1,4 @@
-# Main(forward LIVE)
+# Main (flipped LIVE)
 import os
 import logging
 import json
@@ -13,8 +13,6 @@ import httpx
 import hashlib
 
 
-
-
 # 🔥 RELAXED DUPLICATE DETECTION FOR AUTOMATED TRADING
 last_alert = {}  # {symbol: {"direction": "buy"/"sell", "timestamp": datetime, "alert_hash": str}}
 completed_trades = {}  # {symbol: {"last_completed_direction": "buy"/"sell", "completion_time": datetime}}
@@ -23,52 +21,31 @@ DUPLICATE_THRESHOLD_SECONDS = 30  # 30 seconds - only prevent rapid-fire identic
 COMPLETED_TRADE_COOLDOWN = 30  # 30 seconds - minimal cooldown for automated trading
 
 
-
-
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 logging.info(f"Loaded WEBHOOK_SECRET: {WEBHOOK_SECRET}")
-
 
 # 🔴 LIVE TRADING MODE - REAL MONEY TRADING ENABLED
 # Set to live Tradovate account (not demo)
 TRADOVATE_LIVE_MODE = True
 logging.info("🔴 *** LIVE TRADING MODE ENABLED - REAL MONEY TRADES ***")
 
-
-
-
 LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
 
-
-
-
 # 🚀 SPEED OPTIMIZATION: Faster logging configuration
 log_file = os.path.join(LOG_DIR, "webhook_trades.log")
-
-
-
 
 # Configure logging for maximum performance
 file_handler = logging.FileHandler(log_file)
 file_handler.setLevel(logging.INFO)
 
-
-
-
 console_handler = logging.StreamHandler()
 console_handler.setLevel(logging.INFO)
-
-
-
 
 # 🚀 SPEED: Simpler log format for faster processing
 formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
 file_handler.setFormatter(formatter)
 console_handler.setFormatter(formatter)
-
-
-
 
 # Configure root logger
 logger = logging.getLogger()
@@ -77,13 +54,8 @@ logger.handlers.clear()  # Clear any existing handlers
 logger.addHandler(file_handler)
 logger.addHandler(console_handler)
 
-
-
-
 # 🚀 SPEED: Disable debug logging for httpx to reduce noise
 logging.getLogger("httpx").setLevel(logging.WARNING)
-
-
 
 
 app = FastAPI()
@@ -91,14 +63,8 @@ client = TradovateClient()
 # Dictionary of asyncio locks per symbol to serialize webhook handling and prevent race conditions
 symbol_locks = {}
 
-
-
-
 # 🚀 SPEED OPTIMIZATION: Persistent HTTP client to avoid connection overhead
 persistent_http_client = None
-
-
-
 
 async def get_http_client():
     """Get or create a persistent HTTP client for maximum speed"""
@@ -115,29 +81,30 @@ async def get_http_client():
     return persistent_http_client
 
 
-
-
 @app.on_event("startup")
 async def startup_event():
     logging.info("=== APPLICATION STARTING UP ===")
-   
+    
     # 🔴 LIVE TRADING SAFETY WARNINGS
     logging.info("🔴" * 50)
     logging.info("🔴 *** LIVE TRADING MODE ENABLED ***")
-    logging.info("🔴 *** REAL MONEY TRADING ACTIVE ***")
+    logging.info("🔴 *** REAL MONEY TRADING ACTIVE ***") 
     logging.info("🔴 *** ALL TRADES WILL USE REAL FUNDS ***")
+    logging.info("🔴 *** REVERSE STRATEGY ACTIVE ***")
     logging.info("🔴" * 50)
-   
+    
     try:
         await client.authenticate()
         logging.info(f"=== AUTHENTICATION SUCCESSFUL ===")
         logging.info(f"🔴 LIVE Account ID: {client.account_id}")
         logging.info(f"🔴 LIVE Account Spec: {client.account_spec}")
         logging.info(f"Access Token: {'***' if client.access_token else 'None'}")
-       
+        
         # Additional safety confirmation
         logging.info("🔴 *** CONFIRMED: Connected to LIVE Tradovate account ***")
-          # Close any existing positions and cancel pending orders on startup to start clean
+        logging.info("🔄 *** REVERSE STRATEGY: BUY signals become SELL orders ***")
+        
+        # Close any existing positions and cancel pending orders on startup to start clean
         logging.info("=== CLEANING UP EXISTING POSITIONS AND ORDERS ON STARTUP ===")
         try:
             # Close all positions first
@@ -158,8 +125,6 @@ async def startup_event():
         raise
 
 
-
-
 @app.on_event("shutdown")
 async def shutdown_event():
     """🚀 SPEED: Cleanup persistent HTTP client on shutdown"""
@@ -168,8 +133,6 @@ async def shutdown_event():
         await persistent_http_client.aclose()
         persistent_http_client = None
     logging.info("=== APPLICATION SHUTDOWN COMPLETE ===")
-
-
 
 
 async def cancel_all_orders(symbol):
@@ -212,8 +175,6 @@ async def cancel_all_orders(symbol):
     # Final check removed to save time - if orders remain, they'll be handled in next cycle
 
 
-
-
 async def cancel_single_order(http_client, cancel_url, order_id, symbol, status):
     """Cancel a single order - used for parallel processing"""
     try:
@@ -224,20 +185,12 @@ async def cancel_single_order(http_client, cancel_url, order_id, symbol, status)
         logging.error(f"❌ Cancel failed {order_id}: {e}")
 
 
-
-
 async def flatten_position(symbol):
     """🚀 ULTRA-FAST position flattening"""
     url = f"https://live-api.tradovate.com/v1/position/closeposition"
     headers = {"Authorization": f"Bearer {client.access_token}"}
     http_client = await get_http_client()
     await http_client.post(url, headers=headers, json={"symbol": symbol})
-
-
-
-
-
-
 
 
 async def wait_until_no_open_orders(symbol, timeout=5):  # 🚀 SPEED: Reduced timeout from 10 to 5 seconds
@@ -263,8 +216,6 @@ async def wait_until_no_open_orders(symbol, timeout=5):  # 🚀 SPEED: Reduced t
         await asyncio.sleep(0.1)
 
 
-
-
 def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
     # 🚀 SPEED: Reduced logging verbosity for faster parsing
     parsed_data = {}
@@ -277,9 +228,6 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
         except (json.JSONDecodeError, ValueError) as e:
             raise ValueError(f"Error parsing JSON-like structure: {e}")
 
-
-
-
     for line in alert_text.split("\n"):
         if "=" in line:
             key, value = line.split("=", 1)
@@ -289,34 +237,20 @@ def parse_alert_to_tradovate_json(alert_text: str, account_id: int) -> dict:
         elif line.strip().upper() in ["BUY", "SELL"]:
             parsed_data["action"] = line.strip().capitalize()
 
-
-
-
     # 🚀 SPEED: Single comprehensive log instead of multiple logs
     logging.info(f"⚡ Parsed: {parsed_data}")
-
-
-
 
     required_fields = ["symbol", "action"]
     for field in required_fields:
         if field not in parsed_data or not parsed_data[field]:
             raise ValueError(f"Missing or invalid field: {field}")
 
-
-
-
     # Convert numeric fields
     for target in ["T1", "STOP", "PRICE"]:
         if target in parsed_data:
             parsed_data[target] = float(parsed_data[target])
 
-
-
-
     return parsed_data
-
-
 
 
 def hash_alert(data: dict) -> str:
@@ -331,8 +265,6 @@ def hash_alert(data: dict) -> str:
     }
     alert_string = json.dumps(essential_fields, sort_keys=True)
     return hashlib.sha256(alert_string.encode()).hexdigest()
-
-
 
 
 def is_duplicate_alert(symbol: str, action: str, data: dict) -> bool:
@@ -375,8 +307,6 @@ def is_duplicate_alert(symbol: str, action: str, data: dict) -> bool:
     return False
 
 
-
-
 def mark_trade_completed(symbol: str, direction: str):
     """Mark a trade as completed to prevent immediate duplicates."""
     completed_trades[symbol] = {
@@ -407,8 +337,6 @@ def cleanup_old_tracking_data():
         del completed_trades[symbol]
 
 
-
-
 # Direct API function to place a stop loss order (DEPRECATED - using OCO/OSO instead)
 async def place_stop_loss_order_legacy(stop_order_data):
     """
@@ -417,92 +345,67 @@ async def place_stop_loss_order_legacy(stop_order_data):
     """
     logging.warning("DEPRECATED: place_stop_loss_order_legacy called - use OCO/OSO instead")
     return None, "DEPRECATED: Use OCO/OSO bracket orders instead"
+
 async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
     """
-    Enhanced monitoring to ensure stop loss orders exit trades correctly.
+    🚀 ULTRA-FAST enhanced monitoring with optimized polling
     """
-    logging.info(f"Starting comprehensive order monitoring for {symbol}")
+    logging.info(f"⚡ Starting fast order monitoring: {symbol}")
     entry_filled = False
-    stop_placed = False
     monitoring_start_time = asyncio.get_event_loop().time()
-    max_monitoring_time = 3600  # 1 hour timeout
-
-
-
-
+    max_monitoring_time = 1800  # 🚀 SPEED: Reduced from 3600 to 1800 seconds (30 min)
+   
     if not stop_order_data:
-        logging.error("CRITICAL: No stop_order_data provided when starting monitoring")
-    else:
-        logging.info(f"Will use this STOP data when entry fills: {stop_order_data}")
-
-
-
-
-    poll_interval = 1
-
-
-
-
+        logging.error("CRITICAL: No stop_order_data provided")
+   
+    http_client = await get_http_client()  # 🚀 SPEED: Use persistent client
+   
     while True:
         try:
             headers = {"Authorization": f"Bearer {client.access_token}"}
             active_orders = {}
-            logging.info(f"Order tracking state: {order_tracking}")
-
-
-
-
+           
+            # 🚀 SPEED: Parallel order status checks
+            status_tasks = []
             for label, order_id in order_tracking.items():
                 if order_id is None:
                     continue
-
-
-
-
+               
                 url = f"https://live-api.tradovate.com/v1/order/{order_id}"
-                async with httpx.AsyncClient() as http_client:
-                    response = await http_client.get(url, headers=headers)
+                task = asyncio.create_task(http_client.get(url, headers=headers))
+                status_tasks.append((label, order_id, task))
+           
+            # Get all statuses in parallel
+            for label, order_id, task in status_tasks:
+                try:
+                    response = await task
                     response.raise_for_status()
                     order_status = response.json()
+                    status = order_status.get("status")
 
+                    if label == "ENTRY" and status and status.lower() == "filled" and not entry_filled:
+                        entry_filled = True
+                        logging.info(f"⚡ ENTRY filled: {symbol}")
 
-
-
-                status = order_status.get("status")
-
-
-
-
-                if label == "ENTRY" and status and status.lower() == "filled" and not entry_filled:
-                    entry_filled = True
-                    logging.info(f"ENTRY order filled for {symbol}. Placing STOP and TP orders.")
-
-
-
-
-                    if stop_order_data and "T1" in stop_order_data:
-                        oso_payload = {
-                            "accountSpec": client.account_spec,
-                            "accountId": client.account_id,
-                            "action": stop_order_data.get("action"),
-                            "symbol": stop_order_data.get("symbol"),
-                            "orderQty": stop_order_data.get("orderQty", 1),
-                            "orderType": "Stop",
-                            "price": stop_order_data.get("stopPrice"),
-                            "isAutomated": True,
-                            "bracket1": {
-                                "action": "Sell" if stop_order_data.get("action") == "Buy" else "Buy",
-                                "orderType": "Limit",
-                                "price": stop_order_data.get("T1"),
-                                "timeInForce": "GTC"
+                        if stop_order_data and "T1" in stop_order_data:
+                            oso_payload = {
+                                "accountSpec": client.account_spec,
+                                "accountId": client.account_id,
+                                "action": stop_order_data.get("action"),
+                                "symbol": stop_order_data.get("symbol"),
+                                "orderQty": stop_order_data.get("orderQty", 1),
+                                "orderType": "Stop",
+                                "price": stop_order_data.get("stopPrice"),
+                                "isAutomated": True,
+                                "bracket1": {
+                                    "action": "Sell" if stop_order_data.get("action") == "Buy" else "Buy",
+                                    "orderType": "Limit",
+                                    "price": stop_order_data.get("T1"),
+                                    "timeInForce": "GTC"
+                                }
                             }
-                        }
 
-
-
-
-                        try:
-                            async with httpx.AsyncClient() as http_client:
+                            try:
                                 response = await http_client.post(
                                     f"https://live-api.tradovate.com/v1/order/placeOSO",
                                     headers={"Authorization": f"Bearer {client.access_token}", "Content-Type": "application/json"},
@@ -511,103 +414,64 @@ async def monitor_all_orders(order_tracking, symbol, stop_order_data=None):
                                 response.raise_for_status()
                                 oso_result = response.json()
 
-
-
-
                                 if "orderId" in oso_result:
-                                    logging.info(f"OSO order placed successfully: {oso_result}")
-                                    stop_placed = True
+                                    logging.info(f"⚡ OSO placed: {oso_result}")
                                 else:
-                                    raise ValueError(f"Failed to place OSO order: {oso_result}")
-                        except Exception as e:
-                            logging.error(f"Error placing OSO order: {e}")
+                                    raise ValueError(f"OSO failed: {oso_result}")
+                            except Exception as e:
+                                logging.error(f"⚡ OSO error: {e}")
 
+                    elif label == "STOP" and status and status.lower() == "filled":
+                        logging.info(f"⚡ STOP filled: {symbol}")
+                        trade_direction = stop_order_data.get("action", "unknown") if stop_order_data else "unknown"
+                        mark_trade_completed(symbol, trade_direction)
 
+                        # 🚀 SPEED: Quick cancel of TP order
+                        if order_tracking.get("TP1"):
+                            asyncio.create_task(
+                                http_client.post(
+                                    f"https://live-api.tradovate.com/v1/order/cancel/{order_tracking['TP1']}",
+                                    headers=headers
+                                )
+                            )
+                        return
 
+                    elif label == "TP1" and status and status.lower() == "filled":
+                        logging.info(f"⚡ TP1 filled: {symbol}")
+                        trade_direction = stop_order_data.get("action", "unknown") if stop_order_data else "unknown"
+                        mark_trade_completed(symbol, trade_direction)
 
-                elif label == "STOP" and status and status.lower() == "filled":
-                    logging.info(f"STOP order filled for {symbol}. Exiting trade.")
-                    trade_direction = stop_order_data.get("action", "unknown") if stop_order_data else "unknown"
-                    mark_trade_completed(symbol, trade_direction)
+                        # 🚀 SPEED: Quick cancel of STOP order
+                        if order_tracking.get("STOP"):
+                            asyncio.create_task(
+                                http_client.post(
+                                    f"https://live-api.tradovate.com/v1/order/cancel/{order_tracking['STOP']}",
+                                    headers=headers
+                                )
+                            )
+                        return
 
-
-
-
-                    if order_tracking.get("TP1"):
-                        cancel_url = f"https://live-api.tradovate.com/v1/order/cancel/{order_tracking['TP1']}"
-                        try:
-                            async with httpx.AsyncClient() as http_client:
-                                resp = await http_client.post(cancel_url, headers=headers)
-                                if resp.status_code == 200:
-                                    logging.info(f"TP1 order {order_tracking['TP1']} cancelled after STOP fill.")
-                                else:
-                                    logging.warning(f"Failed to cancel TP1 order after STOP fill. Status: {resp.status_code}")
-                        except Exception as e:
-                            logging.error(f"Exception while cancelling TP1 order after STOP fill: {e}")
-                    return
-
-
-
-
-                elif label == "TP1" and status and status.lower() == "filled":
-                    logging.info(f"TP1 order filled for {symbol}. Trade completed successfully.")
-                    trade_direction = stop_order_data.get("action", "unknown") if stop_order_data else "unknown"
-                    mark_trade_completed(symbol, trade_direction)
-
-
-
-
-                    if order_tracking.get("STOP"):
-                        cancel_url = f"https://live-api.tradovate.com/v1/order/cancel/{order_tracking['STOP']}"
-                        try:
-                            async with httpx.AsyncClient() as http_client:
-                                resp = await http_client.post(cancel_url, headers=headers)
-                                if resp.status_code == 200:
-                                    logging.info(f"STOP order {order_tracking['STOP']} cancelled after TP1 fill.")
-                                else:
-                                    logging.warning(f"Failed to cancel STOP order after TP1 fill. Status: {resp.status_code}")
-                        except Exception as e:
-                            logging.error(f"Exception while cancelling STOP order after TP1 fill: {e}")
-                    return
-
-
-
-
-                elif status in ["Working", "Accepted"]:
-                    active_orders[label] = order_id
-
-
-
+                    elif status in ["Working", "Accepted"]:
+                        active_orders[label] = order_id
+                       
+                except Exception as e:
+                    logging.error(f"⚡ Status check error {label}: {e}")
 
             if asyncio.get_event_loop().time() - monitoring_start_time > max_monitoring_time:
-                logging.warning(f"Order monitoring timeout reached for {symbol}. Stopping.")
+                logging.warning(f"⚡ Monitoring timeout: {symbol}")
                 return
-
-
-
 
             if not active_orders:
-                logging.info("No active orders remaining. Stopping monitoring.")
+                logging.info("⚡ No active orders - monitoring complete")
                 return
 
-
-
-
-            poll_interval = 0.5 if not entry_filled else 1
+            # 🚀 SPEED: Adaptive polling - faster when entry not filled, slower after
+            poll_interval = 0.2 if not entry_filled else 0.5
             await asyncio.sleep(poll_interval)
 
-
-
-
         except Exception as e:
-            logging.error(f"Error in order monitoring: {e}")
-            await asyncio.sleep(2)
-
-
-
-
-
-
+            logging.error(f"⚡ Monitoring error: {e}")
+            await asyncio.sleep(1)  # 🚀 SPEED: Reduced error recovery time
 
 
 @app.post("/webhook")
@@ -620,9 +484,6 @@ async def webhook(req: Request):
         logging.info(f"Content-Type: {content_type}")
         logging.info(f"Raw body: {raw_body.decode('utf-8')}")
 
-
-
-
         if content_type == "application/json":
             data = await req.json()
         elif content_type.startswith("text/plain"):
@@ -631,9 +492,6 @@ async def webhook(req: Request):
         else:
             logging.error(f"Unsupported content type: {content_type}")
             raise HTTPException(status_code=400, detail="Unsupported content type")
-
-
-
 
         logging.info(f"=== PARSED ALERT DATA: {data} ===")
        
@@ -644,17 +502,7 @@ async def webhook(req: Request):
         t1 = data.get("T1")
         stop = data.get("STOP")
 
-
-
-
         logging.info(f"Extracted fields - Symbol: {symbol}, Action: {action}, Price: {price}, T1: {t1}, Stop: {stop}")
-
-
-
-
-
-
-
 
         if not all([symbol, action, price, t1, stop]):
             missing = [k for k, v in {"symbol": symbol, "action": action, "PRICE": price, "T1": t1, "STOP": stop}.items() if not v]
@@ -666,17 +514,31 @@ async def webhook(req: Request):
             symbol = "NQZ5"  # Changed from NQM5 to NQU5
             logging.info(f"Mapped symbol to: {symbol}")
            
+        # 🔄 STRATEGY REVERSAL: Flip the order direction and price targets
+        # If original was BUY, we'll SELL and vice versa
+        original_action = action
+        original_t1 = t1
+        original_stop = stop
+       
+        # Flip the direction: Buy becomes Sell, Sell becomes Buy
+        action = "Sell" if original_action.lower() == "buy" else "Buy"
+       
+        # Flip the targets: STOP becomes T1, T1 becomes STOP
+        t1 = original_stop
+        stop = original_t1
+       
+        logging.info(f"🔄 STRATEGY REVERSAL: Flipped {original_action} to {action}")
+        logging.info(f"🔄 STRATEGY REVERSAL: Flipped T1 from {original_t1} to {t1}")
+        logging.info(f"🔄 STRATEGY REVERSAL: Flipped STOP from {original_stop} to {stop}")
+       
         # Ensure sequential handling per symbol to prevent race conditions
         lock = symbol_locks.setdefault(symbol, asyncio.Lock())
-        logging.info(f"� Waiting for lock for symbol {symbol}")
+        logging.info(f"📌 Waiting for lock for symbol {symbol}")
         async with lock:
             logging.info(f"🔒 Acquired lock for {symbol}")
-            # �🔥 MINIMAL DUPLICATE DETECTION - Only prevent rapid-fire identical alerts
+            # 🔥 MINIMAL DUPLICATE DETECTION - Only prevent rapid-fire identical alerts
             logging.info("🔍 === CHECKING FOR RAPID-FIRE DUPLICATES ONLY ===")
             cleanup_old_tracking_data()  # Clean up old data first
-
-
-
 
             if is_duplicate_alert(symbol, action, data):
                 logging.warning(f"🚫 RAPID-FIRE DUPLICATE BLOCKED: {symbol} {action}")
@@ -687,16 +549,10 @@ async def webhook(req: Request):
                     "message": f"Rapid-fire duplicate alert blocked for {symbol} {action}"
                 }
 
-
-
-
             logging.info(f"✅ ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
-           
-            # 🎯 SMART ORDER TYPE SELECTION TO AVOID REJECTIONS
-            # Check if this is a breakout (price above/below current market) or pullback
-           
-            # Always use Stop orders for entries to avoid immediate fills
-            # Stop orders wait at the exact price level until triggered
+            
+            # 🎯 SMART ORDER TYPE SELECTION FOR LIVE TRADING
+            # Use Stop orders for entries to avoid immediate fills
             order_type = "Stop"
             entry_price = price  # Use exact PRICE from alert
            
@@ -739,9 +595,6 @@ async def webhook(req: Request):
         except Exception as e:
             logging.error(f"⚡ Parallel cleanup error: {e}")
             # Continue anyway - speed is priority
-       
-        # 🚀 SPEED: Skip final order verification wait - place order immediately
-        # This saves 1-5 seconds of polling time
        
         # STEP 3: Place entry order with automatic bracket orders (OSO)
         logging.info(f"⚡ === ULTRA-FAST OSO PLACEMENT ===")
@@ -788,16 +641,6 @@ async def webhook(req: Request):
        
         # 🚀 SPEED: Remove redundant logging and validation for maximum speed
         logging.info(f"⚡ {symbol} {action} @ {entry_price} | TP:{t1} SL:{stop}")
-        oso_payload["stopPrice"] = entry_price
-        logging.info(f"🎯 STOP ENTRY at exact alert PRICE={entry_price}")
-        logging.info(f"🎯 Take Profit at T1={t1}")
-        logging.info(f"🎯 Stop Loss at STOP={stop}")
-       
-        logging.info(f"=== OSO PAYLOAD ===")
-        logging.info(f"{json.dumps(oso_payload, indent=2)}")
-       
-        # STEP 4: Place OSO bracket order with speed optimizations
-        logging.info("=== PLACING OSO BRACKET ORDER ===")
        
         # STEP 4: Place OSO bracket order with maximum speed optimizations
         try:
@@ -814,15 +657,15 @@ async def webhook(req: Request):
                 "execution_time_ms": execution_time,
                 "order_type": order_type,
                 "symbol": symbol,
-                "entry_price": entry_price,
-                "take_profit": t1,
-                "stop_loss": stop
+                "strategy": "REVERSE",
+                "original_signal": f"{original_action} {original_t1}/{original_stop}",
+                "executed_order": f"{action} {t1}/{stop}"
             }
         except Exception as e:
             execution_time = (time.time() - start_time) * 1000 if 'start_time' in locals() else 0
             logging.error(f"⚡ OSO FAILED after {execution_time:.1f}ms: {e}")
            
-            # � SPEED: Minimal error analysis for faster recovery
+            # 🚀 SPEED: Minimal error analysis for faster recovery
             error_msg = str(e).lower()
             if "price" in error_msg:
                 logging.error(f"⚡ PRICE ERROR: {entry_price}")
@@ -832,6 +675,7 @@ async def webhook(req: Request):
                 logging.error(f"⚡ SYMBOL ERROR: {symbol}")
            
             raise HTTPException(status_code=500, detail=f"OSO failed: {str(e)}")
+
     except Exception as e:
         logging.error(f"=== ERROR IN WEBHOOK ===")
         logging.error(f"Error: {e}")
@@ -840,6 +684,11 @@ async def webhook(req: Request):
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
+@app.post("/")
+async def root_post(req: Request):
+    """Accept POST requests at root and handle as webhook"""
+    # Process alert via webhook handler
+    return await webhook(req)
 
 
 @app.get("/")
@@ -847,38 +696,19 @@ async def root():
     """Health check endpoint"""
     return {
         "status": "active",
-        "service": "tradovate-webhook-LIVE",
+        "service": "tradovate-webhook-LIVE-REVERSE",
         "trading_mode": "🔴 LIVE TRADING - REAL MONEY",
+        "strategy": "🔄 REVERSE - Opposite of signals",
         "account_id": getattr(client, 'account_id', 'Not authenticated'),
         "endpoints": {
-            "webhook": "/webhook",
+            "webhook": "/webhook", 
             "health": "/"
         },
-        "message": "🔴 LIVE TRADING WEBHOOK - Real money trades active",
-        "warning": "⚠️ All trades will use real funds"
+        "message": "🔴 LIVE REVERSE TRADING WEBHOOK - Real money trades active",
+        "warning": "⚠️ All trades will use real funds with REVERSE strategy"
     }
 
 
-
-
-@app.post("/")
-async def root_post(req: Request):
-    """Handle POST requests to root and redirect to webhook"""
-    logging.warning("POST request received at root path '/' - redirecting to /webhook")
-    logging.info("If you're sending webhooks, please update your URL to include '/webhook' at the end")
-   
-    # Forward the request to the webhook endpoint
-    return await webhook(req)
-   
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     uvicorn.run("main:app", host="0.0.0.0", port=port)
-
-
-
-
-
-
-
-
-
