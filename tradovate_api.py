@@ -138,6 +138,31 @@ class TradovateClient:
         raise HTTPException(status_code=429, detail="Authentication failed after maximum retries")
 
 
+    async def get_order_status(self, order_id: int):
+        """
+        Retrieves the status of a single order by its ID.
+        """
+        if not self.access_token:
+            await self.authenticate()
+
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+        params = {"id": order_id}
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"{BASE_URL}/order/item", params=params, headers=headers)
+                response.raise_for_status()
+                order_data = response.json()
+                logging.info(f"Status for order {order_id}: {order_data.get('ordStatus')}")
+                return order_data
+        except httpx.HTTPStatusError as e:
+            logging.error(f"Failed to get status for order {order_id}: {e.response.text}")
+            raise HTTPException(status_code=e.response.status_code, detail=f"Failed to get order status: {e.response.text}")
+        except Exception as e:
+            logging.error(f"Unexpected error getting order status for {order_id}: {e}")
+            raise HTTPException(status_code=500, detail="Internal server error getting order status")
+
+
     async def place_order(self, symbol: str, action: str, quantity: int = 1, order_data: dict = None):
         if not self.access_token:
             await self.authenticate()
