@@ -1163,6 +1163,9 @@ async def handle_trade_logic(data: dict):
         if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
             symbol = "NQZ5"
             logging.info(f"Mapped symbol to: {symbol}")
+        elif symbol == "CME_MINI:MNQ1!" or symbol == "MNQ1!":
+            symbol = "MNQZ5"
+            logging.info(f"Mapped symbol to: {symbol}")
 
         # 3. STRATEGY REVERSAL
         original_action = action
