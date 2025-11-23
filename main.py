@@ -566,8 +566,8 @@ async def webhook(req: Request):
             raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")
            
         # Map TradingView symbol to Tradovate symbol
-        if symbol == "CME_MINI:NQ1!" or symbol == "NQ1!":
-            symbol = "NQZ5"  # Changed from NQM5 to NQU5
+        if symbol == "CME_MINI:MNQ1!" or symbol == "MNQ1!":
+            symbol = "MNQZ5" 
             logging.info(f"Mapped symbol to: {symbol}")
            
         # 🔄 STRATEGY REVERSAL: Flip the order direction and price targets
@@ -1354,3 +1354,4 @@ async def root():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     uvicorn.run("main:app", host="0.0.0.0", port=port)
+
