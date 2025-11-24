@@ -1304,6 +1304,11 @@ async def manage_bracket_orders(symbol: str, entry_action: str, tp_order_id: int
                                 f"Fallback: cancelling all remaining orders for {symbol} after {label} fill"
                             )
                             await cancel_all_orders(symbol)
+                    try:
+                        await cancel_all_orders(symbol)
+                        logging.info(f"Post-fill cleanup complete for {symbol}")
+                    except Exception as cleanup_err:
+                        logging.warning(f"Post-fill cleanup failed for {symbol}: {cleanup_err}")
                     return
 
                 if status in ("Cancelled", "Rejected", "Expired"):
