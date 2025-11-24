@@ -1397,6 +1397,23 @@ async def cancel_symbol_tasks(symbol: str):
             logging.warning(f"Background task for {symbol} ended with error: {e}")
 
 
+async def aggressive_account_cleanup(symbol: str):
+    """Mirror the demo script: flatten account and cancel every pending order before new alerts."""
+    logging.info("=== ACCOUNT-WIDE CLEANUP: flattening positions and cancelling pending orders ===")
+    cleanup_tasks = [
+        ("force_close_positions", asyncio.create_task(client.force_close_all_positions_immediately())),
+        ("cancel_pending_orders", asyncio.create_task(client.cancel_all_pending_orders())),
+        ("cancel_symbol_orders", asyncio.create_task(cancel_all_orders(symbol)))
+    ]
+
+    results = await asyncio.gather(*[task for _, task in cleanup_tasks], return_exceptions=True)
+    for (name, _), result in zip(cleanup_tasks, results):
+        if isinstance(result, Exception):
+            logging.warning(f"Account cleanup step {name} failed: {result}")
+        else:
+            logging.info(f"Account cleanup step {name} completed")
+
+
 async def handle_trade_logic(data: dict):
     """
     Main function to handle the trade logic after webhook parsing.
@@ -1460,6 +1477,12 @@ async def handle_trade_logic(data: dict):
             logging.info(f"Symbol cleanup complete for {symbol}")
         except Exception as e:
             logging.warning(f"Symbol cleanup failed (non-blocking): {e}")
+
+        # 5b. ACCOUNT-WIDE CLEANUP: ensure no lingering orders/positions remain from prior alerts
+        try:
+            await aggressive_account_cleanup(symbol)
+        except Exception as e:
+            logging.warning(f"Account-wide cleanup encountered an issue: {e}")
 
         # 6. PLACE ENTRY ORDER
         logging.info(f"=== PLACING ENTRY ORDER: {action} {symbol} @ {price} ===")
@@ -1530,6 +1553,10 @@ async def handle_trade_logic(data: dict):
             logging.info("Emergency cleanup: cancelled working orders for symbol")
         except Exception as cleanup_e:
             logging.error(f"EMERGENCY CLEANUP FAILED: {cleanup_e}")
+        try:
+            await aggressive_account_cleanup(symbol)
+        except Exception as account_cleanup_error:
+            logging.error(f"Emergency account cleanup failed: {account_cleanup_error}")
         raise HTTPException(status_code=500, detail=f"Error in trade logic: {e}")
 
 @app.post("/webhook")
