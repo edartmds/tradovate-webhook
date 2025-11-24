@@ -1277,10 +1277,14 @@ async def handle_trade_logic(data: dict):
 
         # 6. PLACE ENTRY ORDER
         logging.info(f"=== PLACING ENTRY ORDER: {action} {symbol} @ {price} ===")
-        entry_stop_price = round_price_to_tick(
+        entry_limit_price = round_price_to_tick(
             price,
             symbol,
-            "up" if action.lower() == "buy" else "down"
+            "down" if action.lower() == "buy" else "up"
+        )
+        logging.info(
+            "Using limit entry at %s (tick-aligned) to avoid TooLate rejections",
+            entry_limit_price,
         )
         entry_order_payload = {
             "accountId": client.account_id,
@@ -1288,8 +1292,8 @@ async def handle_trade_logic(data: dict):
             "action": action,
             "symbol": symbol,
             "orderQty": 1,
-            "orderType": "Stop",
-            "stopPrice": entry_stop_price,
+            "orderType": "Limit",
+            "price": entry_limit_price,
             "timeInForce": "Day",
             "isAutomated": True
         }
