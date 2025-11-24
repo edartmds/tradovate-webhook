@@ -76,6 +76,7 @@ client = TradovateClient()
 symbol_locks = {}
 background_tasks = set()
 active_entry_orders = {}
+active_brackets = {}
 
 
 # 🚀 SPEED OPTIMIZATION: Persistent HTTP client to avoid connection overhead
@@ -1238,6 +1239,8 @@ async def monitor_entry_and_manage_brackets(symbol: str, action: str, t1: float,
 
         logging.info(f"✅ TP order {tp_order_id} placed at {tp_price}; SL order {sl_order_id} placed at {sl_price}")
 
+        active_brackets[symbol] = {"TP": tp_order_id, "SL": sl_order_id}
+
         await manage_bracket_orders(symbol, action, tp_order_id, sl_order_id)
 
     except Exception as e:
@@ -1248,6 +1251,7 @@ async def monitor_entry_and_manage_brackets(symbol: str, action: str, t1: float,
             logging.error(f"Bracket cleanup failed for {symbol}: {cleanup_err}")
         finally:
             active_entry_orders.pop(symbol, None)
+            active_brackets.pop(symbol, None)
 
 
 async def manage_bracket_orders(symbol: str, entry_action: str, tp_order_id: int, sl_order_id: int):
@@ -1287,6 +1291,8 @@ async def manage_bracket_orders(symbol: str, entry_action: str, tp_order_id: int
                 if status == "Filled":
                     logging.info(f"✅ {label} order {order_id} filled for {symbol}")
                     mark_trade_completed(symbol, entry_action)
+                    if symbol in active_brackets:
+                        active_brackets[symbol][label] = None
                     other_label = "SL" if label == "TP" else "TP"
                     other_id = order_map.get(other_label)
                     if other_id:
@@ -1304,15 +1310,21 @@ async def manage_bracket_orders(symbol: str, entry_action: str, tp_order_id: int
                                 f"Fallback: cancelling all remaining orders for {symbol} after {label} fill"
                             )
                             await cancel_all_orders(symbol)
+                        if symbol in active_brackets:
+                            active_brackets[symbol][other_label] = None
                     try:
                         await cancel_all_orders(symbol)
                         logging.info(f"Post-fill cleanup complete for {symbol}")
                     except Exception as cleanup_err:
                         logging.warning(f"Post-fill cleanup failed for {symbol}: {cleanup_err}")
+                    active_brackets.pop(symbol, None)
                     return
 
                 if status in ("Cancelled", "Rejected", "Expired"):
                     logging.info(f"{label} order {order_id} is {status}")
+                    if symbol in active_brackets:
+                        active_brackets[symbol][label] = None
+                    order_map[label] = None
                     continue
 
                 logging.info(f"{label} order {order_id} status: {status}")
@@ -1322,6 +1334,7 @@ async def manage_bracket_orders(symbol: str, entry_action: str, tp_order_id: int
 
         if active_orders == 0:
             logging.info("Bracket monitoring finished - no active TP/SL orders")
+            active_brackets.pop(symbol, None)
             return
 
         await asyncio.sleep(0.5)
@@ -1339,6 +1352,27 @@ async def cancel_tracked_entry(symbol: str):
         logging.warning(f"Failed to cancel tracked entry order {entry_id} for {symbol}: {e}")
     finally:
         active_entry_orders.pop(symbol, None)
+
+
+async def cancel_active_bracket(symbol: str):
+    """Cancel tracked TP/SL orders for a symbol if they exist."""
+    bracket = active_brackets.get(symbol)
+    if not bracket:
+        return
+
+    for label in ("TP", "SL"):
+        order_id = bracket.get(label)
+        if not order_id:
+            continue
+        cancelled = await cancel_order_direct(order_id, symbol, f"bracket-{label}")
+        if not cancelled:
+            try:
+                await client.cancel_order(order_id)
+                logging.info(f"Cancelled {label} order {order_id} for {symbol}")
+            except Exception as e:
+                logging.warning(f"Failed to cancel {label} order {order_id} for {symbol}: {e}")
+
+    active_brackets.pop(symbol, None)
 
 
 async def handle_trade_logic(data: dict):
@@ -1397,6 +1431,7 @@ async def handle_trade_logic(data: dict):
         logging.info("=== SYMBOL CLEANUP: cancelling existing working orders for this symbol ===")
         try:
             await cancel_tracked_entry(symbol)
+            await cancel_active_bracket(symbol)
             await cancel_all_orders(symbol)
             logging.info(f"Symbol cleanup complete for {symbol}")
         except Exception as e:
@@ -1453,6 +1488,7 @@ async def handle_trade_logic(data: dict):
             if entry_order_id:
                 await client.cancel_order(entry_order_id)
                 active_entry_orders.pop(symbol, None)
+            await cancel_active_bracket(symbol)
             await cancel_all_orders(symbol)
             logging.info("Emergency cleanup: cancelled working orders for symbol")
         except Exception as cleanup_e:
