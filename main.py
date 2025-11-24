@@ -1326,6 +1326,7 @@ async def manage_bracket_orders(symbol: str, entry_action: str, tp_order_id: int
                         logging.info(f"Post-fill cleanup complete for {symbol}")
                     except Exception as cleanup_err:
                         logging.warning(f"Post-fill cleanup failed for {symbol}: {cleanup_err}")
+                    active_entry_orders.pop(symbol, None)
                     active_brackets.pop(symbol, None)
                     return
 
@@ -1484,41 +1485,92 @@ async def handle_trade_logic(data: dict):
         except Exception as e:
             logging.warning(f"Account-wide cleanup encountered an issue: {e}")
 
-        # 6. PLACE ENTRY ORDER
-        logging.info(f"=== PLACING ENTRY ORDER: {action} {symbol} @ {price} ===")
+        # 6. PLACE LIMIT ENTRY WITH INSTANT OSO BRACKETS (demo-style)
+        logging.info(f"=== PLACING LIMIT OSO ORDER: {action} {symbol} @ {price} ===")
         entry_limit_price = round_price_to_tick(
             price,
             symbol,
             "down" if action.lower() == "buy" else "up"
         )
-        logging.info(
-            "Using limit entry at %s (tick-aligned) to avoid TooLate rejections",
-            entry_limit_price,
-        )
-        entry_order_payload = {
-            "accountId": client.account_id,
+        if action.lower() == "sell":
+            tp_price = round_price_to_tick(min(t1, stop), symbol)
+            sl_price = round_price_to_tick(max(t1, stop), symbol, "up")
+        else:
+            tp_price = round_price_to_tick(max(t1, stop), symbol)
+            sl_price = round_price_to_tick(min(t1, stop), symbol, "down")
+
+        if abs(tp_price - sl_price) < get_tick_size(symbol):
+            gap = get_tick_size(symbol) * 4
+            if action.lower() == "sell":
+                sl_price = round_price_to_tick(sl_price + gap, symbol, "up")
+            else:
+                sl_price = round_price_to_tick(sl_price - gap, symbol, "down")
+            logging.warning(f"Adjusted SL for minimum separation: New SL is {sl_price}")
+
+        opposite_action = "Sell" if action.lower() == "buy" else "Buy"
+        oso_payload = {
             "accountSpec": client.account_spec,
-            "action": action,
+            "accountId": client.account_id,
+            "action": action.capitalize(),
             "symbol": symbol,
             "orderQty": 1,
             "orderType": "Limit",
             "price": entry_limit_price,
-            "timeInForce": "Day",
-            "isAutomated": True
+            "timeInForce": "GTC",
+            "isAutomated": True,
+            "bracket1": {
+                "accountSpec": client.account_spec,
+                "accountId": client.account_id,
+                "action": opposite_action,
+                "symbol": symbol,
+                "orderQty": 1,
+                "orderType": "Limit",
+                "price": tp_price,
+                "timeInForce": "GTC",
+                "isAutomated": True
+            },
+            "bracket2": {
+                "accountSpec": client.account_spec,
+                "accountId": client.account_id,
+                "action": opposite_action,
+                "symbol": symbol,
+                "orderQty": 1,
+                "orderType": "StopMarket",
+                "stopPrice": sl_price,
+                "timeInForce": "GTC",
+                "isAutomated": True
+            }
         }
-        
-        entry_order_result = await client.place_order(
-            symbol=symbol,
-            action=action,
-            order_data=entry_order_payload
+
+        logging.info(
+            "Submitting OSO: entry=%s tp=%s sl=%s (tick aligned)",
+            entry_limit_price,
+            tp_price,
+            sl_price,
         )
+
+        entry_order_result = await client.place_oso_order(oso_payload)
         entry_order_id = entry_order_result.get("orderId")
-        if not entry_order_id:
-            raise ValueError("Failed to get orderId from entry order placement.")
-        logging.info(f"ENTRY ORDER PLACED: ID {entry_order_id}")
+        tp_order_id = entry_order_result.get("oso1Id")
+        sl_order_id = entry_order_result.get("oso2Id")
+
+        if not entry_order_id or not tp_order_id or not sl_order_id:
+            raise ValueError(
+                f"OSO response missing IDs. Entry:{entry_order_id} TP:{tp_order_id} SL:{sl_order_id}"
+            )
+
+        logging.info(
+            "OSO placed successfully (entry=%s, tp=%s, sl=%s)",
+            entry_order_id,
+            tp_order_id,
+            sl_order_id,
+        )
+
         active_entry_orders[symbol] = entry_order_id
+        active_brackets[symbol] = {"TP": tp_order_id, "SL": sl_order_id}
+
         monitoring_task = asyncio.create_task(
-            monitor_entry_and_manage_brackets(symbol, action, t1, stop, entry_order_id)
+            manage_bracket_orders(symbol, action, tp_order_id, sl_order_id)
         )
         background_tasks.add(monitoring_task)
         symbol_task_set = symbol_background_tasks.setdefault(symbol, set())
@@ -1536,8 +1588,10 @@ async def handle_trade_logic(data: dict):
 
         return {
             "status": "entry_working",
-            "entry_order": entry_order_result,
-            "message": "Entry order working; TP/SL will be placed once filled."
+            "entry_order_id": entry_order_id,
+            "tp_order_id": tp_order_id,
+            "sl_order_id": sl_order_id,
+            "message": "OSO limit entry placed; Tradovate will activate TP/SL once filled."
         }
 
     except Exception as e:
