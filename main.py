@@ -74,6 +74,7 @@ app = FastAPI()
 client = TradovateClient()
 # Dictionary of asyncio locks per symbol to serialize webhook handling and prevent race conditions
 symbol_locks = {}
+background_tasks = set()
 
 
 # 🚀 SPEED OPTIMIZATION: Persistent HTTP client to avoid connection overhead
@@ -1129,14 +1130,10 @@ def cleanup_old_tracking_data():
         del completed_trades[symbol]
 
 
-async def monitor_order_fill(order_id: int, timeout: int = 30) -> bool:
-    """
-    Monitors an order until it is filled or timeout is reached.
-    Returns True if filled, False otherwise.
-    """
-    start_time = time.time()
+async def monitor_order_fill(order_id: int) -> bool:
+    """Watch an entry order until it fills or transitions to a terminal state."""
     logging.info(f"Monitoring order {order_id} for fill status...")
-    while time.time() - start_time < timeout:
+    while True:
         try:
             order_status = await client.get_order_status(order_id)
             status = order_status.get("ordStatus")
@@ -1145,20 +1142,91 @@ async def monitor_order_fill(order_id: int, timeout: int = 30) -> bool:
             if status == "Filled":
                 logging.info(f"✅ Order {order_id} confirmed as FILLED.")
                 return True
-            elif status in ["Cancelled", "Rejected", "Expired"]:
-                logging.warning(f"Order {order_id} is in a terminal state: {status}. Stopping monitoring.")
+
+            if status in ["Cancelled", "Rejected", "Expired"]:
+                logging.warning(f"Order {order_id} moved to {status}. Stopping monitoring.")
                 return False
-            
-            # Wait for a short period before polling again
+
             await asyncio.sleep(1)
 
         except Exception as e:
             logging.error(f"Error while monitoring order {order_id}: {e}", exc_info=True)
-            # If there's an error, stop monitoring to be safe
-            return False
-            
-    logging.warning(f"Timeout reached while monitoring order {order_id}. Assuming not filled.")
-    return False
+            await asyncio.sleep(1)
+
+
+async def monitor_entry_and_manage_brackets(symbol: str, action: str, t1: float, stop: float, entry_order_id: int):
+    """Wait for entry fill, then fire TP/SL orders and monitor the bracket."""
+    try:
+        entry_filled = await monitor_order_fill(entry_order_id)
+        if not entry_filled:
+            logging.warning(f"Entry order {entry_order_id} never filled; leaving for next alert cleanup.")
+            return
+
+        logging.info(f"✅ ENTRY ORDER {entry_order_id} FILLED! Launching bracket orders.")
+        logging.info(f"=== PLACING INDEPENDENT TP/SL ORDERS ===")
+
+        opposite_action = "Sell" if action.lower() == "buy" else "Buy"
+
+        if action.lower() == "sell":
+            tp_price = round_price_to_tick(min(t1, stop), symbol)
+            sl_price = round_price_to_tick(max(t1, stop), symbol, "up")
+        else:
+            tp_price = round_price_to_tick(max(t1, stop), symbol)
+            sl_price = round_price_to_tick(min(t1, stop), symbol, "down")
+
+        if abs(tp_price - sl_price) < get_tick_size(symbol):
+            gap = get_tick_size(symbol) * 4
+            if action.lower() == "sell":
+                sl_price = round_price_to_tick(sl_price + gap, symbol, "up")
+            else:
+                sl_price = round_price_to_tick(sl_price - gap, symbol, "down")
+            logging.warning(f"Adjusted SL for minimum separation: New SL is {sl_price}")
+
+        tp_payload = {
+            "accountId": client.account_id,
+            "accountSpec": client.account_spec,
+            "action": opposite_action,
+            "symbol": symbol,
+            "orderQty": 1,
+            "orderType": "Limit",
+            "price": tp_price,
+            "timeInForce": "GTC",
+            "isAutomated": True
+        }
+
+        sl_payload = {
+            "accountId": client.account_id,
+            "accountSpec": client.account_spec,
+            "action": opposite_action,
+            "symbol": symbol,
+            "orderQty": 1,
+            "orderType": "Stop",
+            "stopPrice": sl_price,
+            "timeInForce": "GTC",
+            "isAutomated": True
+        }
+
+        tp_result, sl_result = await asyncio.gather(
+            client.place_order(symbol=symbol, action=opposite_action, order_data=tp_payload),
+            client.place_order(symbol=symbol, action=opposite_action, order_data=sl_payload)
+        )
+
+        tp_order_id = tp_result.get("orderId")
+        sl_order_id = sl_result.get("orderId")
+
+        if not tp_order_id or not sl_order_id:
+            raise ValueError(f"Failed to place TP/SL orders. TP:{tp_order_id}, SL:{sl_order_id}")
+
+        logging.info(f"✅ TP order {tp_order_id} placed at {tp_price}; SL order {sl_order_id} placed at {sl_price}")
+
+        await manage_bracket_orders(symbol, action, tp_order_id, sl_order_id)
+
+    except Exception as e:
+        logging.error(f"Error while managing entry {entry_order_id} bracket: {e}", exc_info=True)
+        try:
+            await cancel_all_orders(symbol)
+        except Exception as cleanup_err:
+            logging.error(f"Bracket cleanup failed for {symbol}: {cleanup_err}")
 
 
 async def manage_bracket_orders(symbol: str, entry_action: str, tp_order_id: int, sl_order_id: int):
@@ -1219,8 +1287,6 @@ async def handle_trade_logic(data: dict):
     This function is called within the lock to ensure serial processing.
     """
     entry_order_id = None
-    tp_order_id = None
-    sl_order_id = None
     try:
         # 1. Extract and validate data
         symbol = data.get("symbol")
@@ -1299,93 +1365,24 @@ async def handle_trade_logic(data: dict):
         }
         
         entry_order_result = await client.place_order(
-            symbol=symbol, 
-            action=action, 
+            symbol=symbol,
+            action=action,
             order_data=entry_order_payload
         )
         entry_order_id = entry_order_result.get("orderId")
         if not entry_order_id:
             raise ValueError("Failed to get orderId from entry order placement.")
         logging.info(f"ENTRY ORDER PLACED: ID {entry_order_id}")
-
-        # 7. MONITOR ENTRY ORDER FILL
-        logging.info(f"=== MONITORING ENTRY ORDER {entry_order_id} FOR FILL ===")
-        entry_filled = await monitor_order_fill(entry_order_id)
-
-        if not entry_filled:
-            logging.warning(f"Entry order {entry_order_id} was not filled. Cancelling and stopping.")
-            try:
-                await client.cancel_order(entry_order_id)
-            except Exception as e:
-                logging.error(f"Failed to cancel unfilled entry order {entry_order_id}: {e}")
-            return {"status": "rejected", "reason": "entry_not_filled"}
-
-        logging.info(f"✅ ENTRY ORDER {entry_order_id} FILLED!")
-
-        # 8. PLACE OCO BRACKET ORDER (TP and SL)
-        logging.info(f"=== PLACING INDEPENDENT TP/SL ORDERS ===")
-
-        opposite_action = "Sell" if action.lower() == "buy" else "Buy"
-
-        if action.lower() == "sell":
-            tp_price = round_price_to_tick(min(t1, stop), symbol)
-            sl_price = round_price_to_tick(max(t1, stop), symbol, "up")
-        else:
-            tp_price = round_price_to_tick(max(t1, stop), symbol)
-            sl_price = round_price_to_tick(min(t1, stop), symbol, "down")
-
-        if abs(tp_price - sl_price) < get_tick_size(symbol):
-            gap = get_tick_size(symbol) * 4
-            if action.lower() == "sell":
-                sl_price = round_price_to_tick(sl_price + gap, symbol, "up")
-            else:
-                sl_price = round_price_to_tick(sl_price - gap, symbol, "down")
-            logging.warning(f"Adjusted SL for minimum separation: New SL is {sl_price}")
-
-        tp_payload = {
-            "accountId": client.account_id,
-            "accountSpec": client.account_spec,
-            "action": opposite_action,
-            "symbol": symbol,
-            "orderQty": 1,
-            "orderType": "Limit",
-            "price": tp_price,
-            "timeInForce": "GTC",
-            "isAutomated": True
-        }
-
-        sl_payload = {
-            "accountId": client.account_id,
-            "accountSpec": client.account_spec,
-            "action": opposite_action,
-            "symbol": symbol,
-            "orderQty": 1,
-            "orderType": "Stop",
-            "stopPrice": sl_price,
-            "timeInForce": "GTC",
-            "isAutomated": True
-        }
-
-        tp_result, sl_result = await asyncio.gather(
-            client.place_order(symbol=symbol, action=opposite_action, order_data=tp_payload),
-            client.place_order(symbol=symbol, action=opposite_action, order_data=sl_payload)
+        monitoring_task = asyncio.create_task(
+            monitor_entry_and_manage_brackets(symbol, action, t1, stop, entry_order_id)
         )
-
-        tp_order_id = tp_result.get("orderId")
-        sl_order_id = sl_result.get("orderId")
-
-        if not tp_order_id or not sl_order_id:
-            raise ValueError(f"Failed to place TP/SL orders. TP:{tp_order_id}, SL:{sl_order_id}")
-
-        logging.info(f"✅ TP order {tp_order_id} placed at {tp_price}; SL order {sl_order_id} placed at {sl_price}")
-
-        await manage_bracket_orders(symbol, action, tp_order_id, sl_order_id)
+        background_tasks.add(monitoring_task)
+        monitoring_task.add_done_callback(background_tasks.discard)
 
         return {
-            "status": "success",
+            "status": "entry_working",
             "entry_order": entry_order_result,
-            "take_profit_order": tp_result,
-            "stop_loss_order": sl_result
+            "message": "Entry order working; TP/SL will be placed once filled."
         }
 
     except Exception as e:
@@ -1393,10 +1390,6 @@ async def handle_trade_logic(data: dict):
         try:
             if entry_order_id:
                 await client.cancel_order(entry_order_id)
-            if tp_order_id:
-                await client.cancel_order(tp_order_id)
-            if sl_order_id:
-                await client.cancel_order(sl_order_id)
             await cancel_all_orders(symbol)
             logging.info("Emergency cleanup: cancelled working orders for symbol")
         except Exception as cleanup_e:
