@@ -973,6 +973,22 @@ async def cancel_single_order(http_client, cancel_url, order_id, symbol, status)
     except Exception as e:
         logging.error(f"Cancel failed {order_id}: {e}")
 
+async def cancel_order_direct(order_id: int, symbol: str, label: str = "") -> bool:
+    """Directly cancel a single order via Tradovate's cancel endpoint."""
+    if not order_id:
+        return False
+    http_client = await get_http_client()
+    cancel_url = f"https://live-api.tradovate.com/v1/order/cancel/{order_id}"
+    try:
+        resp = await http_client.post(cancel_url, headers={"Authorization": f"Bearer {client.access_token}"})
+        resp.raise_for_status()
+        tag = f" {label}" if label else ""
+        logging.info(f"✅ Direct cancel{tag} order {order_id} ({symbol})")
+        return True
+    except Exception as e:
+        logging.error(f"Direct cancel failed for order {order_id} ({symbol}): {e}")
+        return False
+
 
 async def flatten_position(symbol):
     """ULTRA-FAST position flattening"""
@@ -1274,13 +1290,14 @@ async def manage_bracket_orders(symbol: str, entry_action: str, tp_order_id: int
                     other_label = "SL" if label == "TP" else "TP"
                     other_id = order_map.get(other_label)
                     if other_id:
-                        cancelled_other = False
-                        try:
-                            await client.cancel_order(other_id)
-                            cancelled_other = True
-                            logging.info(f"Cancelled remaining {other_label} order {other_id}")
-                        except Exception as cancel_err:
-                            logging.error(f"Failed to cancel {other_label} order {other_id}: {cancel_err}")
+                        cancelled_other = await cancel_order_direct(other_id, symbol, other_label)
+                        if not cancelled_other:
+                            try:
+                                await client.cancel_order(other_id)
+                                cancelled_other = True
+                                logging.info(f"Cancelled remaining {other_label} order {other_id}")
+                            except Exception as cancel_err:
+                                logging.error(f"Failed to cancel {other_label} order {other_id}: {cancel_err}")
 
                         if not cancelled_other:
                             logging.info(
