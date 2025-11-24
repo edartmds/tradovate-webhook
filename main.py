@@ -75,6 +75,7 @@ client = TradovateClient()
 # Dictionary of asyncio locks per symbol to serialize webhook handling and prevent race conditions
 symbol_locks = {}
 background_tasks = set()
+active_entry_orders = {}
 
 
 # 🚀 SPEED OPTIMIZATION: Persistent HTTP client to avoid connection overhead
@@ -1160,8 +1161,10 @@ async def monitor_entry_and_manage_brackets(symbol: str, action: str, t1: float,
         entry_filled = await monitor_order_fill(entry_order_id)
         if not entry_filled:
             logging.warning(f"Entry order {entry_order_id} never filled; leaving for next alert cleanup.")
+            active_entry_orders.pop(symbol, None)
             return
 
+        active_entry_orders.pop(symbol, None)
         logging.info(f"✅ ENTRY ORDER {entry_order_id} FILLED! Launching bracket orders.")
         logging.info(f"=== PLACING INDEPENDENT TP/SL ORDERS ===")
 
@@ -1227,6 +1230,8 @@ async def monitor_entry_and_manage_brackets(symbol: str, action: str, t1: float,
             await cancel_all_orders(symbol)
         except Exception as cleanup_err:
             logging.error(f"Bracket cleanup failed for {symbol}: {cleanup_err}")
+        finally:
+            active_entry_orders.pop(symbol, None)
 
 
 async def manage_bracket_orders(symbol: str, entry_action: str, tp_order_id: int, sl_order_id: int):
@@ -1292,6 +1297,20 @@ async def manage_bracket_orders(symbol: str, entry_action: str, tp_order_id: int
         await asyncio.sleep(0.5)
 
 
+async def cancel_tracked_entry(symbol: str):
+    """Cancel the most recent tracked entry order for a symbol, if any."""
+    entry_id = active_entry_orders.get(symbol)
+    if not entry_id:
+        return
+    try:
+        await client.cancel_order(entry_id)
+        logging.info(f"Cancelled tracked entry order {entry_id} for {symbol}")
+    except Exception as e:
+        logging.warning(f"Failed to cancel tracked entry order {entry_id} for {symbol}: {e}")
+    finally:
+        active_entry_orders.pop(symbol, None)
+
+
 async def handle_trade_logic(data: dict):
     """
     Main function to handle the trade logic after webhook parsing.
@@ -1347,6 +1366,7 @@ async def handle_trade_logic(data: dict):
         # 5. SYMBOL-SPECIFIC CLEANUP: cancel any open orders for this instrument only
         logging.info("=== SYMBOL CLEANUP: cancelling existing working orders for this symbol ===")
         try:
+            await cancel_tracked_entry(symbol)
             await cancel_all_orders(symbol)
             logging.info(f"Symbol cleanup complete for {symbol}")
         except Exception as e:
@@ -1384,6 +1404,7 @@ async def handle_trade_logic(data: dict):
         if not entry_order_id:
             raise ValueError("Failed to get orderId from entry order placement.")
         logging.info(f"ENTRY ORDER PLACED: ID {entry_order_id}")
+        active_entry_orders[symbol] = entry_order_id
         monitoring_task = asyncio.create_task(
             monitor_entry_and_manage_brackets(symbol, action, t1, stop, entry_order_id)
         )
@@ -1401,6 +1422,7 @@ async def handle_trade_logic(data: dict):
         try:
             if entry_order_id:
                 await client.cancel_order(entry_order_id)
+                active_entry_orders.pop(symbol, None)
             await cancel_all_orders(symbol)
             logging.info("Emergency cleanup: cancelled working orders for symbol")
         except Exception as cleanup_e:
