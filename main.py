@@ -5,6 +5,7 @@ import json
 import asyncio
 import traceback
 import time
+import math
 from datetime import datetime, timedelta
 from fastapi import FastAPI, Request, HTTPException
 from tradovate_api import TradovateClient
@@ -794,6 +795,39 @@ DUPLICATE_THRESHOLD_SECONDS = 30  # 30 seconds - only prevent rapid-fire identic
 COMPLETED_TRADE_COOLDOWN = 30  # 30 seconds - minimal cooldown for automated trading
 
 
+TICK_SIZES = {
+    "NQ": 0.25,
+    "MNQ": 0.25
+}
+
+
+def get_tick_size(symbol: str) -> float:
+    """Return tick size for supported symbols, defaulting to 0.01."""
+    if not symbol:
+        return 0.01
+    for prefix, tick in TICK_SIZES.items():
+        if symbol.startswith(prefix):
+            return tick
+    return 0.01
+
+
+def round_price_to_tick(value: float, symbol: str, mode: str = "nearest") -> float:
+    """Align price to the instrument tick size to avoid Tradovate rejections."""
+    if value is None:
+        return value
+    tick = get_tick_size(symbol)
+    if tick <= 0:
+        return round(value, 2)
+    steps = value / tick
+    if mode == "down":
+        aligned = math.floor(steps) * tick
+    elif mode == "up":
+        aligned = math.ceil(steps) * tick
+    else:
+        aligned = round(steps) * tick
+    return round(aligned, 2)
+
+
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 logging.info(f"Loaded WEBHOOK_SECRET: {WEBHOOK_SECRET}")
 
@@ -1144,6 +1178,7 @@ async def handle_trade_logic(data: dict):
     Main function to handle the trade logic after webhook parsing.
     This function is called within the lock to ensure serial processing.
     """
+    entry_order_id = None
     try:
         # 1. Extract and validate data
         symbol = data.get("symbol")
@@ -1153,6 +1188,10 @@ async def handle_trade_logic(data: dict):
         stop = data.get("STOP")
 
         logging.info(f"Extracted fields - Symbol: {symbol}, Action: {action}, Price: {price}, T1: {t1}, Stop: {stop}")
+
+        price = float(price)
+        t1 = float(t1)
+        stop = float(stop)
 
         if not all([symbol, action, price, t1, stop]):
             missing = [k for k, v in {"symbol": symbol, "action": action, "PRICE": price, "T1": t1, "STOP": stop}.items() if not v]
@@ -1186,20 +1225,21 @@ async def handle_trade_logic(data: dict):
             }
         logging.info(f"ALERT APPROVED: {symbol} {action} - Proceeding with automated trading")
 
-        # 5. AGGRESSIVE CLEANUP: Flatten positions and cancel orders
-        logging.info("=== AGGRESSIVE CLEANUP & FLATTEN ===")
+        # 5. SYMBOL-SPECIFIC CLEANUP: cancel any open orders for this instrument only
+        logging.info("=== SYMBOL CLEANUP: cancelling existing working orders for this symbol ===")
         try:
-            # These operations are critical, so we run them sequentially.
-            await client.force_close_all_positions_immediately()
-            logging.info("force_close_all_positions_immediately completed.")
-            await client.cancel_all_pending_orders()
-            logging.info("cancel_all_pending_orders completed.")
+            await cancel_all_orders(symbol)
+            logging.info(f"Symbol cleanup complete for {symbol}")
         except Exception as e:
-            logging.error(f"CRITICAL CLEANUP FAILED: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail=f"Critical cleanup failed: {e}")
+            logging.warning(f"Symbol cleanup failed (non-blocking): {e}")
 
         # 6. PLACE ENTRY ORDER
         logging.info(f"=== PLACING ENTRY ORDER: {action} {symbol} @ {price} ===")
+        entry_stop_price = round_price_to_tick(
+            price,
+            symbol,
+            "up" if action.lower() == "buy" else "down"
+        )
         entry_order_payload = {
             "accountId": client.account_id,
             "accountSpec": client.account_spec,
@@ -1207,7 +1247,7 @@ async def handle_trade_logic(data: dict):
             "symbol": symbol,
             "orderQty": 1,
             "orderType": "Stop",
-            "stopPrice": round(price, 2),
+            "stopPrice": entry_stop_price,
             "timeInForce": "Day",
             "isAutomated": True
         }
@@ -1243,18 +1283,27 @@ async def handle_trade_logic(data: dict):
 
         # Correctly position TP and SL
         if action.lower() == "sell":
-            # For a SELL, TP is lower, SL is higher
+            # For a SELL entry, TP is lower, SL is higher
             tp_price = min(float(t1), float(stop))
             sl_price = max(float(t1), float(stop))
-        else: # "buy"
-            # For a BUY, TP is higher, SL is lower
+            stop_rounding_mode = "up"
+        else:  # "buy"
+            # For a BUY entry, TP is higher, SL is lower
             tp_price = max(float(t1), float(stop))
             sl_price = min(float(t1), float(stop))
+            stop_rounding_mode = "down"
+
+        tp_price = round_price_to_tick(tp_price, symbol)
+        sl_price = round_price_to_tick(sl_price, symbol, stop_rounding_mode)
 
         # Ensure minimum separation
         if abs(tp_price - sl_price) < 1.0:
-             sl_price += 1.0 if action.lower() == "sell" else -1.0
-             logging.warning(f"Adjusted SL for minimum separation: New SL is {sl_price}")
+            adjustment = get_tick_size(symbol) * 4  # keep at least one point apart
+            if action.lower() == "sell":
+                sl_price = round_price_to_tick(sl_price + adjustment, symbol, stop_rounding_mode)
+            else:
+                sl_price = round_price_to_tick(sl_price - adjustment, symbol, stop_rounding_mode)
+            logging.warning(f"Adjusted SL for minimum separation: New SL is {sl_price}")
 
         # Define Take Profit order (without account details)
         tp_order = {
@@ -1288,11 +1337,11 @@ async def handle_trade_logic(data: dict):
 
     except Exception as e:
         logging.error(f"!!! ERROR IN TRADE LOGIC: {e} !!!", exc_info=True)
-        # Attempt to flatten everything as a final safety measure
         try:
-            await client.force_close_all_positions_immediately()
-            await client.cancel_all_pending_orders()
-            logging.info("Emergency flatten/cancel executed due to error.")
+            if entry_order_id:
+                await client.cancel_order(entry_order_id)
+            await cancel_all_orders(symbol)
+            logging.info("Emergency cleanup: cancelled working orders for symbol")
         except Exception as cleanup_e:
             logging.error(f"EMERGENCY CLEANUP FAILED: {cleanup_e}")
         raise HTTPException(status_code=500, detail=f"Error in trade logic: {e}")
