@@ -1274,11 +1274,19 @@ async def manage_bracket_orders(symbol: str, entry_action: str, tp_order_id: int
                     other_label = "SL" if label == "TP" else "TP"
                     other_id = order_map.get(other_label)
                     if other_id:
+                        cancelled_other = False
                         try:
                             await client.cancel_order(other_id)
+                            cancelled_other = True
                             logging.info(f"Cancelled remaining {other_label} order {other_id}")
                         except Exception as cancel_err:
                             logging.error(f"Failed to cancel {other_label} order {other_id}: {cancel_err}")
+
+                        if not cancelled_other:
+                            logging.info(
+                                f"Fallback: cancelling all remaining orders for {symbol} after {label} fill"
+                            )
+                            await cancel_all_orders(symbol)
                     return
 
                 if status in ("Cancelled", "Rejected", "Expired"):
