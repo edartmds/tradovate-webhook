@@ -77,6 +77,7 @@ symbol_locks = {}
 background_tasks = set()
 active_entry_orders = {}
 active_brackets = {}
+symbol_background_tasks = {}
 
 
 # 🚀 SPEED OPTIMIZATION: Persistent HTTP client to avoid connection overhead
@@ -147,7 +148,15 @@ async def cancel_all_orders(symbol):
         orders = resp.json()
        
         # Filter orders to cancel
-        open_orders = [o for o in orders if o.get("symbol") == symbol and o.get("status") not in ("Filled", "Cancelled", "Rejected")]
+        open_orders = []
+        for order in orders:
+            order_symbol = order.get("symbol")
+            status = order.get("status") or order.get("ordStatus")
+            if order_symbol != symbol:
+                continue
+            if status in ("Filled", "Cancelled", "Rejected"):
+                continue
+            open_orders.append(order)
         if not open_orders:
             break
            
@@ -1375,6 +1384,19 @@ async def cancel_active_bracket(symbol: str):
     active_brackets.pop(symbol, None)
 
 
+async def cancel_symbol_tasks(symbol: str):
+    """Cancel any background tasks (entry/bracket monitors) still running for the symbol."""
+    tasks = symbol_background_tasks.pop(symbol, set())
+    for task in list(tasks):
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            logging.info(f"Cancelled background task for {symbol}")
+        except Exception as e:
+            logging.warning(f"Background task for {symbol} ended with error: {e}")
+
+
 async def handle_trade_logic(data: dict):
     """
     Main function to handle the trade logic after webhook parsing.
@@ -1430,9 +1452,11 @@ async def handle_trade_logic(data: dict):
         # 5. SYMBOL-SPECIFIC CLEANUP: cancel any open orders for this instrument only
         logging.info("=== SYMBOL CLEANUP: cancelling existing working orders for this symbol ===")
         try:
+            await cancel_symbol_tasks(symbol)
             await cancel_tracked_entry(symbol)
             await cancel_active_bracket(symbol)
             await cancel_all_orders(symbol)
+            await client.close_position(symbol)
             logging.info(f"Symbol cleanup complete for {symbol}")
         except Exception as e:
             logging.warning(f"Symbol cleanup failed (non-blocking): {e}")
@@ -1474,7 +1498,18 @@ async def handle_trade_logic(data: dict):
             monitor_entry_and_manage_brackets(symbol, action, t1, stop, entry_order_id)
         )
         background_tasks.add(monitoring_task)
-        monitoring_task.add_done_callback(background_tasks.discard)
+        symbol_task_set = symbol_background_tasks.setdefault(symbol, set())
+        symbol_task_set.add(monitoring_task)
+
+        def _cleanup_task(task, sym=symbol):
+            background_tasks.discard(task)
+            task_set = symbol_background_tasks.get(sym)
+            if task_set:
+                task_set.discard(task)
+                if not task_set:
+                    symbol_background_tasks.pop(sym, None)
+
+        monitoring_task.add_done_callback(_cleanup_task)
 
         return {
             "status": "entry_working",
@@ -1485,11 +1520,13 @@ async def handle_trade_logic(data: dict):
     except Exception as e:
         logging.error(f"!!! ERROR IN TRADE LOGIC: {e} !!!", exc_info=True)
         try:
+            await cancel_symbol_tasks(symbol)
             if entry_order_id:
                 await client.cancel_order(entry_order_id)
                 active_entry_orders.pop(symbol, None)
             await cancel_active_bracket(symbol)
             await cancel_all_orders(symbol)
+            await client.close_position(symbol)
             logging.info("Emergency cleanup: cancelled working orders for symbol")
         except Exception as cleanup_e:
             logging.error(f"EMERGENCY CLEANUP FAILED: {cleanup_e}")
