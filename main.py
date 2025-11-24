@@ -106,18 +106,6 @@ async def startup_event():
         logging.info(f"Account ID: {client.account_id}")
         logging.info(f"Account Spec: {client.account_spec}")
         logging.info(f"Access Token: {'***' if client.access_token else 'None'}")
-          # Close any existing positions and cancel pending orders on startup to start clean
-        logging.info("=== CLEANING UP EXISTING POSITIONS AND ORDERS ON STARTUP ===")
-        try:
-            # Close all positions first
-            closed_positions = await client.close_all_positions()
-            logging.info(f"Startup cleanup: Closed {len(closed_positions)} existing positions")
-           
-            # Cancel all pending orders
-            cancelled_orders = await client.cancel_all_pending_orders()
-            logging.info(f"Startup cleanup: Cancelled {len(cancelled_orders)} existing pending orders")
-        except Exception as e:
-            logging.warning(f"Startup cleanup failed (non-critical): {e}")
            
     except Exception as e:
         logging.error(f"=== AUTHENTICATION FAILED ===")
@@ -1173,12 +1161,66 @@ async def monitor_order_fill(order_id: int, timeout: int = 30) -> bool:
     return False
 
 
+async def manage_bracket_orders(symbol: str, entry_action: str, tp_order_id: int, sl_order_id: int):
+    """Monitor TP/SL orders and cancel the opposite leg once one fills."""
+    if not (tp_order_id or sl_order_id):
+        return
+
+    http_client = await get_http_client()
+    headers = {"Authorization": f"Bearer {client.access_token}"}
+    order_map = {"TP": tp_order_id, "SL": sl_order_id}
+
+    while True:
+        active_orders = 0
+        for label, order_id in order_map.items():
+            if not order_id:
+                continue
+            try:
+                resp = await http_client.get(f"https://live-api.tradovate.com/v1/order/{order_id}", headers=headers)
+                resp.raise_for_status()
+                status_payload = resp.json()
+                status = status_payload.get("status") or status_payload.get("ordStatus")
+
+                if status in ("Working", "Accepted", "Pending", "New"):
+                    active_orders += 1
+                    continue
+
+                if status == "Filled":
+                    logging.info(f"✅ {label} order {order_id} filled for {symbol}")
+                    mark_trade_completed(symbol, entry_action)
+                    other_label = "SL" if label == "TP" else "TP"
+                    other_id = order_map.get(other_label)
+                    if other_id:
+                        try:
+                            await client.cancel_order(other_id)
+                            logging.info(f"Cancelled remaining {other_label} order {other_id}")
+                        except Exception as cancel_err:
+                            logging.error(f"Failed to cancel {other_label} order {other_id}: {cancel_err}")
+                    return
+
+                if status in ("Cancelled", "Rejected", "Expired"):
+                    logging.info(f"{label} order {order_id} is {status}")
+                    continue
+
+                logging.info(f"{label} order {order_id} status: {status}")
+            except Exception as e:
+                logging.error(f"Error monitoring {label} order {order_id}: {e}")
+
+        if active_orders == 0:
+            logging.info("Bracket monitoring finished - no active TP/SL orders")
+            return
+
+        await asyncio.sleep(0.5)
+
+
 async def handle_trade_logic(data: dict):
     """
     Main function to handle the trade logic after webhook parsing.
     This function is called within the lock to ensure serial processing.
     """
     entry_order_id = None
+    tp_order_id = None
+    sl_order_id = None
     try:
         # 1. Extract and validate data
         symbol = data.get("symbol")
@@ -1277,62 +1319,69 @@ async def handle_trade_logic(data: dict):
         logging.info(f"✅ ENTRY ORDER {entry_order_id} FILLED!")
 
         # 8. PLACE OCO BRACKET ORDER (TP and SL)
-        logging.info(f"=== PLACING OCO BRACKET (TP/SL) ===")
-        
+        logging.info(f"=== PLACING INDEPENDENT TP/SL ORDERS ===")
+
         opposite_action = "Sell" if action.lower() == "buy" else "Buy"
 
-        # Correctly position TP and SL
         if action.lower() == "sell":
-            # For a SELL entry, TP is lower, SL is higher
-            tp_price = min(float(t1), float(stop))
-            sl_price = max(float(t1), float(stop))
-            stop_rounding_mode = "up"
-        else:  # "buy"
-            # For a BUY entry, TP is higher, SL is lower
-            tp_price = max(float(t1), float(stop))
-            sl_price = min(float(t1), float(stop))
-            stop_rounding_mode = "down"
+            tp_price = round_price_to_tick(min(t1, stop), symbol)
+            sl_price = round_price_to_tick(max(t1, stop), symbol, "up")
+        else:
+            tp_price = round_price_to_tick(max(t1, stop), symbol)
+            sl_price = round_price_to_tick(min(t1, stop), symbol, "down")
 
-        tp_price = round_price_to_tick(tp_price, symbol)
-        sl_price = round_price_to_tick(sl_price, symbol, stop_rounding_mode)
-
-        # Ensure minimum separation
-        if abs(tp_price - sl_price) < 1.0:
-            adjustment = get_tick_size(symbol) * 4  # keep at least one point apart
+        if abs(tp_price - sl_price) < get_tick_size(symbol):
+            gap = get_tick_size(symbol) * 4
             if action.lower() == "sell":
-                sl_price = round_price_to_tick(sl_price + adjustment, symbol, stop_rounding_mode)
+                sl_price = round_price_to_tick(sl_price + gap, symbol, "up")
             else:
-                sl_price = round_price_to_tick(sl_price - adjustment, symbol, stop_rounding_mode)
+                sl_price = round_price_to_tick(sl_price - gap, symbol, "down")
             logging.warning(f"Adjusted SL for minimum separation: New SL is {sl_price}")
 
-        # Define Take Profit order (without account details)
-        tp_order = {
+        tp_payload = {
+            "accountId": client.account_id,
+            "accountSpec": client.account_spec,
             "action": opposite_action,
+            "symbol": symbol,
             "orderQty": 1,
             "orderType": "Limit",
-            "price": round(tp_price, 2),
-            "timeInForce": "GTC"
+            "price": tp_price,
+            "timeInForce": "GTC",
+            "isAutomated": True
         }
 
-        # Define Stop Loss order (without account details)
-        sl_order = {
+        sl_payload = {
+            "accountId": client.account_id,
+            "accountSpec": client.account_spec,
             "action": opposite_action,
+            "symbol": symbol,
             "orderQty": 1,
             "orderType": "Stop",
-            "stopPrice": round(sl_price, 2),
-            "timeInForce": "GTC"
+            "stopPrice": sl_price,
+            "timeInForce": "GTC",
+            "isAutomated": True
         }
-        
-        logging.info(f"OCO PAYLOAD: TP={json.dumps(tp_order)} SL={json.dumps(sl_order)}")
-        
-        # Pass the symbol separately to the updated place_oco_order function
-        oco_result = await client.place_oco_order(symbol, tp_order, sl_order)
-        logging.info(f"✅ OCO BRACKET PLACED: {oco_result}")
+
+        tp_result, sl_result = await asyncio.gather(
+            client.place_order(symbol=symbol, action=opposite_action, order_data=tp_payload),
+            client.place_order(symbol=symbol, action=opposite_action, order_data=sl_payload)
+        )
+
+        tp_order_id = tp_result.get("orderId")
+        sl_order_id = sl_result.get("orderId")
+
+        if not tp_order_id or not sl_order_id:
+            raise ValueError(f"Failed to place TP/SL orders. TP:{tp_order_id}, SL:{sl_order_id}")
+
+        logging.info(f"✅ TP order {tp_order_id} placed at {tp_price}; SL order {sl_order_id} placed at {sl_price}")
+
+        await manage_bracket_orders(symbol, action, tp_order_id, sl_order_id)
 
         return {
             "status": "success",
             "entry_order": entry_order_result,
-            "oco_bracket": oco_result
+            "take_profit_order": tp_result,
+            "stop_loss_order": sl_result
         }
 
     except Exception as e:
@@ -1340,6 +1389,10 @@ async def handle_trade_logic(data: dict):
         try:
             if entry_order_id:
                 await client.cancel_order(entry_order_id)
+            if tp_order_id:
+                await client.cancel_order(tp_order_id)
+            if sl_order_id:
+                await client.cancel_order(sl_order_id)
             await cancel_all_orders(symbol)
             logging.info("Emergency cleanup: cancelled working orders for symbol")
         except Exception as cleanup_e:
