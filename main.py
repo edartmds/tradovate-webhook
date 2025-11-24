@@ -1,4 +1,4 @@
-# Main (flipped demo)
+# Main (flipped LIVE)
 import os
 import logging
 import json
@@ -1244,7 +1244,17 @@ async def manage_bracket_orders(symbol: str, entry_action: str, tp_order_id: int
             if not order_id:
                 continue
             try:
-                resp = await http_client.get(f"https://live-api.tradovate.com/v1/order/{order_id}", headers=headers)
+                resp = await http_client.get(
+                    f"https://live-api.tradovate.com/v1/order/{order_id}", headers=headers
+                )
+                if resp.status_code == 404:
+                    logging.info(
+                        f"{label} order {order_id} not visible yet (404). Will retry shortly."
+                    )
+                    active_orders += 1  # assume still working until Tradovate reports otherwise
+                    await asyncio.sleep(0.2)
+                    continue
+
                 resp.raise_for_status()
                 status_payload = resp.json()
                 status = status_payload.get("status") or status_payload.get("ordStatus")
@@ -1273,6 +1283,7 @@ async def manage_bracket_orders(symbol: str, entry_action: str, tp_order_id: int
                 logging.info(f"{label} order {order_id} status: {status}")
             except Exception as e:
                 logging.error(f"Error monitoring {label} order {order_id}: {e}")
+                active_orders += 1
 
         if active_orders == 0:
             logging.info("Bracket monitoring finished - no active TP/SL orders")
