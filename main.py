@@ -1535,7 +1535,7 @@ async def handle_trade_logic(data: dict):
                 "action": opposite_action,
                 "symbol": symbol,
                 "orderQty": 1,
-                "orderType": "StopMarket",
+                "orderType": "Stop",
                 "stopPrice": sl_price,
                 "timeInForce": "GTC",
                 "isAutomated": True
