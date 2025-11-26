@@ -107,6 +107,7 @@ background_tasks = set()
 active_entry_orders = {}
 active_brackets = {}
 symbol_background_tasks = {}
+persistent_http_client = None
 
 
 
@@ -589,10 +590,10 @@ async def handle_trade_logic(data: dict):
         await aggressive_account_cleanup(symbol)
     except Exception as account_cleanup_err:
         logging.warning(f"Account cleanup issue: {account_cleanup_err}")
-    entry_limit_price = round_price_to_tick(
+    entry_stop_price = round_price_to_tick(
         price,
         symbol,
-        "down" if action.lower() == "buy" else "up"
+        "up" if action.lower() == "buy" else "down"
     )
     if action.lower() == "sell":
         tp_price = round_price_to_tick(t1, symbol, "down")
@@ -614,8 +615,8 @@ async def handle_trade_logic(data: dict):
         "action": action.capitalize(),
         "symbol": symbol,
         "orderQty": 1,
-        "orderType": "Limit",
-        "price": entry_limit_price,
+        "orderType": "Stop",
+        "stopPrice": entry_stop_price,
         "timeInForce": "GTC",
         "isAutomated": True,
         "bracket1": {
@@ -642,8 +643,8 @@ async def handle_trade_logic(data: dict):
         }
     }
     logging.info(
-        "Submitting forward OSO: entry=%s tp=%s sl=%s",
-        entry_limit_price,
+        "Submitting forward OSO stop entry=%s tp=%s sl=%s",
+        entry_stop_price,
         tp_price,
         sl_price
     )
@@ -737,8 +738,7 @@ async def root():
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
-    uvicorn.run("main_forward:app", host="0.0.0.0", port=port)
-
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
 
 
 
