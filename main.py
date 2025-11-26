@@ -337,6 +337,18 @@ def cleanup_old_tracking_data():
     for sym in stale_completed:
         completed_trades.pop(sym, None)
 
+async def quick_symbol_cleanup(symbol: str):
+    await cancel_symbol_tasks(symbol)
+    cleanup_steps = (
+        ("tracked_entry", cancel_tracked_entry(symbol)),
+        ("active_bracket", cancel_active_bracket(symbol)),
+        ("open_orders", cancel_all_orders(symbol)),
+        ("position", client.close_position(symbol))
+    )
+    results = await asyncio.gather(*[coro for _, coro in cleanup_steps], return_exceptions=True)
+    for (label, _), result in zip(cleanup_steps, results):
+        if isinstance(result, Exception):
+            logging.warning(f"Symbol cleanup issue {symbol} step={label}: {result}")
 
 
 
@@ -579,17 +591,19 @@ async def handle_trade_logic(data: dict):
         }
     logging.info(f"Alert approved {symbol} {action}")
     try:
-        await cancel_symbol_tasks(symbol)
-        await cancel_tracked_entry(symbol)
-        await cancel_active_bracket(symbol)
-        await cancel_all_orders(symbol)
-        await client.close_position(symbol)
+        await quick_symbol_cleanup(symbol)
     except Exception as sym_cleanup_err:
         logging.warning(f"Symbol cleanup issue {symbol}: {sym_cleanup_err}")
     try:
-        await aggressive_account_cleanup(symbol)
+        account_cleanup_task = asyncio.create_task(aggressive_account_cleanup(symbol))
+        background_tasks.add(account_cleanup_task)
+
+        def _acct_cleanup_done(task):
+            background_tasks.discard(task)
+
+        account_cleanup_task.add_done_callback(_acct_cleanup_done)
     except Exception as account_cleanup_err:
-        logging.warning(f"Account cleanup issue: {account_cleanup_err}")
+        logging.warning(f"Account cleanup scheduling issue: {account_cleanup_err}")
     entry_stop_price = round_price_to_tick(
         price,
         symbol,
@@ -739,7 +753,6 @@ async def root():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
     uvicorn.run("main:app", host="0.0.0.0", port=port)
-
 
 
 
